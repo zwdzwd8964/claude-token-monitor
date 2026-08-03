@@ -1,0 +1,1038 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Mission Control · 系统图谱</title>
+<style>
+  :root{
+    --bg:#0a0e14; --bg2:#0f141c; --panel:#121a24; --panel2:#0e151e;
+    --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.14);
+    --tx:#c7d3e3; --tx-dim:#8494a9; --tx-hi:#eef3fa;
+    --blue:#6ea8fe; --spine:#7fb0ff;
+    --cost:#f0b23e; --proc:#45c4d6; --act:#5fd08a;
+    --evt:#b784f0; --notify:#5b9df0; --ctrl:#ef7a6d; --doc:#3fd0c9;
+    --evo:#f08fb0; --prin:#cdb4ff;
+    --good:#5fd08a; --warn:#f0b23e; --bad:#ef7a6d;
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+    --sans:"Segoe UI",system-ui,-apple-system,"Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--tx);font-family:var(--sans);display:flex;font-size:15px;line-height:1.65}
+  a{color:var(--blue);text-decoration:none}
+
+  /* ---------- sidebar ---------- */
+  .sidebar{width:264px;flex:0 0 264px;height:100vh;position:sticky;top:0;overflow-y:auto;
+    background:linear-gradient(180deg,#0c121b,#090d13);border-right:1px solid var(--line);padding:20px 14px 40px}
+  .brand{padding:6px 8px 16px;border-bottom:1px solid var(--line);margin-bottom:12px}
+  .brand .logo{display:flex;align-items:center;gap:9px;font-weight:700;color:var(--tx-hi);font-size:15.5px;letter-spacing:.2px}
+  .brand .logo .sat{width:22px;height:22px;border-radius:6px;background:radial-gradient(circle at 30% 30%,#7fb0ff,#3a5fb0);
+    box-shadow:0 0 14px rgba(110,168,254,.5);display:grid;place-items:center;font-size:12px}
+  .brand .sub{color:var(--tx-dim);font-size:11.5px;margin-top:7px;line-height:1.5}
+  .navgroup{margin-top:16px}
+  .navgroup .gt{color:var(--tx-dim);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;padding:0 8px 6px;font-weight:600}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:8px 9px;border-radius:8px;cursor:pointer;color:var(--tx);
+    font-size:13.5px;transition:background .12s,color .12s;border:1px solid transparent}
+  .nav-item:hover{background:rgba(255,255,255,.04)}
+  .nav-item.active{background:rgba(110,168,254,.12);border-color:rgba(110,168,254,.25);color:var(--tx-hi)}
+  .nav-item .dot{width:9px;height:9px;border-radius:50%;flex:0 0 9px;box-shadow:0 0 8px currentColor}
+  .nav-item .idx{margin-left:auto;color:var(--tx-dim);font-size:11px;font-family:var(--mono)}
+
+  /* ---------- main ---------- */
+  .main{flex:1;height:100vh;overflow-y:auto;scroll-behavior:smooth}
+  .topbar{position:sticky;top:0;z-index:20;background:rgba(10,14,20,.82);backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line);padding:13px 34px;display:flex;align-items:center;gap:16px}
+  .topbar .crumb{color:var(--tx-dim);font-size:13px}
+  .topbar .crumb b{color:var(--tx-hi);font-weight:600}
+  .topbar .prog{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--tx-dim);white-space:nowrap}
+  .topbar .navbtn{border:1px solid var(--line2);background:var(--panel);color:var(--tx);border-radius:7px;
+    width:30px;height:30px;cursor:pointer;font-size:15px;display:grid;place-items:center}
+  .topbar .navbtn:hover{background:#1a2432;color:var(--tx-hi)}
+  .topbar .navbtn:disabled{opacity:.32;cursor:default}
+
+  .wrap{max-width:1080px;margin:0 auto;padding:30px 34px 90px}
+  .page{display:none;animation:fade .28s ease}
+  .page.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  .kicker{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:600;letter-spacing:.06em;
+    text-transform:uppercase;color:var(--tx-dim)}
+  .kicker .dot{width:8px;height:8px;border-radius:50%;box-shadow:0 0 8px currentColor}
+  h1.pt{font-size:30px;margin:10px 0 4px;color:var(--tx-hi);letter-spacing:.3px;font-weight:700}
+  .alt{display:inline-block;font-size:11.5px;color:var(--tx-dim);border:1px solid var(--line2);border-radius:20px;
+    padding:2px 11px;margin-left:2px;vertical-align:middle}
+  .lead{font-size:15.5px;color:var(--tx);max-width:820px;margin:14px 0 6px;padding:14px 18px;
+    background:linear-gradient(90deg,rgba(110,168,254,.08),transparent);border-left:3px solid var(--blue);border-radius:0 8px 8px 0}
+  .lead.cost{border-color:var(--cost);background:linear-gradient(90deg,rgba(240,178,62,.08),transparent)}
+  .lead.proc{border-color:var(--proc);background:linear-gradient(90deg,rgba(69,196,214,.08),transparent)}
+  .lead.act{border-color:var(--act);background:linear-gradient(90deg,rgba(95,208,138,.08),transparent)}
+  .lead.evt{border-color:var(--evt);background:linear-gradient(90deg,rgba(183,132,240,.08),transparent)}
+  .lead.notify{border-color:var(--notify);background:linear-gradient(90deg,rgba(91,157,240,.08),transparent)}
+  .lead.ctrl{border-color:var(--ctrl);background:linear-gradient(90deg,rgba(239,122,109,.08),transparent)}
+  .lead.doc{border-color:var(--doc);background:linear-gradient(90deg,rgba(63,208,201,.08),transparent)}
+  .lead.evo{border-color:var(--evo);background:linear-gradient(90deg,rgba(240,143,176,.08),transparent)}
+  .lead.prin{border-color:var(--prin);background:linear-gradient(90deg,rgba(205,180,255,.08),transparent)}
+
+  h2.sec{font-size:19px;color:var(--tx-hi);margin:38px 0 6px;padding-top:8px;font-weight:650;display:flex;align-items:center;gap:10px}
+  h2.sec::before{content:"";width:4px;height:18px;border-radius:2px;background:var(--blue)}
+  h3.sub{font-size:15px;color:var(--tx-hi);margin:24px 0 6px;font-weight:600}
+  p{margin:10px 0}
+  .muted{color:var(--tx-dim)}
+  code{font-family:var(--mono);background:rgba(255,255,255,.06);border:1px solid var(--line);border-radius:5px;
+    padding:1px 6px;font-size:.86em;color:#dbe6f5}
+  b.hi{color:var(--tx-hi)}
+
+  .diagram{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px 14px;margin:20px 0;
+    overflow-x:auto;text-align:center;box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
+  .diagram .mermaid{display:inline-block;min-width:100%}
+  .figcap{color:var(--tx-dim);font-size:12.5px;margin:-8px 0 20px;text-align:center}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:18px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:15px 16px}
+  .card h4{margin:0 0 6px;font-size:14px;color:var(--tx-hi);display:flex;align-items:center;gap:8px}
+  .card h4 .dot{width:8px;height:8px;border-radius:50%;box-shadow:0 0 8px currentColor}
+  .card p{margin:6px 0 0;font-size:13.2px;color:var(--tx-dim)}
+  .card .k{font-family:var(--mono);font-size:12px;color:var(--tx)}
+
+  table.tbl{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.2px;background:var(--panel);
+    border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  table.tbl th{background:#0c131c;color:var(--tx-hi);text-align:left;padding:9px 12px;font-weight:600;
+    border-bottom:1px solid var(--line2);font-size:12.5px}
+  table.tbl td{padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.tbl tr:last-child td{border-bottom:none}
+  table.tbl tr:hover td{background:rgba(255,255,255,.02)}
+  table.tbl td.m,table.tbl th.m{font-family:var(--mono);font-size:12px;white-space:nowrap}
+  .tag{display:inline-block;font-size:11px;font-family:var(--mono);padding:1px 7px;border-radius:20px;border:1px solid var(--line2)}
+  .tag.ok{color:var(--good);border-color:rgba(95,208,138,.4);background:rgba(95,208,138,.08)}
+  .tag.todo{color:var(--tx-dim)}
+  .tag.warn{color:var(--warn);border-color:rgba(240,178,62,.4);background:rgba(240,178,62,.08)}
+  .tag.crit{color:var(--bad);border-color:rgba(239,122,109,.4);background:rgba(239,122,109,.08)}
+  .tag.info{color:var(--blue);border-color:rgba(110,168,254,.4);background:rgba(110,168,254,.08)}
+
+  .callout{border:1px solid var(--line2);border-radius:10px;padding:13px 16px;margin:16px 0;font-size:13.6px;
+    background:var(--panel);display:flex;gap:12px}
+  .callout .ico{font-size:16px;flex:0 0 auto;margin-top:1px}
+  .callout.good{border-color:rgba(95,208,138,.32);background:rgba(95,208,138,.06)}
+  .callout.warn{border-color:rgba(240,178,62,.32);background:rgba(240,178,62,.06)}
+  .callout.star{border-color:rgba(110,168,254,.32);background:rgba(110,168,254,.06)}
+  .callout b{color:var(--tx-hi)}
+
+  ul.clean{margin:10px 0;padding-left:0;list-style:none}
+  ul.clean li{padding:5px 0 5px 22px;position:relative;font-size:13.8px}
+  ul.clean li::before{content:"▸";position:absolute;left:4px;color:var(--blue)}
+  ul.tight li{padding:3px 0 3px 22px}
+
+  .inv{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin:16px 0}
+  .inv .i{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:8px;padding:11px 14px}
+  .inv .i .n{font-family:var(--mono);font-weight:700;color:var(--tx-hi);font-size:13px}
+  .inv .i .d{font-size:13px;color:var(--tx-dim);margin-top:3px}
+
+  hr.sp{border:none;border-top:1px solid var(--line);margin:34px 0}
+  footer{border-top:1px solid var(--line);padding:22px 34px;color:var(--tx-dim);font-size:12px;
+    display:flex;gap:18px;flex-wrap:wrap;max-width:1080px;margin:0 auto}
+  footer .sep{opacity:.4}
+
+  .main::-webkit-scrollbar,.sidebar::-webkit-scrollbar,.diagram::-webkit-scrollbar{width:10px;height:10px}
+  .main::-webkit-scrollbar-thumb,.sidebar::-webkit-scrollbar-thumb,.diagram::-webkit-scrollbar-thumb{background:#243040;border-radius:6px;border:2px solid var(--bg)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:860px){.grid2{grid-template-columns:1fr}.sidebar{display:none}}
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="brand">
+    <div class="logo"><span class="sat">🛰</span> Mission Control</div>
+    <div class="sub">Claude Code AI 运维驾驶舱 · 系统结构与进化图谱<br>本地离线 · 只读文档</div>
+  </div>
+
+  <div class="navgroup">
+    <div class="gt">概览</div>
+    <div class="nav-item" data-target="overview"><span class="dot" style="color:#6ea8fe"></span>平台总览<span class="idx">01</span></div>
+    <div class="nav-item" data-target="dataflow"><span class="dot" style="color:#8ba3c7"></span>数据源与数据流<span class="idx">02</span></div>
+    <div class="nav-item" data-target="layers"><span class="dot" style="color:#7fb0ff"></span>三层架构脊柱<span class="idx">03</span></div>
+  </div>
+  <div class="navgroup">
+    <div class="gt">三支柱 · 监控层</div>
+    <div class="nav-item" data-target="cost"><span class="dot" style="color:#f0b23e"></span>成本支柱 · tokmon<span class="idx">04</span></div>
+    <div class="nav-item" data-target="process"><span class="dot" style="color:#45c4d6"></span>进程支柱 · procmon<span class="idx">05</span></div>
+    <div class="nav-item" data-target="activity"><span class="dot" style="color:#5fd08a"></span>活动支柱 · activity<span class="idx">06</span></div>
+  </div>
+  <div class="navgroup">
+    <div class="gt">脊柱 · 事件→通知→控制</div>
+    <div class="nav-item" data-target="events"><span class="dot" style="color:#b784f0"></span>事件总线 · events<span class="idx">07</span></div>
+    <div class="nav-item" data-target="notify"><span class="dot" style="color:#5b9df0"></span>通知层 · notify<span class="idx">08</span></div>
+    <div class="nav-item" data-target="control"><span class="dot" style="color:#ef7a6d"></span>控制层 · control<span class="idx">09</span></div>
+  </div>
+  <div class="navgroup">
+    <div class="gt">固信</div>
+    <div class="nav-item" data-target="doctor"><span class="dot" style="color:#3fd0c9"></span>推断 doctor · 校验<span class="idx">10</span></div>
+  </div>
+  <div class="navgroup">
+    <div class="gt">元</div>
+    <div class="nav-item" data-target="evolution"><span class="dot" style="color:#f08fb0"></span>进化史<span class="idx">11</span></div>
+    <div class="nav-item" data-target="principles"><span class="dot" style="color:#cdb4ff"></span>原则与不变量<span class="idx">12</span></div>
+  </div>
+</aside>
+
+<div class="main">
+  <div class="topbar">
+    <button class="navbtn" id="prev" title="上一页 (←)">‹</button>
+    <button class="navbtn" id="next" title="下一页 (→)">›</button>
+    <div class="crumb"><span id="crumb-group">概览</span> / <b id="crumb-page">平台总览</b></div>
+    <div class="prog" id="prog">01 / 12</div>
+  </div>
+
+  <div class="wrap">
+
+  <!-- ============ 01 平台总览 ============ -->
+  <section class="page" id="overview">
+    <div class="kicker"><span class="dot" style="color:#6ea8fe"></span>概览 · Overview</div>
+    <h1 class="pt">平台总览 <span class="alt">总览 · 概念层</span></h1>
+    <div class="lead">
+      <b class="hi">Claude Mission Control</b> 是一个「AI coding 运维驾驶舱」。它从一个纯粹的 token 成本工具（tokmon）
+      长成了统管<b class="hi">三个只读支柱</b>（成本 / 进程 / 活动）的平台，脊柱是单向的<b class="hi">三层数据流</b>：
+      监控层 → 事件总线 → 通知层，外加一条<b class="hi">旁路控制层</b>与一层<b class="hi">推断校验（doctor）</b>。
+      整座塔只做两件事：<b class="hi">看清它在推进 / 卡住 / 烧钱 / 乱改</b>，并<b class="hi">只在重要时刻恰当地提醒你</b>。
+    </div>
+
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TD
+  classDef src fill:#12202b,stroke:#3a5f70,color:#bfe0ec
+  classDef cost fill:#332a14,stroke:#f0b23e,color:#f6d99a
+  classDef proc fill:#0f2f34,stroke:#45c4d6,color:#a9e6ef
+  classDef act fill:#12301f,stroke:#5fd08a,color:#b6ecc9
+  classDef bus fill:#241833,stroke:#b784f0,color:#e0cbf7
+  classDef notify fill:#132540,stroke:#5b9df0,color:#bcd6f7
+  classDef ctrl fill:#331916,stroke:#ef7a6d,color:#f6c3bc
+  classDef doc fill:#0e2e2c,stroke:#3fd0c9,color:#a9ede8
+  classDef shell fill:#141a24,stroke:#5b6b82,color:#c7d3e3
+
+  T["📄 ~/.claude/projects/**/*.jsonl<br/>Claude Code 会话 transcript"]:::src
+  PS["🖥 本机进程 / 端口<br/>psutil"]:::src
+
+  subgraph L1["Layer 1 · 监控层（三支柱 · 各自独立内核 · 纯只读）"]
+    direction LR
+    COST["💰 成本支柱<br/>tokmon 内核"]:::cost
+    ACT["🟢 活动支柱<br/>activity"]:::act
+    PROC["🔌 进程支柱<br/>procmon"]:::proc
+  end
+
+  BUS["🚌 Layer 2 · 事件总线 events.py<br/>把信号判成有类型的事件 · 平台的唯一货币"]:::bus
+  NOTIFY["🔔 Layer 3 · 通知层 notify.py<br/>决定该不该打扰你、怎么打扰"]:::notify
+  CTRL["🎛 控制层 control.py（旁路 · 非自动）<br/>只在你显式下达时远程审批 permission"]:::ctrl
+  DOC["🩺 推断 doctor<br/>给推断层一把「对真相」的尺"]:::doc
+  SHELL["🌐 tokmon serve · 本地外壳 127.0.0.1<br/>8 个页面 + JSON API（不碰内核）"]:::shell
+
+  T --> COST
+  T --> ACT
+  PS --> PROC
+  COST --> BUS
+  ACT --> BUS
+  PROC --> BUS
+  BUS --> NOTIFY
+  NOTIFY -->|"最小载荷 · Telegram 出站"| PHONE["📱 手机 / 网页"]
+  CTRL -.->|"远程 allow / deny"| PHONE
+  BUS -.->|"PERMISSION_NEEDED / COMMAND_ISSUED"| CTRL
+  COST -.->|"读记录"| DOC
+  ACT -.->|"读尾部"| DOC
+  L1 -.- SHELL
+  BUS -.- SHELL
+      </div>
+    </div>
+    <div class="figcap">实线 = 主数据流（单向）；虚线 = 旁路 / 校验 / 承载关系。颜色 = 领域（下同）。</div>
+
+    <h2 class="sec">五个组成部分</h2>
+    <div class="cards">
+      <div class="card"><h4><span class="dot" style="color:#f0b23e"></span>监控层 · 三支柱</h4><p>成本（tokmon）/ 进程（procmon）/ 活动（activity）三个<b class="hi">互不引用</b>的只读内核，各自产出「原始信号」。</p></div>
+      <div class="card"><h4><span class="dot" style="color:#b784f0"></span>事件总线</h4><p><code>events.py</code> 把信号判成带严重度的<b class="hi">有类型事件</b>。它 import 任何支柱都不允许——解耦的关键。</p></div>
+      <div class="card"><h4><span class="dot" style="color:#5b9df0"></span>通知层</h4><p><code>notify.py</code> 只做一件事：<b class="hi">决定该不该打扰、怎么打扰</b>。默认静默、默认不外发。</p></div>
+      <div class="card"><h4><span class="dot" style="color:#ef7a6d"></span>控制层（旁路）</h4><p><code>control.py</code> 是唯一能「动手」的层，但<b class="hi">永不自动</b>——只执行你显式下达、经 P7 护栏的 permission 审批。</p></div>
+      <div class="card"><h4><span class="dot" style="color:#3fd0c9"></span>推断 doctor</h4><p>给 activity / events 这些<b class="hi">推断</b>层一把「对真相」的尺，让它们像成本（测量）一样敢信。</p></div>
+    </div>
+
+    <div class="callout star"><span class="ico">🧭</span><div>
+      <b>平台北极星：</b>「当 Claude Code 在替我 agentic coding 时，让我随时知道它到底在<b>推进 / 卡住 / 烧钱 / 乱改</b>，
+      并且<b>只在重要时刻、用恰当的方式</b>提醒我——有用，且不烦。」<br>
+      <span class="muted">衡量成功的唯一问题：任意时刻能否 5 秒内答出「我所有正在跑的 Claude Code 现在分别什么状态？有谁需要我现在介入？」</span>
+    </div></div>
+
+    <div class="callout"><span class="ico">📐</span><div>
+      <b>本图谱怎么读：</b>侧栏 12 页分四组——<b>概览</b>（本页 + 数据流 + 三层脊柱）、<b>三支柱</b>、<b>脊柱三层</b>、<b>固信 + 元</b>。
+      总览页停在概念层，深潜页下沉到真实<b>函数名 / 数据结构 / import 依赖</b>。用 <code>←</code> <code>→</code> 键翻页。
+    </div></div>
+  </section>
+
+  <!-- ============ 02 数据源与数据流 ============ -->
+  <section class="page" id="dataflow">
+    <div class="kicker"><span class="dot" style="color:#8ba3c7"></span>概览 · Data Flow</div>
+    <h1 class="pt">数据源与数据流 <span class="alt">总览 · 概念层</span></h1>
+    <div class="lead">
+      平台的判断力全部来自<b class="hi">只读</b>的两类来源：Claude Code 自己写下的会话 <code>*.jsonl</code>，和本机进程快照。
+      <b class="hi">绝不 hook、不拦截、不注入</b>——只读它已经写下的东西。成本与活动共享同一份 transcript，却走两条互不干扰的解析路。
+    </div>
+
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+  classDef src fill:#12202b,stroke:#3a5f70,color:#bfe0ec
+  classDef k fill:#1a2230,stroke:#5b6b82,color:#c7d3e3
+  classDef cost fill:#332a14,stroke:#f0b23e,color:#f6d99a
+  classDef act fill:#12301f,stroke:#5fd08a,color:#b6ecc9
+  classDef out fill:#141a24,stroke:#6ea8fe,color:#bcd6f7
+
+  JL["📄 会话 transcript<br/>每条 assistant 消息带 usage"]:::src
+  subgraph COSTP["成本支柱 · 精确「测量」全量"]
+    direction TB
+    DIS["discovery.py<br/>发现+分类 main/subagent/workflow"]:::cost
+    PAR["parser.py<br/>JSONL→UsageRecord · 去重 · 文件缓存"]:::cost
+    UR["UsageRecord<br/>唯一真相载体（19 字段）"]:::cost
+    AGG["aggregate.py<br/>按天/项目/模型/来源/会话聚合"]:::cost
+  end
+  subgraph ACTP["活动支柱 · 尾部「推断」状态"]
+    direction TB
+    TAIL["activity._read_tail<br/>只读尾部 256KB→4MB"]:::act
+    CLS["classify_state<br/>纯函数 → 会话状态"]:::act
+  end
+  OUT["report · tui · serve<br/>展示层（消费 records / snapshot）"]:::out
+
+  JL --> DIS --> PAR --> UR --> AGG --> OUT
+  JL --> TAIL --> CLS --> OUT
+      </div>
+    </div>
+    <div class="figcap">同一份 transcript，成本走「全量精确解析」，活动走「尾部轻量推断」——读取纪律不同，故是两条独立路径。</div>
+
+    <h2 class="sec">数据源契约与风险</h2>
+    <p>我们依赖一个 <b class="hi">Claude Code 未公开承诺的内部格式</b>。这是整个平台最大的系统性风险，必须正视——
+    也正因如此才有了 <a href="#doctor" class="jump">doctor 校验层</a>。</p>
+    <table class="tbl">
+      <thead><tr><th>依赖字段 / 结构</th><th>用途</th><th class="m">支柱</th><th>格式漂移的影响</th></tr></thead>
+      <tbody>
+        <tr><td class="m">type=="assistant" + message.usage</td><td>识别计费消息</td><td class="m">成本</td><td><span class="tag crit">高</span> 解析失效</td></tr>
+        <tr><td class="m">usage.{input,output,cache_*}_tokens</td><td>token 计数</td><td class="m">成本</td><td><span class="tag crit">高</span></td></tr>
+        <tr><td class="m">cache_creation.ephemeral_{5m,1h}</td><td>缓存 TTL 拆分</td><td class="m">成本</td><td><span class="tag warn">中</span> 可降级合并</td></tr>
+        <tr><td class="m">message.id / requestId</td><td>去重键</td><td class="m">成本</td><td><span class="tag warn">中</span> 去重退化</td></tr>
+        <tr><td class="m">逐条 assistant 的 cwd</td><td>项目归属（会话中途 cd 会变）</td><td class="m">成本</td><td><span class="tag warn">中</span> 归属退化</td></tr>
+        <tr><td class="m">末条消息 timestamp</td><td>活动时钟（非 mtime！）</td><td class="m">活动</td><td><span class="tag crit">高</span> idle/stuck 判断失灵</td></tr>
+        <tr><td class="m">tool_result 错误 / 行类型 / stop_reason</td><td>状态与事件推断</td><td class="m">活动</td><td><span class="tag crit">高</span> 推断漂移</td></tr>
+        <tr><td class="m">目录结构 subagents/ workflows/</td><td>来源分类</td><td class="m">成本</td><td><span class="tag warn">中</span></td></tr>
+      </tbody>
+    </table>
+    <div class="callout good"><span class="ico">🛡</span><div>
+      <b>护栏：</b>解析对缺字段一律<b>容错跳过</b>（绝不崩、绝不误报 Critical）；升级 Claude Code 后<b>先跑 <code>tokmon doctor</code></b>
+      （测量侧）与<b>推断 doctor</b>（推断侧），格式漂移会被<b>发现</b>而非悄悄算错。
+    </div></div>
+  </section>
+
+  <!-- ============ 03 三层架构 ============ -->
+  <section class="page" id="layers">
+    <div class="kicker"><span class="dot" style="color:#7fb0ff"></span>概览 · Three Layers</div>
+    <h1 class="pt">三层架构脊柱 <span class="alt">总览 · 概念层</span></h1>
+    <div class="lead">
+      平台的灵魂是一条<b class="hi">单向、不可逆</b>的数据流：<b class="hi">监控层 → 事件总线 → 通知层</b>。
+      它落地了最核心的设计原则——<b class="hi">「判断发生了什么」≠「决定该不该打扰你」</b>。两者通过事件层解耦；不分离，后面必成屎山。
+    </div>
+
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TD
+  classDef l1 fill:#12202b,stroke:#5fd08a,color:#c7e8d3
+  classDef l2 fill:#241833,stroke:#b784f0,color:#e0cbf7
+  classDef l3 fill:#132540,stroke:#5b9df0,color:#bcd6f7
+  classDef ctrl fill:#331916,stroke:#ef7a6d,color:#f6c3bc
+
+  subgraph L1["① 监控层 · Observation（只发信号，从不直接通知）"]
+    direction LR
+    S1["成本：用量 / burn rate / 预算占比"]:::l1
+    S2["进程：健康 / 端口 / cloudflared"]:::l1
+    S3["活动：活跃 / 空闲 / 卡住 / 错误 / permission"]:::l1
+  end
+  subgraph L2["② 事件总线 · Event Bus（唯一解耦点）"]
+    E["typed events：type · severity · pillar · session · 最小载荷"]:::l2
+  end
+  subgraph L3["③ 通知层 · Notification（只决定该不该打扰）"]
+    N["规则 + 严重度 + 静默时段 + 去抖 → 通道（Telegram…）"]:::l3
+  end
+  CTRL["控制层（旁路）：你显式下达的 permission 审批 · P7 护栏"]:::ctrl
+
+  S1 -->|"raw signals"| E
+  S2 -->|"raw signals"| E
+  S3 -->|"raw signals"| E
+  E -->|"typed events"| N
+  E -.->|"PERMISSION_NEEDED"| CTRL
+  CTRL -.->|"COMMAND_ISSUED 回灌"| E
+      </div>
+    </div>
+    <div class="figcap">监控层<b>永远不</b>直接调用任何通知通道（P2）；一切汇合只发生在事件总线（P3）。</div>
+
+    <div class="grid2">
+      <div class="callout"><span class="ico">🧩</span><div><b>为什么解耦？</b>新增一个事件类型，无需改 UI / 通道 / 规则的结构——事件流起来即可。M3.5 的预算告警、M4 的控制层挂上总线时，成本 / 进程 / 活动支柱<b>零改动</b>。</div></div>
+      <div class="callout"><span class="ico">🔒</span><div><b>产品形态（三栏 UI 目标）：</b>左=各 session 状态、中=事件 timeline、右=通知规则。当前 <code>serve</code> 的 <code>/sessions</code> <code>/api/events</code> <code>/notify</code> 已是这三栏的雏形。</div></div>
+    </div>
+
+    <h2 class="sec">支柱独立（P4）—— 实测 import 依赖图</h2>
+    <p>「支柱独立」不是口号，是可验证的 <b class="hi">import 约束</b>：<code>events.py</code> 只 import 标准库，<b class="hi">import 任何支柱都不允许</b>；
+    支柱之间互不引用；一切在 <code>bus.emit()</code> 处汇合。下图是实测依赖方向（箭头 = 「import」）。</p>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart BT
+  classDef pure fill:#141a24,stroke:#5b6b82,color:#c7d3e3
+  classDef cost fill:#332a14,stroke:#f0b23e,color:#f6d99a
+  classDef act fill:#12301f,stroke:#5fd08a,color:#b6ecc9
+  classDef proc fill:#0f2f34,stroke:#45c4d6,color:#a9e6ef
+  classDef bus fill:#241833,stroke:#b784f0,color:#e0cbf7
+  classDef top fill:#132033,stroke:#6ea8fe,color:#bcd6f7
+
+  EV["events.py<br/>（只 stdlib · 零支柱 import）"]:::bus
+  ASRC["event_sources/activity_source"]:::act
+  CSRC["event_sources/cost_source"]:::cost
+  ACT["activity.py"]:::act
+  COST["parser / aggregate / pricing / discovery"]:::cost
+  PROC["procmon.py<br/>（零内部 import）"]:::proc
+  NOT["notify.py"]:::bus
+  CTL["control.py"]:::bus
+  SRV["serve.py · inference_doctor · backtest"]:::top
+
+  ASRC --> ACT
+  ASRC --> EV
+  CSRC --> COST
+  CSRC --> EV
+  NOT --> EV
+  CTL --> EV
+  SRV --> ACT
+  SRV --> COST
+  SRV --> PROC
+  SRV --> EV
+      </div>
+    </div>
+    <div class="figcap">验证结论：✅ events 零支柱 import；✅ activity 不碰 token 内核；✅ procmon 零内部 import；✅ serve/doctor 只「向下读」，无人反向 import 它们。</div>
+  </section>
+
+  <!-- ============ 04 成本支柱 ============ -->
+  <section class="page" id="cost">
+    <div class="kicker"><span class="dot" style="color:#f0b23e"></span>三支柱 · Cost / tokmon</div>
+    <h1 class="pt">成本支柱 · tokmon 内核 <span class="alt">深潜 · 代码层</span></h1>
+    <div class="lead cost">
+      平台的<b class="hi">起点与「成本支柱」</b>。它把 token 用量从「完全没感觉」变成「随手可见、心里有数、能复盘」。
+      内核是一串<b class="hi">纯函数管道</b>：发现 → 解析去重 → <code>UsageRecord</code> → 聚合，展示层只是它的消费者。
+    </div>
+
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+  classDef pure fill:#2a2412,stroke:#f0b23e,color:#f6d99a
+  classDef io fill:#332a14,stroke:#f0b23e,color:#fbe9c4
+  classDef data fill:#3a2f16,stroke:#ffcf6b,color:#ffe6b0
+  classDef out fill:#141a24,stroke:#6ea8fe,color:#bcd6f7
+
+  DIS["discovery.py<br/>discover() · classify()"]:::pure
+  PROJ["project.py<br/>workspace_identity()"]:::pure
+  PRI["pricing.py<br/>rates_for() · cost_usd()"]:::pure
+  PAR["parser.py<br/>load_records() · parse_file()"]:::io
+  UR["UsageRecord"]:::data
+  AGG["aggregate.py<br/>summarize() · group_by()"]:::io
+  REP["report / tui / serve"]:::out
+
+  DIS --> PAR
+  PROJ --> PAR
+  PRI --> PAR
+  PAR --> UR
+  UR --> AGG
+  AGG --> REP
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <h3 class="sub">UsageRecord —— 唯一真相载体（19 字段 + 3 属性）</h3>
+        <table class="tbl">
+          <thead><tr><th class="m">字段</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td class="m">timestamp / project / session_id</td><td>归桶三键</td></tr>
+            <tr><td class="m">model / source_kind</td><td>模型 · main/subagent/workflow</td></tr>
+            <tr><td class="m">input/output_tokens</td><td>输入输出</td></tr>
+            <tr><td class="m">cache_5m / cache_1h / cache_read</td><td>缓存写(分 TTL) / 读</td></tr>
+            <tr><td class="m">web_search / web_fetch</td><td>工具计费次数</td></tr>
+            <tr><td class="m">cost_usd / known_price</td><td>等价美元 · 单价是否已知</td></tr>
+            <tr><td class="m">message_id / request_id</td><td>去重键来源</td></tr>
+            <tr><td class="m">cwd / subpath / under_vscode</td><td>项目身份（.vscode 归属）</td></tr>
+          </tbody>
+        </table>
+        <p class="muted">属性：<code>cache_write</code>=5m+1h · <code>total_tokens</code> · <code>dedup_key</code>=(message_id, request_id)</p>
+      </div>
+      <div>
+        <h3 class="sub">定价表 —— 只此一处（pricing.py）</h3>
+        <table class="tbl">
+          <thead><tr><th>家族</th><th class="m">输入/输出 $ / 1M</th></tr></thead>
+          <tbody>
+            <tr><td>Opus</td><td class="m">5 / 25</td></tr>
+            <tr><td>Sonnet</td><td class="m">3 / 15</td></tr>
+            <tr><td>Haiku</td><td class="m">1 / 5</td></tr>
+            <tr><td>Fable · Mythos</td><td class="m">10 / 50</td></tr>
+          </tbody>
+        </table>
+        <ul class="clean tight">
+          <li>缓存写 5m <code>×1.25</code> · 1h <code>×2.0</code> · 读 <code>×0.10</code></li>
+          <li>web_search <code>$10 / 1000 次</code>；web_fetch 按 token</li>
+          <li>未知模型 → <code>(0.0, known=False)</code>，显式标 <code>*</code>，绝不瞎估</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="callout"><span class="ico">🔑</span><div>
+      <b>去重是必要的，不是可选的。</b>去重键 <code>(message_id, request_id)</code> 在 <code>load_records()</code> 里「后值覆盖」。
+      实测：会话续接 / 分叉会把一条消息重复记录多达 20 次、跨 5 个文件——不去重会<b>多算约 3.7 倍</b>。
+      文件级 <code>(mtime, size)</code> 缓存让 watch 只重解析变动文件。
+    </div></div>
+
+    <h3 class="sub">内核不变量（I1–I6）</h3>
+    <div class="inv">
+      <div class="i" style="border-color:#f0b23e"><div class="n">I1 只读</div><div class="d">代码里永不出现对 ~/.claude 的写操作</div></div>
+      <div class="i" style="border-color:#f0b23e"><div class="n">I2 内核纯函数化</div><div class="d">parser/pricing/aggregate 输入相同→输出相同</div></div>
+      <div class="i" style="border-color:#f0b23e"><div class="n">I3 定价集中</div><div class="d">所有单价倍率只存在于 pricing.py</div></div>
+      <div class="i" style="border-color:#f0b23e"><div class="n">I4 UsageRecord 唯一载体</div><div class="d">展示层只消费 records，不绕过读 JSONL</div></div>
+      <div class="i" style="border-color:#f0b23e"><div class="n">I5 去重键稳定</div><div class="d">(message_id, request_id) 是去重契约</div></div>
+      <div class="i" style="border-color:#f0b23e"><div class="n">I6 展示层不反向污染内核</div><div class="d">TUI/report 的需求不逼内核加展示状态</div></div>
+    </div>
+    <p class="muted">实测 import：<code>parser → {discovery, pricing, project, records}</code>；<code>aggregate → {records}</code>；
+    <code>records / pricing / discovery / project</code> 零内部 import——内核纯净。</p>
+  </section>
+
+  <!-- ============ 05 进程支柱 ============ -->
+  <section class="page" id="process">
+    <div class="kicker"><span class="dot" style="color:#45c4d6"></span>三支柱 · Process / procmon</div>
+    <h1 class="pt">进程支柱 · procmon <span class="alt">深潜 · 代码层</span></h1>
+    <div class="lead proc">
+      用户另开的<b class="hi">并行同级</b>监控：看本机进程 / 端口 / 连接 / cloudflared 隧道。它有自己的小宪章——
+      <b class="hi">纯只读、零内部 import、不碰 token 内核</b>，绝不 kill / 改任何东西。被动快照零网络请求。
+    </div>
+
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TD
+  classDef ps fill:#0f2f34,stroke:#45c4d6,color:#a9e6ef
+  classDef sec fill:#122a30,stroke:#3a9fb0,color:#bfe6ee
+  classDef opt fill:#10242a,stroke:#2f7f8c,color:#9fd4dd
+
+  PSUTIL["psutil（可选依赖）<br/>缺失→该页友好提示，不影响 Token 看板"]:::ps
+  SNAP["snapshot(top=60, max_conns=250)<br/>2s TTL 缓存"]:::ps
+  R["_redact() · 命令行脱敏<br/>URI口令 / 已知密钥前缀 / key=值 / 长 blob"]:::sec
+
+  subgraph SEC["被动快照 · 六段"]
+    direction LR
+    A["主机摘要<br/>CPU/内存/进程数"]:::sec
+    B["进程 Top-N<br/>RSS ∪ CPU"]:::sec
+    C["监听端口→进程<br/>loopback 标记"]:::sec
+    D["活动连接<br/>真 ESTABLISHED + 已连 UDP"]:::sec
+    E["按远端 IP 聚合<br/>谁在连哪里"]:::sec
+    F["cloudflared 隧道"]:::sec
+  end
+  PROBE["probe_health()（opt-in · 点按钮才跑）<br/>只碰 127.0.0.1/::1 · TCP + HTTP HEAD 幂等"]:::opt
+
+  PSUTIL --> SNAP --> SEC
+  SNAP --> R
+  B --> R
+  C --> R
+  SNAP -.->|"用户显式触发"| PROBE
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="callout good"><span class="ico">🔒</span><div><b>只读铁律：</b>无 <code>kill()</code> / <code>suspend()</code> / socket 变更。psutil 只被动读进程与网络栈。健康探测是唯一「主动」动作，但<b>只连本机、HEAD 幂等只读</b>，对非 HTTP 服务仅是一次会被日志记录的异常连接（不改数据）。</div></div>
+      <div class="callout"><span class="ico">🕵</span><div><b>诚实说明：</b>cloudflared 隧道走 QUIC，边缘链路在 socket 层<b>不可见</b>——如实标注「只能看到本机隧道进程 / 监听口」，不假装能看到对端。</div></div>
+    </div>
+
+    <h3 class="sub">脱敏 —— 四层正则（_redact）</h3>
+    <table class="tbl">
+      <thead><tr><th class="m">层</th><th>捕获</th><th>处理</th></tr></thead>
+      <tbody>
+        <tr><td class="m">URI 口令</td><td class="m">scheme://user:pass@host</td><td>pass → ***</td></tr>
+        <tr><td class="m">已知密钥前缀</td><td class="m">AKIA/ASIA · AIza · sk_live_ · ghp_/gho_ · xox · JWT</td><td>整体 → ***</td></tr>
+        <tr><td class="m">key=值</td><td class="m">token/api-key/secret/password=…</td><td>值 → ***</td></tr>
+        <tr><td class="m">长 blob</td><td class="m">40+ 位字母数字串</td><td>→ ***</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">import：<code>procmon → {}</code>（仅 stdlib + 可选 psutil）—— 独立支柱，与整个 token 内核零耦合。</p>
+  </section>
+
+  <!-- ============ 06 活动支柱 ============ -->
+  <section class="page" id="activity">
+    <div class="kicker"><span class="dot" style="color:#5fd08a"></span>三支柱 · Activity</div>
+    <h1 class="pt">活动支柱 · activity <span class="alt">深潜 · 代码层</span></h1>
+    <div class="lead act">
+      平台从「token tracker」升级为「ops dashboard」的关键一步（M1）。它从 transcript <b class="hi">尾部</b>推断每个主会话的状态——
+      但克制到近乎苛刻：<b class="hi">绝不伪造 PERMISSION_NEEDED / STUCK</b>，拿不准就并列「长任务 / 等授权 / 会话已关闭」，格式漂移就判 UNKNOWN。
+    </div>
+
+    <div class="diagram">
+      <div class="mermaid">
+stateDiagram-v2
+  direction LR
+  [*] --> UNKNOWN
+  UNKNOWN : UNKNOWN · 读不懂/漂移 → 不发事件
+  WORKING : WORKING · 正在生成
+  PROCESSING : PROCESSING · 工具执行中
+  AWAITING_USER : AWAITING_USER · 回到等你（含 idle）
+  AMBIGUOUS_PENDING : AMBIGUOUS_PENDING · 久未返回的诚实对冲
+
+  WORKING --> AWAITING_USER : 一轮任务完成
+  PROCESSING --> AWAITING_USER : 工具返回后收尾
+  WORKING --> PROCESSING : 发起工具调用
+  WORKING --> AMBIGUOUS_PENDING : 超 stuck 阈值仍无输出
+  PROCESSING --> AMBIGUOUS_PENDING : 超阈值
+  AMBIGUOUS_PENDING --> AWAITING_USER : 最终返回
+  AWAITING_USER --> WORKING : 你发新消息
+  UNKNOWN --> WORKING : 恢复（静默重播种·不补发）
+      </div>
+    </div>
+    <div class="figcap">五状态纯函数 <code>classify_state(last_msg, now, cfg)</code>，13 个单测钉死每个状态与诚实边界。</div>
+
+    <div class="grid2">
+      <div>
+        <h3 class="sub">诚实纪律（本支柱的重点）</h3>
+        <ul class="clean">
+          <li><b class="hi">时钟 = 末条消息 timestamp</b>，不是文件 mtime（后者会把早停的会话误判为活跃）</li>
+          <li>挂起只看<b class="hi">尾部位置</b>，不做 tool_use↔result 的 id 配对</li>
+          <li>久未返回 → <code>AMBIGUOUS_PENDING</code> 并列三种可能，<b class="hi">不说死</b></li>
+          <li>读不懂 → <code>UNKNOWN</code> → <b class="hi">不发任何事件</b>（误报比漏报更伤信任）</li>
+        </ul>
+      </div>
+      <div>
+        <h3 class="sub">读取与配置</h3>
+        <ul class="clean">
+          <li><code>_read_tail</code>：只读尾部 <b class="hi">256KB</b>，单条超窗回退至上限 4MB</li>
+          <li><code>snapshot()</code>：全会话快照，<b class="hi">2s TTL</b> 缓存供并发/自动刷新共享同一帧</li>
+          <li><code>ActivityConfig</code>：<code>idle_after_s=600</code>（仅排序）· <code>stuck_after_s=120</code> · <code>snapshot_ttl_s=2.0</code></li>
+          <li>M4.5 修：优先显示<b class="hi">真实思考 💭</b>（实测 thinking 块约 29% 末段非空），拿不到才回退叙述</li>
+        </ul>
+      </div>
+    </div>
+    <p class="muted">import：<code>activity → {discovery, project}</code> —— 只依赖发现与项目身份，<b class="hi">不碰 token 内核 / procmon</b>（P4 成立）。</p>
+    <div class="callout warn"><span class="ico">⚖</span><div><b>为什么这么克制？</b>整座塔架在「可信推断」上。一次 <code>PERMISSION_NEEDED</code> 误报对信任的伤害 &gt; 十次正确 Info。所以 M1 宁可「测不准就不说」——真正可靠的 permission 检测直到 <a href="#control" class="jump">M4 控制层</a>拿到官方 hook 才补上。</div></div>
+  </section>
+
+  <!-- ============ 07 事件总线 ============ -->
+  <section class="page" id="events">
+    <div class="kicker"><span class="dot" style="color:#b784f0"></span>脊柱 · Event Bus</div>
+    <h1 class="pt">事件总线 · events <span class="alt">深潜 · 代码层</span></h1>
+    <div class="lead evt">
+      平台的<b class="hi">通用货币</b>（M2）。通道、UI、规则都只消费<b class="hi">事件</b>，不消费原始信号。总线本身<b class="hi">无策略</b>——
+      防打扰全留给通知层；它只负责给事件<b class="hi">两层幂等</b>去重，让「新增事件类型」无需改任何下游结构。
+    </div>
+
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+  classDef src fill:#12301f,stroke:#5fd08a,color:#b6ecc9
+  classDef csrc fill:#332a14,stroke:#f0b23e,color:#f6d99a
+  classDef bus fill:#241833,stroke:#b784f0,color:#e0cbf7
+  classDef con fill:#132540,stroke:#5b9df0,color:#bcd6f7
+
+  ASRC["activity_source<br/>derive_events()（纯）+ 唯一只读 pump 5s"]:::src
+  CSRC["cost_source<br/>_emit_budget() + pump 60s"]:::csrc
+  BUS["EventBus<br/>emit() · emit_many() · since() · subscribe()<br/>dedup_window(4000) LRU"]:::bus
+  API["/api/events · /sessions 时间线"]:::con
+  NOT["notify.py（消费者）"]:::con
+  CTL["control.py"]:::con
+
+  ASRC -->|"Event(...)"| BUS
+  CSRC -->|"Event(...)"| BUS
+  CTL -->|"PERMISSION_NEEDED / COMMAND_ISSUED"| BUS
+  BUS --> API
+  BUS --> NOT
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <h3 class="sub">Event 数据模型（10 字段）</h3>
+        <table class="tbl">
+          <thead><tr><th class="m">字段</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td class="m">type</td><td>事件类型</td></tr>
+            <tr><td class="m">pillar</td><td>来源支柱（默认 activity）</td></tr>
+            <tr><td class="m">severity</td><td>info / warning / critical</td></tr>
+            <tr><td class="m">session / project</td><td>归属</td></tr>
+            <tr><td class="m">timestamp</td><td>逻辑事件时间（非 now/mtime）</td></tr>
+            <tr><td class="m">detected_at</td><td>观察到的墙钟</td></tr>
+            <tr><td class="m">dedup_key</td><td>幂等键</td></tr>
+            <tr><td class="m">payload</td><td>最小载荷（受 allow-list 约束）</td></tr>
+            <tr><td class="m">seq</td><td>总线在 emit 时赋的单调序号</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <h3 class="sub">§6 payload allow-list（13 键 · 白名单）</h3>
+        <p class="muted">只有这些键能进事件载荷，<b class="hi">杜绝对话内容 / 命令行 / 路径 / 密钥</b>进入事件与通知：</p>
+        <p class="k" style="line-height:2">
+          <span class="tag info">tool_name</span> <span class="tag info">state_from</span> <span class="tag info">state_to</span>
+          <span class="tag info">age_s</span> <span class="tag info">idle_step</span> <span class="tag info">unresolved</span>
+          <span class="tag info">state_label</span> <span class="tag info">kind</span> <span class="tag info">model</span>
+          <span class="tag info">branch</span> <span class="tag info">scope</span> <span class="tag info">pct</span>
+        </p>
+        <p class="muted">显式排除：<code>last_text</code> / <code>title</code> / <code>current_step</code>。</p>
+        <h3 class="sub">两层幂等</h3>
+        <ul class="clean tight">
+          <li>源头：边沿触发 + 单调台阶（idle/stuck step 只增不减）</li>
+          <li>总线：<code>dedup_key</code> LRU 窗口（持续条件 <code>move_to_end</code> 不老化 → 不重响）</li>
+          <li>UNKNOWN → 不发；从 UNKNOWN 恢复 → 静默重播种，不重放</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2 class="sec">事件契约 v1 —— 设计契约 vs 已实现</h2>
+    <p>下表是 §4 的<b class="hi">可演进契约</b>。诚实起见，标出哪些<b class="hi">已在代码里真的发出</b>、哪些仍是待实现的契约位。</p>
+    <table class="tbl">
+      <thead><tr><th>类别</th><th class="m">事件 type</th><th>默认严重度</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>状态</td><td class="m">SESSION_STARTED</td><td><span class="tag info">info</span></td><td><span class="tag ok">✅ 已发</span></td></tr>
+        <tr><td>状态</td><td class="m">TASK_COMPLETED</td><td><span class="tag info">info</span></td><td><span class="tag ok">✅ 已发</span></td></tr>
+        <tr><td>状态</td><td class="m">TOOL_ERROR</td><td><span class="tag info">info</span></td><td><span class="tag ok">✅ 已发</span></td></tr>
+        <tr><td>状态</td><td class="m">SESSION_IDLE（台阶 600/1800/7200s）</td><td><span class="tag warn">warning</span></td><td><span class="tag ok">✅ 已发</span></td></tr>
+        <tr><td>状态</td><td class="m">SESSION_STUCK（对冲 0/1800s）</td><td><span class="tag warn">warning</span></td><td><span class="tag ok">✅ 已发</span></td></tr>
+        <tr><td>状态</td><td class="m">PERMISSION_NEEDED</td><td><span class="tag warn">warning</span></td><td><span class="tag ok">✅ 已发（M4 hook）</span></td></tr>
+        <tr><td>成本</td><td class="m">TOKEN_BUDGET_WARNING（70/90/100%）</td><td><span class="tag warn">warn→crit</span></td><td><span class="tag ok">✅ 已发</span></td></tr>
+        <tr><td>控制</td><td class="m">COMMAND_ISSUED</td><td><span class="tag info">info</span></td><td><span class="tag ok">✅ 已发</span></td></tr>
+        <tr><td>进程</td><td class="m">PROCESS_CRASHED</td><td><span class="tag crit">critical</span></td><td><span class="tag warn">◐ 契约已登记</span></td></tr>
+        <tr><td>状态</td><td class="m">TASK_FAILED · LONG_RUNNING · POSSIBLE_LOOP</td><td>—</td><td><span class="tag todo">🔲 契约位</span></td></tr>
+        <tr><td>成本</td><td class="m">BURN_RATE_SPIKE · DAILY_BUDGET_EXCEEDED</td><td>—</td><td><span class="tag todo">🔲 契约位</span></td></tr>
+        <tr><td>风险</td><td class="m">ERROR_SPIKE · REPEATED_FILE_EDIT · LARGE_DIFF · SENSITIVE_*_TOUCH</td><td>—</td><td><span class="tag todo">🔲 backlog「乱改」象限</span></td></tr>
+        <tr><td>进程</td><td class="m">CLOUDFLARED_DOWN</td><td><span class="tag warn">warning</span></td><td><span class="tag todo">🔲 契约位</span></td></tr>
+      </tbody>
+    </table>
+    <p class="muted">代码 default-severity 表映射了已实现的 9 类；<code>cost_source</code> 在 emit 时按 <code>thr≥90→critical</code> 覆盖严重度。
+    import：<code>events → {}</code>（仅 stdlib）· <code>activity_source → {activity, events}</code> · <code>cost_source → {parser, aggregate, discovery, events}</code>。</p>
+  </section>
+
+  <!-- ============ 08 通知层 ============ -->
+  <section class="page" id="notify">
+    <div class="kicker"><span class="dot" style="color:#5b9df0"></span>脊柱 · Notification</div>
+    <h1 class="pt">通知层 · notify <span class="alt">深潜 · 代码层</span></h1>
+    <div class="lead notify">
+      平台真正的回报，也是<b class="hi">唯一会把数据送出本机</b>的能力（M3）。它是总线的<b class="hi">消费者</b>，只做一件事：
+      纯策略 <code>decide()</code> 决定「该不该打扰、怎么打扰」。<b class="hi">默认全关</b>——没配 token 就一字节不出本机。
+    </div>
+
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+  classDef gate fill:#132540,stroke:#5b9df0,color:#bcd6f7
+  classDef crit fill:#331916,stroke:#ef7a6d,color:#f6c3bc
+  classDef out fill:#12301f,stroke:#5fd08a,color:#b6ecc9
+  classDef drop fill:#1a1f28,stroke:#5b6b82,color:#8494a9
+
+  EV["事件"]:::gate
+  G1["① 类型过滤<br/>enabled_types"]:::gate
+  G2["② 严重度门控<br/>≥ push_min_severity（默认 warning）"]:::gate
+  G3["③ 静默时段<br/>门槛抬到仅 critical"]:::gate
+  G4["④ 去抖<br/>同 类型+会话 &lt; debounce_s"]:::gate
+  G5["⑤ 限流<br/>recent ≥ rate_max"]:::gate
+  Q["后台 sender 线程<br/>队列 _q · 不阻塞总线"]:::out
+  TG["Telegram 出站<br/>[严重度] 最小摘要"]:::out
+  DROP["抑制（进 feed 记原因）"]:::drop
+
+  EV --> G1 --> G2 --> G3 --> G4 --> G5 --> Q --> TG
+  G2 -.->|"info"| DROP
+  G4 -.->|"未到间隔"| DROP
+  G5 -.->|"超频"| DROP
+  EV -->|"critical 优先：绕过去抖/限流"| Q
+      </div>
+    </div>
+    <div class="figcap"><code>decide(ev, cfg, last_push, recent_count, now) → (should_push, reason)</code> 是纯函数；critical <b>不被去抖/限流挡掉</b>。</div>
+
+    <div class="grid2">
+      <div class="callout good"><span class="ico">🤫</span><div><b>有用且不烦：</b>Info 默认不推（只进 UI/日摘要）· Warning 安静推送（可被静默时段压制）· Critical 优先推送。拿不准要不要打扰 → <b>不打扰</b>。<code>/notify</code> 页有推送/抑制<b>双记 feed</b>，方便你看「为什么被抑制」来调参。</div></div>
+      <div class="callout"><span class="ico">🔐</span><div><b>内容最小化（§6）：</b>出站只含 严重度 / 类型 / 项目 / 极简详情——<b>无命令行、无路径、无 diff、无密钥</b>；<b>token 绝不回显</b>。开启靠 <code>MC_TELEGRAM_TOKEN</code> + <code>MC_TELEGRAM_CHAT_ID</code>（env 或 <code>~/.tokmon/notify.json</code>）。</div></div>
+    </div>
+    <div class="callout warn"><span class="ico">📱</span><div><b>诚实边界（现状）：</b>当前只实现了 <b>Telegram 出站</b>；M4.5 计划的 <b>Pushover / Email</b> 适配器<b>尚未落地</b>。手机实推需你先配 token 验证一周，用 feed + L4 回测对账打扰率。import：<code>notify → {events}</code>（只 stdlib + 总线，P4）。</div></div>
+  </section>
+
+  <!-- ============ 09 控制层 ============ -->
+  <section class="page" id="control">
+    <div class="kicker"><span class="dot" style="color:#ef7a6d"></span>脊柱 · Control Plane</div>
+    <h1 class="pt">控制层 · control <span class="alt">深潜 · 代码层</span></h1>
+    <div class="lead ctrl">
+      平台「过卢比孔河」的一步（M4）：从<b class="hi">观测者</b>变成<b class="hi">行动者</b>——但只走一条极窄的门。
+      借 Claude Code 官方 <code>PermissionRequest</code> hook <b class="hi">远程 allow/deny</b>，无需脆弱的按键注入；全程受 <b class="hi">P7 五道护栏</b>约束，永不自动动作。
+    </div>
+
+    <div class="diagram">
+      <div class="mermaid">
+sequenceDiagram
+  autonumber
+  participant CC as Claude Code
+  participant H as /hook/permission?token=…
+  participant B as 事件总线
+  participant U as 你（网页 /control · 手机）
+  CC->>H: PermissionRequest（要不要允许这个工具？）
+  H->>B: 发真实 PERMISSION_NEEDED 事件
+  alt remote_mode = 关（默认）
+    H-->>CC: _defer → 回退正常本地弹窗
+  else remote_mode = 开
+    H->>U: 阻塞等待（最多 _WAIT_S = 25s）
+    U->>H: allow / deny（X-Control-Token 鉴权）
+    H->>B: COMMAND_ISSUED + 写审计日志
+    H-->>CC: 执行你的决定
+  end
+  Note over H,CC: 失败安全：token 错/超时/异常/服务没开 → 一律 _defer 回退本地，绝不自动批/拒
+      </div>
+    </div>
+
+    <h3 class="sub">P7 控制层守则 —— 五道护栏（全部满足才允许「下达指令」）</h3>
+    <div class="inv">
+      <div class="i" style="border-color:#ef7a6d"><div class="n">① allow-list</div><div class="d">只做 permission 审批，单一入口 handle_permission()，其余一律拒</div></div>
+      <div class="i" style="border-color:#ef7a6d"><div class="n">② 你显式触发</div><div class="d">系统永不自动决定；超时 = defer（非决定）</div></div>
+      <div class="i" style="border-color:#ef7a6d"><div class="n">③ 二次确认 + 鉴权</div><div class="d">hook 用 query token；看板用 X-Control-Token 头（关掉 CSRF/本机伪造）· secrets.compare_digest</div></div>
+      <div class="i" style="border-color:#ef7a6d"><div class="n">④ 全审计</div><div class="d">每决定进 _audit（maxlen 200）+ 发 COMMAND_ISSUED 事件</div></div>
+      <div class="i" style="border-color:#ef7a6d"><div class="n">⑤ 失败安全</div><div class="d">够不到目标 → 明确报「做不到」，绝不伪装成功、绝不瞎试有副作用的动作</div></div>
+    </div>
+
+    <div class="grid2">
+      <div class="callout good"><span class="ico">🎯</span><div><b>顺带补上 M1 的缺口：</b>检测 permission 时<b>发真实 <code>PERMISSION_NEEDED</code> 事件</b>——这是 activity 当年「测不准就不发」留下的空位，如今由官方 hook 精确补齐。token 存 <code>~/.tokmon/control_token</code>（24 字符 · 0600）。</div></div>
+      <div class="callout warn"><span class="ico">🚫</span><div><b>nudge / 停止 = 有意不做：</b>研究确认 hook 只能注入上下文、<b>不能执行指令</b>，没有干净 API → 按失败安全原则<b>不靠脆弱方式硬来</b>。激活需你手动加 hook JSON（含 token）并重启会话。import：<code>control → {events, project}</code>。</div></div>
+    </div>
+  </section>
+
+  <!-- ============ 10 推断 doctor ============ -->
+  <section class="page" id="doctor">
+    <div class="kicker"><span class="dot" style="color:#3fd0c9"></span>固信 · Validation</div>
+    <h1 class="pt">推断 doctor · 固信 <span class="alt">深潜 · 代码层</span></h1>
+    <div class="lead doc">
+      M4.5 的核心：在再加支柱前，确认整座塔下面<b class="hi">没有空心</b>。平台有个<b class="hi">信任不对称</b>——
+      成本是<b class="hi">测量</b>（有 <code>tokmon doctor</code> 对过账），但 activity / events / notify 是<b class="hi">推断</b>，
+      而我们已经<b class="hi">基于推断在行动</b>（控制层上线）。于是给推断也造一把「对真相」的尺。
+    </div>
+
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TD
+  classDef meas fill:#332a14,stroke:#f0b23e,color:#f6d99a
+  classDef inf fill:#0e2e2c,stroke:#3fd0c9,color:#a9ede8
+  classDef todo fill:#1a1f28,stroke:#5b6b82,color:#8494a9
+
+  subgraph M["测量侧 · 已有"]
+    DOC["doctor.py · scan()<br/>识别率 / 字段覆盖 / 去重健康 / 跨来源碰撞 / 未知模型"]:::meas
+  end
+  subgraph INF["推断侧 · 四 lens"]
+    L1["L1 漂移快照 ✅<br/>inference_doctor.scan_inference()<br/>只读尾部 · 跑一次 classify_state"]:::inf
+    L2["L2 准确率回测 ✅<br/>inference_backtest.backtest()<br/>时间旅行 · 用未来当 oracle"]:::inf
+    L3["L3 事件完整性回放 🔲<br/>全量喂 derive_events · 0 违例"]:::todo
+    L4["L4 打扰预算 🔲<br/>回放 decide() · 一周会震 N 次"]:::todo
+  end
+  DOC -.->|"同一种精神"| L1
+  L1 --> L2 --> L3 --> L4
+      </div>
+    </div>
+    <div class="figcap"><code>tokmon doctor</code> 现在跑<b>两半</b>（测量 + 推断 L1）；<code>/doctor</code> + <code>/backtest</code> 页 + <code>backtest</code> CLI 子命令。</div>
+
+    <div class="grid2">
+      <div>
+        <h3 class="sub">L1 漂移快照 —— 8 条载重假设（已交付）</h3>
+        <ul class="clean tight">
+          <li>时钟：末条消息 ts vs mtime（实测 25/48 偏离 → 证明不能用 mtime）</li>
+          <li>行类型漂移 · stop_reason 完整性 · 挂起判定（尾部位置）</li>
+          <li>thinking 可用性 · 打断形态 · 标题覆盖 · UNKNOWN 率</li>
+        </ul>
+        <p class="muted">首跑即抓修 3 件真事：<code>custom-title</code> 优先、<code>max_tokens</code> 判为「自动续写中」、thinking 约 29% 末段非空 → 改为优先显示真实思考。doctor warns 3→0。</p>
+      </div>
+      <div>
+        <h3 class="sub">L2 准确率回测 —— 时间旅行（已交付，超出原路线图）</h3>
+        <ul class="clean tight">
+          <li>在截断点 <code>i</code> 让分类器「回到过去」，用 <code>msgs[i+1]</code> 的未来当真值</li>
+          <li>三套 oracle：<code>strict / medium / lenient</code></li>
+          <li>混淆矩阵 + 两个危险格：<b class="hi">过度乐观</b>（说在干活其实早停）· <b class="hi">假完成</b>（说完事其实在跑）</li>
+          <li><b class="hi">吃自己的狗粮</b>：判不了真值的样本单列「不可判」，绝不掺进准确率分母</li>
+        </ul>
+      </div>
+    </div>
+    <div class="callout star"><span class="ico">🩺</span><div>
+      <b>为什么这是最高杠杆？</b>在已经「基于推断行动」之后，最该做的不是再加一层，而是先确认下面没有空心。
+      L3（事件完整性）与 L4（打扰预算）尚未落地——L4 一旦做好，会直接产出「过去一周手机会震 N 次」的预调参表，成为接手机的理性起点。
+    </div></div>
+  </section>
+
+  <!-- ============ 11 进化史 ============ -->
+  <section class="page" id="evolution">
+    <div class="kicker"><span class="dot" style="color:#f08fb0"></span>元 · Evolution</div>
+    <h1 class="pt">进化史 <span class="alt">总览 · 里程碑</span></h1>
+    <div class="lead evo">
+      一条清晰的进化线：从<b class="hi">「我烧了多少 token」</b>的个人小工具（tokmon v0），长成<b class="hi">「它在推进/卡住/烧钱/乱改吗」</b>
+      的运维平台（Mission Control M0→M4.5）。每一步都是<b class="hi">能独立交付、默认不烦</b>的完整切片，且都先问北极星、先验证不误报。
+    </div>
+
+    <div class="diagram">
+      <div class="mermaid">
+timeline
+  title tokmon → Claude Mission Control · 进化时间线
+  section tokmon · 成本支柱
+    v0.1 雏形 : 只读 transcript : main/subagent/workflow 三分 : 家族定价+缓存倍率 : watch + report
+    v0.2 项目身份 : cwd→.vscode 子文件夹 : 逐记录归属修正33.7M : 单测起步
+    v0.3 数据契约体检 : tokmon doctor : 0 跨来源碰撞 : 退役技术债三
+  section Mission Control · 平台脊柱
+    M0 地基 : serve 外壳 : /tokens + /processes
+    M1 活动支柱 : 尾部推断五状态 : /sessions : 零通知
+    M2 事件总线 : events + 两层幂等 : 支柱无关
+    M3 通知层 : decide 策略 : Telegram 出站 : 默认不外发
+    M3.5 预算告警 : cost_source : 70/90/100% : UI 可设
+  section 过卢比孔河 · 行动与固信
+    M4 控制层 : 官方 hook 远程审批 : P7 五护栏 : 补上真实 PERMISSION_NEEDED
+    M4.5 固信 : L1 漂移 ✅ : L2 回测 ✅ : L3/L4 待做
+  section 前方
+    舰队驾驶舱 : N 个并行 agent : 多机与云 : 手机成 hub
+    语义层暂缓 : 结构→语义 : 守 local-first
+    风险事件backlog : 乱改象限
+      </div>
+    </div>
+
+    <h2 class="sec">里程碑账本（权威 · 含代码实测校正）</h2>
+    <table class="tbl">
+      <thead><tr><th class="m">阶段</th><th>交付</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td class="m">v0.1–0.3</td><td>tokmon 成本内核：解析/去重/定价/聚合 + watch/report/doctor/serve</td><td><span class="tag ok">✅</span></td></tr>
+        <tr><td class="m">M0</td><td>serve 外壳，主页分流 /tokens + /processes（含「vs 上一周期」自基线）</td><td><span class="tag ok">✅</span></td></tr>
+        <tr><td class="m">M1</td><td>activity 尾部推断五状态，/sessions 左栏雏形，零通知</td><td><span class="tag ok">✅</span></td></tr>
+        <tr><td class="m">M2</td><td>events 总线 + activity_source，两层幂等，支柱零改动即可挂上</td><td><span class="tag ok">✅</span></td></tr>
+        <tr><td class="m">M3</td><td>notify.decide 策略 + Telegram 出站，默认全关、内容最小化</td><td><span class="tag ok">✅</span></td></tr>
+        <tr><td class="m">M3.5</td><td>cost_source 预算告警 70/90/100%，/tokens 可直接设预算</td><td><span class="tag ok">✅</span></td></tr>
+        <tr><td class="m">M4 v0</td><td>control 官方 hook 远程审批 + P7 五护栏 + 真实 PERMISSION_NEEDED</td><td><span class="tag ok">✅</span></td></tr>
+        <tr><td class="m">M4.5 (a)</td><td>推断 doctor L1 漂移快照（8 lens，首跑抓修 3 件真事）</td><td><span class="tag ok">✅</span></td></tr>
+        <tr><td class="m">M4.5 (a)</td><td><b>L2 准确率回测</b>（backtest + 三 oracle + 混淆矩阵 + backtest CLI/页）</td><td><span class="tag ok">✅ 已交付*</span></td></tr>
+        <tr><td class="m">M4.5</td><td>L3 事件完整性回放 · L4 打扰预算</td><td><span class="tag todo">🔲 待做</span></td></tr>
+        <tr><td class="m">M4.5 (b)</td><td>Pushover/Email 手机闭环（替代 Telegram 先出）</td><td><span class="tag todo">🔲 待做</span></td></tr>
+        <tr><td class="m">下一大赌注</td><td>舰队驾驶舱（N 个并行 agent / 多机 / 云）</td><td><span class="tag todo">🔲 信任锁死后</span></td></tr>
+        <tr><td class="m">暂缓</td><td>语义层（结构状态→语义，威胁原则 1，显式推迟）</td><td><span class="tag todo">🔲 deferred</span></td></tr>
+        <tr><td class="m">backlog</td><td>风险事件（REPEATED_FILE_EDIT / LARGE_DIFF / SENSITIVE_* / ERROR_SPIKE）</td><td><span class="tag todo">🔲 「乱改」象限</span></td></tr>
+      </tbody>
+    </table>
+    <div class="callout"><span class="ico">📝</span><div><b>* 代码实测校正：</b>文档（MISSION_CONTROL §9 / M4.5_PLAN）记 L2/L3/L4 均「待做」，但代码里 <code>inference_backtest.py</code> 的 <b>L2 已完整实现</b>（<code>backtest()</code>、三 oracle、混淆矩阵、over_optimism/false_completion 危险格、judgeable/unjudgeable 拆分），并已接入 <code>backtest</code> CLI 子命令与 <code>/backtest</code> 页。此图谱按<b>代码真相</b>标注——正是本项目「真实优先」原则的体现。</div></div>
+  </section>
+
+  <!-- ============ 12 原则与不变量 ============ -->
+  <section class="page" id="principles">
+    <div class="kicker"><span class="dot" style="color:#cdb4ff"></span>元 · Principles</div>
+    <h1 class="pt">原则与不变量 <span class="alt">总览 · 宪章</span></h1>
+    <div class="lead prin">
+      这一页是整座塔的<b class="hi">地基与护栏</b>。两个北极星定方向，八条原则定优先级，
+      内核 I1–I6 与平台 P1–P7 定「不可破坏的边界」，非目标抵御功能蔓延。<b class="hi">每加一个东西，先问北极星。</b>
+    </div>
+
+    <div class="grid2">
+      <div class="callout star"><span class="ico">🧭</span><div><b>tokmon 北极星：</b>让我对「用 Claude Code vibe coding 烧了多少 token / 等价多少钱」，从「完全没感觉」变成「随手可见、心里有数、能复盘」。</div></div>
+      <div class="callout star"><span class="ico">🛰</span><div><b>平台北极星：</b>当 Claude Code 替我 agentic coding 时，让我随时知道它在<b>推进/卡住/烧钱/乱改</b>，并只在<b>重要时刻、用恰当方式</b>提醒我——<b>有用，且不烦</b>。</div></div>
+    </div>
+
+    <h2 class="sec">八条设计原则（冲突时上位优先）</h2>
+    <div class="cards">
+      <div class="card"><h4>1 · 真实优先</h4><p>数字/状态/风险必须可被信任。宁可显示「未知」也不悄悄报错。误报会摧毁信任。</p></div>
+      <div class="card"><h4>2 · 永不自动干预</h4><p>三支柱永远纯只读。控制是单独一层，只在你显式下达、经审计时动手。</p></div>
+      <div class="card"><h4>3 · 本地优先</h4><p>默认一切在本机。通知是唯一外发能力，默认关、内容最小化。</p></div>
+      <div class="card"><h4>4 · 渐进可降级</h4><p>缺某数据源 → 那个支柱降级而非全局崩。单点异常不拖垮全局。</p></div>
+      <div class="card"><h4>5 · 判断 ≠ 打扰</h4><p>平台的灵魂：监控层判断「发生了什么」，通知层决定「该不该打扰」。</p></div>
+      <div class="card"><h4>6 · 有用且不烦</h4><p>默认静默。靠严重度 + 静默时段 + 去抖让重要浮上来、噪音沉下去。</p></div>
+      <div class="card"><h4>7 · 支柱独立</h4><p>token/进程/活动各有内核，互不污染。平台只在事件总线汇合。</p></div>
+      <div class="card"><h4>8 · 小步进化</h4><p>每个版本都能独立交付价值，且默认不打扰——先「有用且不烦」，再谈丰富。</p></div>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <h2 class="sec">平台不变量 P1–P7</h2>
+        <ul class="clean tight">
+          <li><b class="hi">P1</b> 监控只读（不改文件/配置/行为，不自动点 permission）</li>
+          <li><b class="hi">P2</b> 判断与打扰分离（监控层永不直接调通道）</li>
+          <li><b class="hi">P3</b> 事件是唯一契约（不绕过读原始信号）</li>
+          <li><b class="hi">P4</b> 支柱独立（内核互不 import，只在总线汇合）</li>
+          <li><b class="hi">P5</b> 默认静默、默认不外发</li>
+          <li><b class="hi">P6</b> 误报零容忍倾向（拿不准就降级/不发）</li>
+          <li><b class="hi">P7</b> 控制层守则（allow-list + 显式 + 鉴权 + 审计 + 失败安全）</li>
+        </ul>
+      </div>
+      <div>
+        <h2 class="sec">非目标（抵御蔓延）</h2>
+        <ul class="clean tight">
+          <li>❌ 不自动干预 coding（永不自动批/改/kill）</li>
+          <li>❌ 不什么都通知（噪音通知是负价值）</li>
+          <li>❌ 不默认外发敏感内容（命令行/代码/diff/路径）</li>
+          <li>❌ 不 hook / 不拦截 Claude Code（只读 transcript + 看进程）</li>
+          <li>❌ 不做账单对账（算等价用量价值，非真实账单）</li>
+          <li>❌ 不做团队 SaaS / 多租户（给「我自己」的本地工具）</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="callout"><span class="ico">🎁</span><div><b>一句话给未来的自己：</b>别把它做成一个炫的 dashboard 集合。它在替我跑的时候，让我知道它在<b>推进/卡住/烧钱/乱改</b>，
+    并且只在<b>重要时刻</b>、用<b>恰当方式</b>提醒我，其余时候<b>安静</b>。每加一个东西，先问：这让那件事更清楚、或那次打扰更精准了吗？不是，就先别加。</div></div>
+  </section>
+
+  </div>
+
+  <footer>
+    <span>🛰 Claude Mission Control · 系统结构与进化图谱</span>
+    <span class="sep">·</span><span>生成于 2026-07-01</span>
+    <span class="sep">·</span><span>本地离线自包含 · 只读文档</span>
+    <span class="sep">·</span><span>数据源：NORTH_STAR / MISSION_CONTROL / M4.5_PLAN / CHANGELOG + 全量源码实测</span>
+  </footer>
+</div>
+
+<script>/*__MERMAID_LIB__*/</script>
+<script>
+  mermaid.initialize({
+    startOnLoad:false, theme:'dark', securityLevel:'loose',
+    flowchart:{ curve:'basis', htmlLabels:true, padding:14, nodeSpacing:48, rankSpacing:58, useMaxWidth:true },
+    sequence:{ useMaxWidth:true, wrap:true },
+    themeVariables:{
+      fontFamily:'"Segoe UI",system-ui,sans-serif', fontSize:'14px',
+      lineColor:'#5a6f8c', textColor:'#c7d3e3',
+      primaryColor:'#1b2430', primaryBorderColor:'#3a4a5f', primaryTextColor:'#d7e2f0'
+    }
+  });
+
+  const PAGES = ['overview','dataflow','layers','cost','process','activity','events','notify','control','doctor','evolution','principles'];
+  const GROUPS = {overview:'概览',dataflow:'概览',layers:'概览',cost:'三支柱',process:'三支柱',activity:'三支柱',
+    events:'脊柱',notify:'脊柱',control:'脊柱',doctor:'固信',evolution:'元',principles:'元'};
+  const items = [...document.querySelectorAll('.nav-item')];
+  const main = document.querySelector('.main');
+  const prevBtn = document.getElementById('prev'), nextBtn = document.getElementById('next');
+  let cur = 'overview';
+
+  function renderMermaid(pageEl){
+    const blocks = [...pageEl.querySelectorAll('.mermaid:not([data-processed])')];
+    if(blocks.length){
+      try { mermaid.run({ nodes: blocks }); }
+      catch(e){ console.error('mermaid render error', e); }
+    }
+  }
+  function show(id, push){
+    if(!PAGES.includes(id)) id = 'overview';
+    cur = id;
+    document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active', p.id===id));
+    items.forEach(n=>n.classList.toggle('active', n.dataset.target===id));
+    const pg = document.getElementById(id);
+    renderMermaid(pg);
+    const i = PAGES.indexOf(id);
+    document.getElementById('prog').textContent = String(i+1).padStart(2,'0') + ' / 12';
+    document.getElementById('crumb-group').textContent = GROUPS[id];
+    const active = items.find(n=>n.dataset.target===id);
+    document.getElementById('crumb-page').textContent = active ? active.textContent.replace(/\d+$/,'').trim() : id;
+    prevBtn.disabled = i===0; nextBtn.disabled = i===PAGES.length-1;
+    main.scrollTo({top:0, behavior:'instant'});
+    if(push!==false) history.replaceState(null,'','#'+id);
+  }
+  items.forEach(n=>n.addEventListener('click',()=>show(n.dataset.target)));
+  prevBtn.addEventListener('click',()=>{const i=PAGES.indexOf(cur); if(i>0) show(PAGES[i-1]);});
+  nextBtn.addEventListener('click',()=>{const i=PAGES.indexOf(cur); if(i<PAGES.length-1) show(PAGES[i+1]);});
+  document.addEventListener('keydown',e=>{
+    if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
+    if(e.key==='ArrowLeft'){const i=PAGES.indexOf(cur); if(i>0) show(PAGES[i-1]);}
+    if(e.key==='ArrowRight'){const i=PAGES.indexOf(cur); if(i<PAGES.length-1) show(PAGES[i+1]);}
+  });
+  document.querySelectorAll('.jump').forEach(a=>a.addEventListener('click',e=>{
+    e.preventDefault(); show(a.getAttribute('href').slice(1));
+  }));
+
+  const start = (location.hash||'').slice(1);
+  show(PAGES.includes(start)?start:'overview', false);
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+# 可选: 仅用于更漂亮的终端表格 / 实时 TUI。
+# 不装也能跑 (自动降级为纯文本)。
+rich>=13.0
+
+# 可选: psutil —— /processes 进程/端口监控与终止。不装则该页提示安装, 其余功能不受影响。
+psutil>=5.9
+
+# S1-v2 steer: 平台自驱会话 + canUseTool 拿「远程多选按钮」(RUNNER_SDK_PLAN)。
+# NORTH_STAR 的「零额外依赖」偏好在此**有意破例** —— 换的是「真·多选按钮」这个硬需求:
+# 只有 SDK 的 canUseTool 能拦下 AskUserQuestion 并把你的选择塞回会话 (`claude -p` 结构上做不到)。
+# 不装则 /control 的 steer 明确报「Agent SDK 未安装」, 看板其余部分照常。
+claude-agent-sdk>=0.2
