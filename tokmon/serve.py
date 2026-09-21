@@ -15,17 +15,19 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import activity, billing, control, notify, procmon, remote, runner
+from . import activity, billing, control, notify, procmon, remote, runner, trace
 from .aggregate import Agg, filter_since, group_by, summarize
 from .event_sources import activity_source, cost_source
 from .events import bus as event_bus
 from .parser import load_records
+from .pricing import cost_usd
 from .util import parse_since
 
 SCOPE_KINDS = {
@@ -313,6 +315,163 @@ def _backtest_status(base: Path, days: int = 7) -> dict:
     return {"days": days, "oracles": out}
 
 
+# ---- /workflow: 工作流回放 (WORKFLOW_TAB_PLAN S1) ----
+# trace 支柱只出结构、时间、token 分项; 这里在 serve 层汇合三样它刻意不碰的东西 (P4):
+#   ① $ —— 按模型用 pricing.cost_usd 换算 (I3 定价集中, 不复制单价);
+#   ② 脱敏 —— 先把本服务**自己知道的密钥原值**精确打码 (控制令牌 / 通知 token / 厂商 admin key),
+#      再走 procmon 的模式脱敏 (尽力而为, 不是安全边界);
+#   ③ 运行态 —— 取 activity 快照 (**必须带进程存活索引**: activity 的 2s 快照缓存是全局共享的,
+#      不带 live 的调用会把一帧没有存活信息的结果喂给 /sessions 与事件 pump —— 对抗式 review 实测的回归)。
+_WF_WINDOWS = {"7d": 7 * 86400, "30d": 30 * 86400}
+_WF_TEXT_FIELDS = ("label", "sub", "text", "detail", "note")
+_WF_SECRET_KEY = re.compile(r"(?i)(token|api[-_]?key|secret|passw(or)?d|pwd|auth(?!or)|bearer|cookie|credential"
+                            r"|private[-_]?key|session[-_]?key|access[-_]?key)")
+_WF_SECRETS = {"t": 0.0, "vals": ()}
+
+
+def _wf_since(key: str):
+    if key == "all":
+        return None
+    if key == "today":
+        now = datetime.now()
+        return now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    return time.time() - _WF_WINDOWS.get(key, 7 * 86400)
+
+
+def _wf_running(base) -> set:
+    """正在跑的会话: WORKING / PROCESSING, 或挂着一个等你的调用 (AskUserQuestion / ExitPlanMode)。"""
+    try:
+        snap = activity.snapshot(base, live=procmon.live_claude_index())
+    except Exception:
+        return set()
+    out = set()
+    for x in snap.get("sessions", []):
+        st = x.get("state")
+        if st in ("WORKING", "PROCESSING") or (
+                st == "AMBIGUOUS_PENDING" and x.get("pending_tool_name") in trace.HUMAN_WAIT_TOOLS):
+            out.add(x.get("session_id"))
+    return out
+
+
+def _wf_cost(tokens):
+    """在 token 分项上原地补 cost / unpriced (按模型分别换算; 未知模型如实标出, 不瞎估)。"""
+    if not isinstance(tokens, dict) or "by_model" not in tokens:
+        return
+    total, unknown = 0.0, False
+    for model, v in tokens["by_model"].items():
+        c, known = cost_usd(model, v[0], v[1], v[2], v[3], v[4])
+        total += c
+        unknown = unknown or (not known and sum(v) > 0)   # 0 token 的 <synthetic> 占位消息不算「未知单价」
+    tokens["cost"] = round(total, 4)
+    tokens["unpriced"] = unknown
+    tokens.pop("by_model", None)                 # 前端不需要按模型的原始数组
+
+
+def _wf_known_secrets() -> tuple:
+    """本服务自己持有的密钥原值 (30s 缓存)。transcript 里一旦出现 (比如测试时打印过), 回放页绝不原样送出。"""
+    now = time.time()
+    if now - _WF_SECRETS["t"] < 30:
+        return _WF_SECRETS["vals"]
+    vals = [control.plane.token]
+    try:
+        n = notify.get_notifier()
+        if n is not None:
+            vals += [n.cfg.telegram_token, n.cfg.pushover_token, n.cfg.pushover_user]
+    except Exception:
+        pass
+    try:
+        vals += list(billing.load_keys().values())
+    except Exception:
+        pass
+    out = tuple(sorted({v for v in vals if isinstance(v, str) and len(v) >= 8}, key=len, reverse=True))
+    _WF_SECRETS.update(t=now, vals=out)
+    return out
+
+
+def _wf_red(v):
+    if not isinstance(v, str) or not v:
+        return v
+    for sec in _wf_known_secrets():
+        if sec in v:
+            v = v.replace(sec, "***")
+    return procmon._redact(v)
+
+
+def _wf_red_obj(v, key: str = ""):
+    """结构化数据的脱敏: 字段名像密钥 (password / apiKey / token …) 的值整个打码, 其余字符串走 _wf_red。"""
+    if isinstance(v, dict):
+        return {k: _wf_red_obj(x, str(k)) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_wf_red_obj(x, key) for x in v]
+    if key and _WF_SECRET_KEY.search(key) and isinstance(v, (str, int, float)) and not isinstance(v, bool) \
+            and v not in ("", None):
+        return "***"
+    return _wf_red(v) if isinstance(v, str) else v
+
+
+def _wf_scrub_tree(node):
+    """整棵树: 文字脱敏 + token 换算 $。就地修改。"""
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        for f in _WF_TEXT_FIELDS:
+            if f in n:
+                n[f] = _wf_red(n[f])
+        m = n.get("meta")
+        if isinstance(m, dict):
+            m.pop("preview", None)               # 页面不用预览 (明细按需取原文并脱敏) —— 少送一份原文
+            m.pop("key", None)                   # 归一键只在后端判重复用, 可能含原始命令/参数
+            if "instruction" in m:
+                m["instruction"] = _wf_red(m["instruction"])
+        _wf_cost(n.get("tokens"))
+        stack.extend(n.get("children") or [])
+
+
+def _wf_scrub_summary(sm):
+    for f in ("prompt", "prompt_full"):
+        if f in sm:
+            sm[f] = _wf_red(sm[f])
+    for m in sm.get("moments") or []:
+        m["label"] = _wf_red(m.get("label"))
+    _wf_cost(sm.get("tokens"))
+    return sm
+
+
+def _wf_tasks(base, q) -> dict:
+    since = _wf_since((q.get("since") or ["7d"])[0])
+    project = (q.get("project") or [""])[0] or None
+    rows = trace.list_tasks(base, since=since, project=project, running_sessions=_wf_running(base))
+    for r in rows:
+        _wf_scrub_summary(r)
+    return {"tasks": rows}
+
+
+def _wf_task(base, q) -> dict:
+    tid = (q.get("id") or [""])[0]
+    built = trace.get_task(tid, base, running_sessions=_wf_running(base)) if tid else None
+    if not built:
+        return {"error": "找不到这个任务 (可能已超出缓存或会话文件被移走)"}
+    tree = built["tree"]
+    _wf_scrub_tree(tree)
+    return {"summary": _wf_scrub_summary(built["summary"]), "tree": tree}
+
+
+def _wf_call(base, q) -> dict:
+    tid, cid = (q.get("task") or [""])[0], (q.get("call") or [""])[0]
+    d = trace.get_call_detail(tid, cid, base) if tid and cid else None
+    if not d:
+        return {"error": "找不到这个调用"}
+    return {k: _wf_red_obj(v) for k, v in d.items()}
+
+
+def _wf_text(base, q) -> dict:
+    tid, nid = (q.get("task") or [""])[0], (q.get("node") or [""])[0]
+    d = trace.get_text_detail(tid, nid, base) if tid and nid else None
+    if not d:
+        return {"error": "找不到这段文字"}
+    return {"kind": d["kind"], "text": _wf_red(d["text"])}
+
+
 def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
     rcfg = rcfg or remote.RemoteConfig()          # 默认 = 本机模式 (零行为变化)
     throttle = remote.LoginThrottle()
@@ -378,7 +537,8 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
         def do_HEAD(self):
             # 让健康探测识别本服务为「存活」(返回状态、无 body), 而非 BaseHTTPRequestHandler 默认的 501。
             known = {"/", "/tokens", "/processes", "/sessions", "/notify", "/control", "/doctor", "/backtest",
-                     "/billing",
+                     "/billing", "/workflow", "/api/workflow/tasks", "/api/workflow/task", "/api/workflow/call",
+                     "/api/workflow/text",
                      "/api/summary", "/api/processes", "/api/health", "/api/sessions", "/api/events",
                      "/api/notifications", "/api/notify-test", "/api/control", "/api/budget", "/api/doctor",
                      "/api/backtest", "/api/billing"}
@@ -396,7 +556,7 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
             parsed = urlparse(self.path)
             path = parsed.path
             # 主页分流: / 主页 -> /tokens 现有看板 + /processes 进程监控 (并行同级)
-            pages = {"/": HOME, "/tokens": PAGE, "/processes": PROC_PAGE,
+            pages = {"/": HOME, "/tokens": PAGE, "/processes": PROC_PAGE, "/workflow": WORKFLOW_PAGE,
                      "/sessions": SESS_PAGE, "/notify": NOTIFY_PAGE, "/control": CONTROL_PAGE,
                      "/doctor": DOCTOR_PAGE, "/backtest": BACKTEST_PAGE, "/billing": BILLING_PAGE}
             if path in pages:
@@ -409,6 +569,18 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
                 return
             # 读 API 统一过读门: 远程模式下它们同样吐会话正文/花费, 不能比页面松
             if path.startswith("/api/") and not self._read_guard():
+                return
+            if path == "/api/workflow/tasks":
+                self._json(lambda: _wf_tasks(base, parse_qs(parsed.query)))
+                return
+            if path == "/api/workflow/task":
+                self._json(lambda: _wf_task(base, parse_qs(parsed.query)))
+                return
+            if path == "/api/workflow/call":
+                self._json(lambda: _wf_call(base, parse_qs(parsed.query)))
+                return
+            if path == "/api/workflow/text":
+                self._json(lambda: _wf_text(base, parse_qs(parsed.query)))
                 return
             if path == "/api/billing":
                 self._json(billing.status)          # 只回聚合数字, 绝不含 key
@@ -584,19 +756,19 @@ def run_serve(base: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     activity_source.start_pump(Path(base), live_factory=procmon.live_claude_index)   # M2: 对话活动事件 pump (5s, 带活性消歧)
     cost_source.start_pump(Path(base))        # M3.5: 成本预算 pump (60s)
     billing.start_pump()                      # B1: 厂商账单 pump (5min; 未配 key 则零外发)
+    trace.start_warmer(Path(base))            # /workflow: 后台把 transcript 读进缓存 + 算耗时基线 (冷启动约 6-10s)
     notifier = notify.start_notifier()        # M3: 通知层订阅总线 (默认仅本地, 配 token 才外发)
     httpd = ThreadingHTTPServer((host, port), _make_handler(Path(base), rcfg))
     url = f"http://{host}:{port}/"
-    _chans = [c for c, ok in (("Telegram", notifier.cfg.telegram_configured()),
-                              ("Pushover", notifier.cfg.pushover_configured())) if ok]
-    tg = (" + ".join(_chans) + " 出站已配置") if _chans else \
-        "默认仅本地 (Pushover: MC_PUSHOVER_TOKEN/USER 或 Telegram: MC_TELEGRAM_TOKEN/CHAT_ID)"
     scope = "远程模式: 读页也要令牌" if rcfg.enabled else "只监听本机"
     print(f"Claude Mission Control 已启动 ({scope}):  {url}")
     print(f"  · 对话/Session 状态  {url}sessions")
-    print(f"  · 通知 / 规则         {url}notify   ({tg})")
-    print(f"  · 远程审批 / 控制      {url}control  (默认本地; 装 hook + 开远程模式才路由)")
     print(f"  · Token 看板         {url}tokens")
+    print(f"  · 工作流回放          {url}workflow  (一次提问怎么被完成的: 调用树 + 时间轴)")
+    _chans = [c for c, ok in (("Telegram", notifier.cfg.telegram_configured()),
+                              ("Pushover", notifier.cfg.pushover_configured())) if ok]
+    if _chans:
+        print(f"  ⚠ 外发通道已配置: {' + '.join(_chans)} —— 会话事件会推到手机 (通知页已从导航隐藏, 仍可访问 {url}notify)")
     print(f"  · 进程/端口监控       {url}processes" + ("" if procmon.available() else "   (缺 psutil, 该页会提示安装)"))
     print(f"  · 体检 (doctor)       {url}doctor   (成本契约 + 推断契约, 对真相校验)")
     print(f"  控制令牌 (页面首次开控制模式/终止进程时粘贴一次, 之后存浏览器): {control.plane.token}")
@@ -736,7 +908,7 @@ PAGE = r"""<!doctype html>
 </head>
 <body>
 <header>
-  <h1><a href="/" style="color:var(--dim);text-decoration:none;margin-right:6px" title="返回监控台主页">←</a>tokmon <span>Token 看板 · 早期预览</span></h1>
+  <h1><a href="/" style="color:var(--dim);text-decoration:none;margin-right:6px" title="返回监控台主页">←</a>tokmon <span>Token 看板 · 早期预览</span> <a href="/workflow" style="font-size:13px;margin-left:10px;font-weight:400">钱花在哪 → 工作流回放</a></h1>
   <div class="controls">
     <select id="since" title="时间窗口">
       <option value="today">今天</option>
@@ -793,12 +965,13 @@ function hitRate(a){
   return denom > 0 ? a.cache_read/denom : null;   // 命中率 = 缓存读 / (缓存读+缓存写+输入)
 }
 
-function barList(rows){
+function barList(rows, link){
   if(!rows.length) return `<div class="muted">无数据</div>`;
   const m = Math.max(1, ...rows.map(r=>r.tokens));
   return `<div class="bars">` + rows.map(r=>`
     <div class="bar-row">
-      <span class="lbl" title="${esc(r.label)}">${esc(r.label)}</span>
+      ${link ? `<a class="lbl" href="${link(r.label)}" title="看 ${esc(r.label)} 的任务回放 →" style="color:inherit">${esc(r.label)} ↗</a>`
+             : `<span class="lbl" title="${esc(r.label)}">${esc(r.label)}</span>`}
       <div class="bar-track"><div class="bar-fill" style="width:${(r.tokens/m*100).toFixed(1)}%"></div></div>
       <span>${fmtTokens(r.tokens)} · ${fmtUsd(r.cost)}${r.any_unpriced?'<span class="warn">*</span>':''}</span>
     </div>`).join("") + `</div>`;
@@ -891,7 +1064,7 @@ function render(d){
   $("#app").innerHTML = `
     <div class="kpis">${kpiHtml}</div>
     <div class="card"><h2>按天</h2>${barList(d.by_day)}</div>
-    <div class="card"><h2>按项目</h2>${barList(d.by_project)}</div>
+    <div class="card"><h2>按项目 <span class="muted" style="font-size:12px;font-weight:400">点项目名看它的任务回放</span></h2>${barList(d.by_project, l => '/workflow?project=' + encodeURIComponent(l) + '&since=' + ({today:'today','24h':'7d','7d':'7d','2w':'30d',all:'all'}[$("#since").value] || '7d'))}</div>
     ${projectDeltaCard(d.project_deltas, hasB)}
     <div class="card"><h2>按模型</h2>${tableOf(d.by_model)}</div>
     <div class="card"><h2>按来源 (main / subagent / workflow)</h2>${tableOf(d.by_source)}</div>
@@ -1012,15 +1185,10 @@ HOME = r"""<!doctype html>
       <h2>Token 看板 →</h2>
       <p>Claude Code 烧了多少 token / 等价多少钱: 按天/项目/模型/来源, 带「vs 上一周期」自基线对比。</p>
     </a>
-    <a class="tile" href="/notify">
-      <div class="ico">🔔</div>
-      <h2>通知 / 规则 →</h2>
-      <p>把"重要时刻"主动推到手机 (Telegram, 出站): 严重度门控 + 静默时段 + 去抖 + 限流。默认仅本地, 配 token 才外发。</p>
-    </a>
-    <a class="tile" href="/control">
-      <div class="ico">🎛️</div>
-      <h2>远程审批 / 控制 →</h2>
-      <p>从网页/手机批准·拒绝 Claude Code 的 permission (经官方 hook, 非按键注入)。默认本地弹窗; 开「远程模式」才路由。失败一律回退本地。</p>
+    <a class="tile" href="/workflow">
+      <div class="ico">🧭</div>
+      <h2>工作流回放 →</h2>
+      <p>一次提问是怎么被完成的: 调了哪些 skill / 工具 / MCP / 子 agent / workflow, 各花多少时间和 token, 哪里失败、打转、等你。</p>
     </a>
     <a class="tile" href="/billing">
       <div class="ico">🧾</div>
@@ -1099,7 +1267,7 @@ PROC_PAGE = r"""<!doctype html>
 <header>
   <h1>进程 / 端口监控 <span>只读 · 本机 (终止需开控制模式)</span></h1>
   <div class="nav">
-    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/notify">通知</a><a href="/control">控制</a><a href="/tokens">Token 看板</a><a href="/processes" class="active">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
+    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/tokens">Token 看板</a><a href="/workflow">工作流</a><a href="/processes" class="active">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
   </div>
 </header>
 <main>
@@ -1371,7 +1539,7 @@ SESS_PAGE = r"""<!doctype html>
 <header>
   <h1>Session 状态 <span>Mission Control · M1 先看见, 不通知</span></h1>
   <div class="nav">
-    <a href="/">主页</a><a href="/sessions" class="active">Session 状态</a><a href="/notify">通知</a><a href="/control">控制</a><a href="/tokens">Token 看板</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
+    <a href="/">主页</a><a href="/sessions" class="active">Session 状态</a><a href="/tokens">Token 看板</a><a href="/workflow">工作流</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
   </div>
 </header>
 <main>
@@ -1615,7 +1783,7 @@ NOTIFY_PAGE = r"""<!doctype html>
 <header>
   <h1>通知 / 规则 <span>Mission Control · M3 · 出站推送 (有用且不烦)</span></h1>
   <div class="nav">
-    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/notify" class="active">通知</a><a href="/control">控制</a><a href="/tokens">Token 看板</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
+    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/tokens">Token 看板</a><a href="/workflow">工作流</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
   </div>
 </header>
 <main>
@@ -1729,7 +1897,7 @@ CONTROL_PAGE = r"""<!doctype html>
 <header>
   <h1>远程审批 / 控制 <span>Mission Control · M4 · 你显式下达, 全程审计, 失败回退本地</span></h1>
   <div class="nav">
-    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/notify">通知</a><a href="/control" class="active">控制</a><a href="/tokens">Token 看板</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
+    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/tokens">Token 看板</a><a href="/workflow">工作流</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
   </div>
 </header>
 <main>
@@ -1900,7 +2068,7 @@ DOCTOR_PAGE = r"""<!doctype html>
 <header>
   <h1>体检 / doctor <span>Mission Control · M4.5 · 对真相校验, 让格式漂移可被发现</span></h1>
   <div class="nav">
-    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/notify">通知</a><a href="/control">控制</a><a href="/tokens">Token 看板</a><a href="/processes">进程监控</a><a href="/doctor" class="active">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
+    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/tokens">Token 看板</a><a href="/workflow">工作流</a><a href="/processes">进程监控</a><a href="/doctor" class="active">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
   </div>
 </header>
 <main>
@@ -1957,7 +2125,7 @@ BACKTEST_PAGE = r"""<!doctype html>
 <header>
   <h1>准确率回测 / L2 <span>用 transcript 的未来当真值 · 三把尺并排, 你分别评测</span></h1>
   <div class="nav">
-    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/notify">通知</a><a href="/control">控制</a><a href="/tokens">Token 看板</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest" class="active">回测</a><a href="/billing">厂商账单</a>
+    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/tokens">Token 看板</a><a href="/workflow">工作流</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest" class="active">回测</a><a href="/billing">厂商账单</a>
   </div>
 </header>
 <main>
@@ -2033,7 +2201,7 @@ BILLING_PAGE = r"""<!doctype html>
 <header>
   <h1>厂商账单 / billing <span>OpenAI · Anthropic 的真实 API 平台开销 (官方 usage/cost API)</span></h1>
   <div class="nav">
-    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/notify">通知</a><a href="/control">控制</a><a href="/tokens">Token 看板</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing" class="active">厂商账单</a>
+    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/tokens">Token 看板</a><a href="/workflow">工作流</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing" class="active">厂商账单</a>
   </div>
 </header>
 <main>
@@ -2127,3 +2295,18 @@ setInterval(load, 60000);
 </script>
 </body></html>
 """.replace("__BASE__", _BASE_CSS)
+
+
+# ---- /workflow 页面 (独立文件, 不再往本文件里内联 —— RECAP 侧批 #6) ----
+def _load_page(name: str) -> str:
+    nav = ('<a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/tokens">Token 看板</a>'
+           '<a href="/workflow" class="active">工作流</a><a href="/processes">进程监控</a><a href="/doctor">体检</a>'
+           '<a href="/backtest">回测</a><a href="/billing">厂商账单</a>')
+    try:
+        src = (Path(__file__).parent / "pages" / name).read_text(encoding="utf-8")
+    except OSError:
+        return f"<h1>页面文件缺失: tokmon/pages/{name}</h1>"
+    return src.replace("__BASE__", _BASE_CSS).replace("__NAV__", nav)
+
+
+WORKFLOW_PAGE = _load_page("workflow.html")

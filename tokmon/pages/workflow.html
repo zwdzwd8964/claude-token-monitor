@@ -1,0 +1,822 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>工作流回放</title>
+<style>__BASE__
+  :root { --machine:#7aa2f7; --model:#bb9af7; --wait:#e0af68; --tree:minmax(300px,46%); }
+  html, body { height:100%; }
+  body { display:flex; flex-direction:column; overflow:hidden; }
+  header { flex:0 0 auto; }
+  .wf { flex:1 1 auto; display:grid; grid-template-columns:340px minmax(0,1fr); min-height:0; }
+
+  /* ---------- 左栏: 任务列表 ---------- */
+  aside.tasks { border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  .tbar { padding:10px 12px; display:flex; flex-wrap:wrap; gap:6px; border-bottom:1px solid var(--line); }
+  .tbar input, .tbar select, button { background:var(--panel); color:var(--fg); border:1px solid var(--line);
+      border-radius:7px; padding:5px 8px; font:inherit; font-size:12.5px; }
+  .tbar input { flex:1 1 100%; }
+  .tbar select { flex:1 1 0; min-width:0; }
+  button { cursor:pointer; } button:hover { border-color:var(--accent); }
+  #tasklist { overflow:auto; flex:1 1 auto; }
+  .trow { padding:10px 12px 10px 14px; border-bottom:1px solid #1d212a; cursor:pointer; border-left:3px solid transparent; }
+  .trow:hover { background:#151922; }
+  .trow.on { background:#182033; border-left-color:var(--accent); }
+  .trow .t1 { display:flex; gap:8px; align-items:baseline; font-size:12px; color:var(--dim); }
+  .trow .t1 .proj { color:var(--fg); font-weight:600; max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .trow .t1 .ago { margin-left:auto; white-space:nowrap; }
+  .trow .t2 { margin-top:3px; font-size:13px; line-height:1.4; display:-webkit-box; -webkit-line-clamp:2;
+      -webkit-box-orient:vertical; overflow:hidden; word-break:break-all; }
+  .trow .t3 { margin-top:5px; font-size:11.5px; color:var(--dim); display:flex; gap:8px; flex-wrap:wrap; }
+  .live { color:var(--good); font-weight:600; }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--good); margin-right:4px;
+      box-shadow:0 0 6px var(--good); animation:pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity:.35; } }
+  .sep { padding:6px 14px; font-size:11px; color:var(--dim); background:#12151b; border-bottom:1px solid #1d212a;
+      letter-spacing:.06em; }
+  .empty { padding:24px 16px; color:var(--dim); font-size:13px; line-height:1.7; }
+
+  /* ---------- 右栏: 回放 ---------- */
+  section.replay { overflow:auto; min-width:0; position:relative; }
+  .pad { padding:16px 20px 60px; }
+  .welcome { padding:60px 30px; color:var(--dim); line-height:1.8; max-width:640px; }
+  .welcome b { color:var(--fg); }
+
+  /* L0 摘要 */
+  .sum h2 { font-size:16px; margin:0 0 6px; line-height:1.5; font-weight:600; white-space:pre-wrap; word-break:break-word; }
+  .sum h2.clamp { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; cursor:pointer; }
+  .sum .m { font-size:12px; color:var(--dim); display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:12px; }
+  .kpi { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:9px 12px; }
+  .kpi .v { font-size:18px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .kpi .k { font-size:11.5px; color:var(--dim); margin-top:2px; }
+  .timebar { display:flex; height:10px; border-radius:5px; overflow:hidden; background:#20242d; margin:4px 0 6px; }
+  .timebar span { display:block; height:100%; }
+  .tlegend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--dim); margin-bottom:12px; }
+  .sw { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+  .chip { font-size:12px; padding:2px 9px; border-radius:999px; border:1px solid var(--line); background:var(--panel); }
+  .chip.bad { color:var(--bad); border-color:#4a2530; cursor:pointer; }
+  .chip.warn { color:var(--warn); border-color:#4a3d22; cursor:pointer; }
+  .chip.ok { color:var(--good); border-color:#2c3a23; }
+  .moments { border:1px solid var(--line); border-radius:10px; background:var(--panel); padding:6px 0; margin-bottom:16px; }
+  .moments .mh { font-size:11.5px; color:var(--dim); padding:2px 12px 4px; }
+  .mo { display:grid; grid-template-columns:62px 1fr; gap:8px; padding:3px 12px; font-size:12.5px; cursor:pointer; }
+  .mo:hover { background:#1c212b; }
+  .mo .off { color:var(--dim); font-variant-numeric:tabular-nums; }
+  .mo.fail .lb { color:var(--bad); } .mo.wait .lb { color:var(--wait); } .mo.workflow .lb { color:var(--model); }
+
+  /* L1 树 + 瀑布 */
+  .tools { display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:12px; color:var(--dim); margin:4px 0 8px; }
+  .tools .sp { flex:1; }
+  .tools label { cursor:pointer; }
+  .grid { border:1px solid var(--line); border-radius:10px; overflow:clip; background:#12151b; }
+  .r { display:grid; grid-template-columns:var(--tree) 62px 112px minmax(120px,1fr); align-items:center;
+      min-height:26px; border-bottom:1px solid #1a1e26; font-size:12.5px; }
+  .r:last-child { border-bottom:0; }
+  .r:hover { background:#171c26; }
+  .r.hd { position:sticky; top:0; z-index:3; background:#161a22; color:var(--dim); font-size:11px; min-height:24px; }
+  .banner { position:sticky; top:0; z-index:5; margin:0; padding:6px 20px; font-size:12px; background:#2a2416; color:var(--warn);
+      border-bottom:1px solid #4a3d22; }
+  .r > div { padding:3px 8px; min-width:0; }
+  .c-tree { padding-left:calc(8px + var(--d, 0) * 16px) !important; display:flex; align-items:center; gap:6px;
+      white-space:nowrap; overflow:hidden; cursor:pointer; }
+  .c-dur, .c-tok { text-align:right; font-variant-numeric:tabular-nums; color:var(--dim); white-space:nowrap; font-size:12px; }
+  .c-tok .true { color:var(--fg); }
+  .c-wf { position:relative; height:26px; padding:0 !important; border-left:1px solid #1d212a; }
+  .caret { width:16px; flex:0 0 16px; color:var(--dim); text-align:center; font-size:10px; cursor:pointer; border-radius:4px; }
+  .caret:hover { background:#262b36; color:var(--fg); }
+  .nm { flex:0 0 auto; }
+  .lb { overflow:hidden; text-overflow:ellipsis; flex:0 1 auto; min-width:0; }
+  .sub { color:var(--dim); overflow:hidden; text-overflow:ellipsis; flex:1 1 0; min-width:0; font-size:11.5px; }
+  .tag { font-size:11px; padding:0 6px; border-radius:5px; border:1px solid var(--line); color:var(--dim); flex:0 0 auto; }
+  .tag.builtin { color:var(--machine); border-color:#2a3553; }
+  .tag.mcp { color:#7dcfff; border-color:#23414d; }
+  .tag.ask { color:var(--wait); border-color:#4a3d22; }
+  .tag.skill, .k-skill .nm { color:#9ece6a; }
+  .k-agent .nm, .k-workflow .nm, .k-phase .nm { color:var(--model); font-weight:600; }
+  .k-say .lb { color:#c0caf5; font-style:italic; opacity:.85; }
+  .k-think .lb { color:var(--dim); font-style:italic; }
+  .k-event { font-size:11.5px; } .k-event .lb { color:var(--dim); }
+  .k-user .lb { color:var(--warn); }
+  .k-group .lb { color:var(--dim); }
+  .k-segment .nm { color:var(--accent); }
+  .fl { font-size:11px; padding:0 5px; border-radius:5px; flex:0 0 auto; }
+  .fl.fail { color:var(--bad); background:#2a1820; } .fl.retry, .fl.loop { color:var(--warn); background:#2a2416; }
+  .fl.slow { color:#ff9e64; background:#2a1f16; } .fl.huge { color:#7dcfff; background:#16252a; }
+  .fl.running { color:var(--good); background:#18241a; } .fl.info { color:var(--dim); background:#1d2029; }
+  .r.anom .c-tree { box-shadow:inset 2px 0 0 var(--bad); }
+  .r.flash { animation:flash 1.6s ease-out; }
+  @keyframes flash { 0% { background:#34405e; } 100% { background:transparent; } }
+  .bar { position:absolute; top:8px; height:10px; border-radius:3px; min-width:2px; }
+  .bar.machine { background:var(--machine); } .bar.wait { background:var(--wait); }
+  .bar.fail { background:var(--bad); }
+  .bar.cont { background:var(--model); opacity:.35; top:7px; height:12px; }
+  .bar.cont.agent { opacity:.55; }
+  .bar.grp { background:#8b93a7; opacity:.18; top:7px; height:12px; }
+  .bar.running { background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.28) 0 4px,transparent 4px 8px); }
+  .tick { position:absolute; top:6px; width:2px; height:14px; border-radius:1px; }
+  .tick.say { background:#c0caf5; opacity:.5; } .tick.think { background:var(--dim); opacity:.5; }
+  .tick.user { background:var(--warn); } .tick.event { background:var(--dim); opacity:.4; }
+  .tick.call { background:var(--machine); opacity:.8; top:9px; height:8px; width:2px; }
+  .tick.call.fail { background:var(--bad); opacity:1; }
+  .axis { position:absolute; top:0; bottom:0; border-left:1px dashed #262b36; }
+  .axis span { position:absolute; top:4px; left:4px; font-size:10.5px; color:var(--dim); white-space:nowrap; }
+  .foot { font-size:11.5px; color:var(--dim); margin-top:10px; line-height:1.7; }
+
+  /* L2 明细抽屉 */
+  .drawer { position:fixed; right:0; top:0; bottom:0; width:min(640px,94vw); background:#141820; border-left:1px solid var(--line);
+      transform:translateX(102%); transition:transform .18s ease; overflow:auto; z-index:30; box-shadow:-10px 0 30px rgba(0,0,0,.45); }
+  .drawer.open { transform:none; }
+  .dh { position:sticky; top:0; background:#141820; padding:14px 18px 10px; border-bottom:1px solid var(--line); z-index:2; }
+  .dh .x { float:right; }
+  .dh h3 { margin:0 30px 6px 0; font-size:15px; line-height:1.4; word-break:break-word; }
+  .db { padding:12px 18px 40px; }
+  .kv { display:grid; grid-template-columns:92px 1fr; gap:4px 10px; font-size:12.5px; margin-bottom:12px; }
+  .kv .k { color:var(--dim); }
+  .sec { font-size:12px; color:var(--dim); margin:14px 0 6px; display:flex; align-items:center; gap:8px; }
+  .sec .sp { flex:1; border-top:1px solid var(--line); }
+  pre.code { background:#0c0e12; border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin:0; font-size:12px;
+      line-height:1.5; white-space:pre-wrap; word-break:break-all; max-height:none; overflow:auto; }
+  pre.code.err { border-color:#4a2530; }
+  pre.code.old { border-color:#4a2530; background:#1a0f13; } pre.code.new { border-color:#2c3a23; background:#10170f; }
+  .more { margin-top:6px; }
+  .note { font-size:11.5px; color:var(--dim); margin-top:10px; line-height:1.6; }
+  .note b { color:var(--warn); font-weight:600; }
+</style></head>
+<body>
+<header>
+  <h1>工作流回放 <span>一次提问是怎么被完成的 · 纯本地只读</span></h1>
+  <div class="nav">__NAV__</div>
+</header>
+<div class="wf">
+  <aside class="tasks">
+    <div class="tbar">
+      <input id="q" type="search" placeholder="搜索提问 / 项目 / skill / MCP…">
+      <select id="proj" title="项目"><option value="">全部项目</option></select>
+      <select id="since" title="时间范围">
+        <option value="today">今天</option><option value="7d" selected>近 7 天</option>
+        <option value="30d">近 30 天</option><option value="all">全部</option>
+      </select>
+      <button id="reload" title="重新读取">刷新</button>
+    </div>
+    <div id="tasklist"><div class="empty">加载中… 首次打开要把全部 transcript 读一遍, 可能要十来秒。</div></div>
+  </aside>
+  <section class="replay" id="replay">
+    <div class="welcome">
+      <p>从左边选一个任务，看它是<b>怎么被完成的</b>：</p>
+      <p>· 顶部是结论：花了多久（机器执行 / 模型生成 / 等你）、多少 token、出了什么状况、关键时刻。<br>
+         · 下面是过程：调用树和时间轴并排，skill / 子 agent / workflow 的层级都在里面。<br>
+         · 点任何一行看明细：完整的输入与输出（已脱敏）。</p>
+      <p style="font-size:12px">数字分三级：真值直接写；估算前面带 ≈；推断的会写明「推断」。</p>
+    </div>
+  </section>
+</div>
+<aside class="drawer" id="drawer"><div class="dh"><button class="x" id="dclose">关闭 ✕</button><h3 id="dtitle"></h3><div id="dsub" class="note" style="margin:0"></div></div><div class="db" id="dbody"></div></aside>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const ANOM = new Set(["fail", "bg-fail", "retry", "loop", "slow", "huge"]);
+const STRONG = new Set(["fail", "bg-fail", "huge", "loop"]);   // 强异常: 会从折叠组里单独冒出来; 「慢」按定义命中约 10%, 只做徽章
+const SMALL_ROWS = 60;                                 // 全展开 <= 这么多行的小任务: 默认全部展开
+const BIG_PHASE = 6;                                   // 一个阶段里 agent 多于这个数: 没有强异常的 agent 默认收起
+const FLAG_TXT = {fail:"✗ 失败", "bg-fail":"✗ 后台失败", retry:"↻ 重试·推断", loop:"⟳ 打转·推断", slow:"🐢 偏慢·统计",
+                  huge:"📦 大结果", persisted:"已另存", running:"● 运行中", "no-result":"… 无结果", missing:"文件缺失",
+                  "linked-by-prompt":"按指令回链", ambiguous:"回链不确定", "bg-stopped":"后台被停止", partial:"部分缺失"};
+const FLAG_TIP = {fail:"工具返回 is_error，或命令被中断",
+                  "bg-fail":"它在后台跑，结束时发回的完成通知报告失败",
+                  retry:"推断：和此前一次失败的调用是同一件事（同命令 / 同参数），又试了一次",
+                  loop:"推断：同一件事做了 3 次及以上，而且每次结果都一样（没有可观察的进展）。改了代码再重跑、输出变了的不算",
+                  slow:"统计推断：耗时超过这个工具全部历史调用的 p90（按定义约 1/10 的调用会超过）。样本 ≥ 20 次、耗时 ≥ 1 秒才判；后台启动与 sleep / 轮询 / Monitor 这类故意的等待不算",
+                  huge:"返回内容 ≥ 4 万字符（约 1 万 token），会一直留在上下文里，让后面每一轮都更贵",
+                  persisted:"输出太大，Claude Code 把全文另存到文件，上下文里只放了约 2KB 的预览——不是「撑大上下文」",
+                  running:"还在跑", "no-result":"没等到结果（被打断 / 会话结束 / 之后的步骤已经越过它）",
+                  missing:"找不到这个 agent / workflow 的 transcript 文件，它的 token 拿不到（不是 0）",
+                  "linked-by-prompt":"结果里没有 agentId；按指令全文 + 启动时间唯一匹配到这个子 agent 文件",
+                  ambiguous:"结果里没有 agentId，且有多个子 agent 文件都对得上——不猜，留空",
+                  "bg-stopped":"它在后台被停止了（常见于恢复会话时上次没跑完）", partial:"这个阶段里有 agent 的文件缺失，合计是下限"};
+
+// ---------------------------------------------------------------- 状态
+const QS = new URLSearchParams(location.search);
+let SINCE = QS.get("since") || "7d", PROJ = QS.get("project") || "", QTEXT = "";
+let TASKS = [], SEL = QS.get("task") || null, CUR = null;
+let EXP = {};                 // 用户手动展开/收起的覆盖 {id: bool}
+let MODE = "default";         // default | all | none
+let SHOW_EVENTS = false;
+let FORCE = new Set();        // 「跳到这一步」时强制展开的节点
+let SMALL = false;            // 当前任务是不是小任务 (render 时算一次)
+let pollT = null, listT = null, reqId = 0;
+
+// ---------------------------------------------------------------- 格式化
+function fmtTok(n) { if (n == null) return "—"; n = +n; if (n >= 1e9) return (n/1e9).toFixed(2)+"B"; if (n >= 1e6) return (n/1e6).toFixed(n >= 1e8 ? 0 : 1)+"M";
+  if (n >= 1e3) return (n/1e3).toFixed(n >= 1e5 ? 0 : 1)+"k"; return String(Math.round(n)); }
+function fmtUsd(x) { if (x == null) return "—"; x = +x; if (x >= 100) return "$" + x.toFixed(0); if (x >= 1) return "$" + x.toFixed(2); return "$" + x.toFixed(3); }
+function fmtDur(s) { if (s == null || isNaN(s)) return ""; s = Math.max(0, +s); if (s < 9.95) return s.toFixed(1)+"s";
+  s = Math.round(s); if (s < 60) return s+"s";
+  if (s < 3600) return Math.floor(s/60)+"m"+String(s%60).padStart(2,"0")+"s";
+  const mm = Math.round(s/60); return Math.floor(mm/60)+"h"+String(mm%60).padStart(2,"0")+"m"; }
+function durOr(t0, t1) { return t0 != null && t1 != null ? fmtDur(t1 - t0) : "—"; }
+function tokTxt(t, partial) { return t ? (partial ? "≥ " : "") + fmtTok(t.total) : "—"; }
+function fmtOff(s) { if (s == null) return ""; s = Math.max(0, Math.round(s)); const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = s%60;
+  return (h ? h+":"+String(m).padStart(2,"0") : String(m).padStart(2,"0")) + ":" + String(ss).padStart(2,"0"); }
+function fmtAgo(t) { if (!t) return ""; const s = Date.now()/1000 - t; if (s < 60) return "刚刚"; if (s < 3600) return Math.floor(s/60)+"m 前";
+  if (s < 86400) return Math.floor(s/3600)+"h 前"; return Math.floor(s/86400)+"d 前"; }
+function fmtClock(t) { if (!t) return ""; const d = new Date(t*1000); return d.toLocaleDateString(undefined,{month:"2-digit",day:"2-digit"})+" "+d.toTimeString().slice(0,5); }
+function tokTip(t) { if (!t) return "拿不到（文件缺失或没有归属标记）";
+  return `真值（API usage 去重求和）\n合计 ${(+t.total).toLocaleString()}\n  缓存读 ${(+t.cache_read).toLocaleString()}\n  缓存写 ${(+t.cache_write).toLocaleString()}\n  新输入 ${(+t.input).toLocaleString()}\n  输出 ${(+t.output).toLocaleString()}\n等价 ${fmtUsd(t.cost)}${t.unpriced ? "（含未知单价模型）" : ""} · ${t.responses} 次 API 响应`; }
+
+// ---------------------------------------------------------------- 任务列表
+async function loadTasks(silent) {
+  const my = ++reqId;
+  if (!silent) $("#tasklist").innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    const r = await fetch(`/api/workflow/tasks?since=${encodeURIComponent(SINCE)}`);
+    const d = await r.json();
+    if (my !== reqId) return;
+    if (d.error) {
+      if (silent && TASKS.length) { clearTimeout(listT); listT = setTimeout(() => loadTasks(true), 20000); return; }
+      $("#tasklist").innerHTML = `<div class="empty">读取失败：${esc(d.error)}</div>`; return;
+    }
+    TASKS = d.tasks || [];
+    const projs = [...new Set(TASKS.map(t => t.project))].sort();
+    if (PROJ && !projs.includes(PROJ)) projs.unshift(PROJ);
+    $("#proj").innerHTML = '<option value="">全部项目</option>' + projs.map(p => `<option ${p === PROJ ? "selected" : ""}>${esc(p)}</option>`).join("");
+    renderTasks();
+    if (SEL && !CUR) openTask(SEL);
+    clearTimeout(listT);
+    if (TASKS.some(t => t.running)) listT = setTimeout(() => loadTasks(true), 20000);
+  } catch (e) {
+    if (my !== reqId) return;
+    if (silent && TASKS.length) { clearTimeout(listT); listT = setTimeout(() => loadTasks(true), 20000); return; }
+    $("#tasklist").innerHTML = `<div class="empty">请求失败：${esc(e)}</div>`;
+  }
+}
+
+function taskMatches(t) {
+  if (PROJ && t.project !== PROJ && !(t.projects || []).includes(PROJ)) return false;
+  if (!QTEXT) return true;
+  const hay = [t.prompt, t.project, (t.skills || []).join(" "), (t.mcp_servers || []).join(" "),
+               (t.workflows || []).map(w => w.label).join(" ")].join(" ").toLowerCase();
+  return QTEXT.split(/\s+/).every(w => hay.includes(w));
+}
+
+function renderTasks() {
+  const rows = TASKS.filter(taskMatches);
+  if (!rows.length) {
+    const hint = PROJ ? `<br><br>「${esc(PROJ)}」在这个时间范围里没有任务。/tokens 按每条 API 记录的工作目录归项目（会话中途 cd、子 agent 在别处干活都会算进去），`
+      + `这里按任务筛：任务里任何一次响应落在这个项目就算。${SINCE !== "all" ? '<br><button id="goall" style="margin-top:8px">改看全部时间</button>' : ""}`
+      + ` <button id="clearproj" style="margin-top:8px">清除项目筛选</button>` : "";
+    $("#tasklist").innerHTML = `<div class="empty">${TASKS.length ? "没有匹配的任务。" : "这个时间范围里没有任务。"}${hint}</div>`;
+    return;
+  }
+  let html = "", lastDay = null, hadLive = false;
+  for (const t of rows) {
+    if (t.running) { if (!hadLive) { html += '<div class="sep">● 运行中</div>'; hadLive = true; } }
+    else {
+      const day = new Date(t.t0 * 1000).toDateString();
+      if (day !== lastDay) { html += `<div class="sep">${esc(dayLabel(t.t0))}</div>`; lastDay = day; }
+    }
+    const f = t.flags || {};
+    const bad = (f.fail || 0) + (f["bg-fail"] || 0), rep = (f.retry || 0) + (f.loop || 0), slow = f.slow || 0, huge = f.huge || 0;
+    const tm = t.time || {};
+    const extras = [];
+    if ((t.workflows || []).length) extras.push("⚙ " + t.workflows.length + " workflow");
+    else if (t.agents) extras.push("🤖 " + t.agents + " agent");
+    if ((t.skills || []).length) extras.push("◆ " + t.skills.slice(0, 2).join(", "));
+    if ((t.mcp_servers || []).length) extras.push("mcp·" + t.mcp_servers.join(","));
+    html += `<div class="trow ${t.id === SEL ? "on" : ""}" data-id="${esc(t.id)}">
+      <div class="t1"><span class="proj" title="${esc(t.project)}">${esc(t.project)}</span>
+        ${t.running ? '<span class="live"><span class="dot"></span>运行中</span>' : ""}<span class="ago">${esc(fmtAgo(t.t0))}</span></div>
+      <div class="t2" title="${esc(t.prompt)}">${esc(t.prompt || "（无文字提问）")}</div>
+      <div class="t3"><span>⏱ ${esc(fmtDur(tm.active || tm.span))}</span><span title="${t.partial ? "有 agent / workflow 的文件缺失或没法回链，合计是下限" : "token 真值"}">${esc(tokTxt(t.tokens, t.partial))} tok</span>
+        <span>${t.calls} 调用</span>${extras.map(x => `<span>${esc(x)}</span>`).join("")}
+        ${bad ? `<span style="color:var(--bad)">✗${bad}</span>` : ""}${rep ? `<span style="color:var(--warn)">↻${rep}</span>` : ""}
+        ${slow ? `<span style="color:#ff9e64">🐢${slow}</span>` : ""}${huge ? `<span style="color:#7dcfff">📦${huge}</span>` : ""}</div>
+    </div>`;
+  }
+  $("#tasklist").innerHTML = html;
+}
+
+function dayLabel(t) {
+  const d = new Date(t * 1000), now = new Date();
+  const diff = Math.round((new Date(now.toDateString()) - new Date(d.toDateString())) / 86400000);
+  if (diff === 0) return "今天"; if (diff === 1) return "昨天";
+  return d.toLocaleDateString(undefined, {month: "long", day: "numeric", weekday: "short"});
+}
+
+// ---------------------------------------------------------------- 打开任务
+async function openTask(id, keep) {
+  clearTimeout(pollT);
+  if (!keep) { EXP = {}; MODE = "default"; FORCE = new Set(); closeDrawer(); }
+  SEL = id; syncUrl();
+  document.querySelectorAll(".trow").forEach(el => el.classList.toggle("on", el.dataset.id === id));
+  if (!keep) $("#replay").innerHTML = '<div class="welcome">加载中…</div>';
+  try {
+    const r = await fetch(`/api/workflow/task?id=${encodeURIComponent(id)}`);
+    const d = await r.json();
+    if (SEL !== id) return;
+    if (d.error) { refreshFailed(id, keep, "读取失败：" + d.error); return; }
+    const st = $("#replay").scrollTop;
+    CUR = d; render();
+    if (keep) $("#replay").scrollTop = st;
+    if (d.summary.running) pollT = setTimeout(() => openTask(id, true), 5000);   // 运行中: 5s 自动刷新
+  } catch (e) { if (SEL === id) refreshFailed(id, keep, "请求失败：" + e); }
+}
+function refreshFailed(id, keep, msg) {  // 自动刷新失败: 不抹掉已有回放, 顶部提示并 10s 后重试
+  if (keep && CUR) {
+    let b = document.getElementById("rbanner");
+    if (!b) { b = document.createElement("div"); b.id = "rbanner"; b.className = "banner"; $("#replay").prepend(b); }
+    b.textContent = `刷新失败，10 秒后重试（${msg}）`;
+    clearTimeout(pollT); pollT = setTimeout(() => openTask(id, true), 10000);
+    return;
+  }
+  $("#replay").innerHTML = `<div class="welcome">${esc(msg)}</div>`;
+}
+
+function syncUrl() {
+  const u = new URLSearchParams();
+  if (SEL) u.set("task", SEL); if (PROJ) u.set("project", PROJ); if (SINCE !== "7d") u.set("since", SINCE);
+  history.replaceState(null, "", "/workflow" + (u.toString() ? "?" + u : ""));
+}
+
+// ---------------------------------------------------------------- 树: 分组 / 展开规则
+function unwrap(n) {          // Agent / Workflow 调用 + 它唯一的子树 -> 合成一行 (少一层重复)
+  if (n.kind === "call" && (n.cat === "agent" || n.cat === "workflow") && n.children && n.children.length === 1) {
+    const c = n.children[0];
+    return Object.assign({}, c, {via: n, flags: [...(c.flags || []), ...(n.flags || []).filter(f => f !== "running")]});
+  }
+  return n;
+}
+function kidsOf(n) { return (n.children || []).map(unwrap); }
+function isLeaf(n) { return ["say", "think", "event"].includes(n.kind) || (n.kind === "call" && !(n.children && n.children.length)); }
+function anomOf(n) { return (n.flags || []).filter(f => ANOM.has(f)); }
+function strongOf(n) { return (n.flags || []).some(f => STRONG.has(f)); }
+function hasStrongDeep(n) {
+  if (n.kind === "group") return n.members.some(hasStrongDeep);
+  return strongOf(n) || (n.children || []).some(c => hasStrongDeep(c));
+}
+function fullCount(n) {       // 全展开时的行数 (系统事件按开关算)
+  let c = 0;
+  const v = x => { for (const k of (x.children || [])) { if (k.kind !== "event" || SHOW_EVENTS) c++; v(k); } };
+  v(n); return c;
+}
+function hasAnomDeep(n) {
+  if (n.kind === "group") return n.members.some(hasAnomDeep);
+  if (anomOf(n).length) return true;
+  return (n.children || []).some(hasAnomDeep);
+}
+function containsForced(n) {
+  if (!FORCE.size) return false;
+  if (FORCE.has(n.id)) return true;
+  if (n.kind === "group") return n.members.some(containsForced);
+  return (n.children || []).some(c => containsForced(unwrap(c)));
+}
+function grouped(parent) {    // 连续的叶子 (调用 / 说的话 / 思考 / 系统事件) 折成一个「N 步」组
+  const out = []; let run = [];
+  const flush = () => {
+    const vis = run.filter(n => n.kind !== "event" || SHOW_EVENTS || FORCE.has(n.id) || (n.flags || []).length);
+    if (vis.length > 2) {
+      const t0s = vis.map(n => n.t0).filter(t => t != null), t1s = vis.map(n => n.t1 != null ? n.t1 : n.t0).filter(t => t != null);
+      out.push({kind: "group", id: "grp:" + parent.id + ":" + vis[0].id, members: vis,
+                t0: t0s.length ? Math.min(...t0s) : null, t1: t1s.length ? Math.max(...t1s) : null});
+    }
+    else out.push(...vis);
+    run = [];
+  };
+  for (const c of kidsOf(parent)) {
+    if (isLeaf(c) && !strongOf(c)) run.push(c);       // 强异常的那一步不进组: 单独一行, 前后照常折叠
+    else { flush(); out.push(c); }
+  }
+  flush();
+  return out;
+}
+function expandable(n) { return n.kind === "group" || (n.children && n.children.length > 0); }
+function isOpen(n, parent) {
+  if (!expandable(n)) return false;
+  if (n.id in EXP) return EXP[n.id];
+  if (containsForced(n)) return true;
+  if (MODE === "all") return true;
+  if (MODE === "none") return false;
+  if (SMALL) return true;                                                     // 小任务: 全部摊开
+  if (n.kind === "group") return false;                                       // 组: 折成「N 步」, 强异常已单独冒出
+  if (n.kind === "agent" && parent && parent.kind === "phase" && (parent.children || []).length > BIG_PHASE)
+    return hasStrongDeep(n);                                                  // 大阶段: 只展开出过事的 agent
+  return ["skill", "agent", "workflow", "phase", "segment"].includes(n.kind); // 结构层默认展开
+}
+function flatten(root) {      // -> [{n, d}] 可见行
+  const out = [];
+  const walk = (node, d) => {
+    const list = node.kind === "group" ? node.members : grouped(node);
+    for (const c of list) {
+      out.push({n: c, d, p: node});
+      if (isOpen(c, node)) walk(c, d + 1);
+    }
+  };
+  walk(root, 0);
+  return out;
+}
+
+// ---------------------------------------------------------------- 行渲染
+function describe(n) {        // -> [html of name, label, sub, cls]
+  const k = n.kind;
+  if (k === "call") {
+    const cat = n.cat, tagCls = cat === "mcp" ? "mcp" : cat === "ask" ? "ask" : cat === "skill" ? "skill" : "builtin";
+    const tag = cat === "mcp" ? `mcp·${n.meta && n.meta.server || "?"}` : n.name;
+    return [`<span class="tag ${tagCls}">${esc(tag)}</span>`, esc(n.label), n.sub ? esc(n.sub) : "", "k-call"];
+  }
+  if (k === "skill") return ['<span class="nm">◆ skill</span>', esc(n.label) + (n.continued ? " <span class='sub'>（延续）</span>" : ""),
+                             n.tokens ? "" : "未标注归属", "k-skill"];
+  if (k === "agent") {
+    const m = n.meta || {};
+    const bits = [m.type && m.type !== "workflow-subagent" ? m.type : "", n.via && n.via.meta && n.via.meta.async ? "后台" : ""].filter(Boolean);
+    return ['<span class="nm">🤖 agent</span>', esc(n.label), esc(bits.join(" · ")), "k-agent"];
+  }
+  if (k === "workflow") return ['<span class="nm">⚙ workflow</span>', esc(n.label),
+                                esc(`${n.meta.phases} 阶段 · ${n.meta.agents} agent`), "k-workflow"];
+  if (k === "phase") return ['<span class="nm">▸ 阶段</span>', esc(n.label), esc((n.meta.agents) + " agent" + (n.detail ? " · " + n.detail : "")), "k-phase"];
+  if (k === "segment") return ['<span class="nm">↪</span>', esc(n.label), n.linked ? "按完成通知回链" : "归属推断：挂在当时的任务上", "k-segment"];
+  if (k === "say") return ["💬", esc(n.label), "", "k-say"];
+  if (k === "think") return ["💭", esc(n.label), "", "k-think"];
+  if (k === "event") return ["·", esc(n.label), "", "k-event"];
+  if (k === "user") return [n.ev === "interrupt" ? "⏸" : "✉", esc(n.label), n.text ? esc(n.text) : "", "k-user"];
+  if (k === "group") {
+    const cnt = {}; let says = 0, thinks = 0, evs = 0;
+    for (const m of n.members) {
+      if (m.kind === "call") { const t = m.cat === "mcp" ? "mcp" : m.name; cnt[t] = (cnt[t] || 0) + 1; }
+      else if (m.kind === "say") says++; else if (m.kind === "think") thinks++; else evs++;
+    }
+    const parts = Object.entries(cnt).sort((a, b) => b[1] - a[1]).map(([t, c]) => `${t}×${c}`);
+    if (says) parts.push("💬" + says); if (thinks) parts.push("💭" + thinks); if (evs) parts.push("·" + evs);
+    return ['<span class="nm" style="color:var(--dim)">' + n.members.length + " 步</span>", esc(parts.join(" · ")), "", "k-group"];
+  }
+  return ["", esc(n.label || n.kind), "", ""];
+}
+
+function badges(n) {
+  let fl = n.flags || [];
+  if (n.kind === "group") {       // 组: 汇总成员的异常
+    const agg = {};
+    const visit = m => { for (const f of (m.flags || [])) if (ANOM.has(f)) agg[f] = (agg[f] || 0) + 1; (m.children || []).forEach(visit); };
+    n.members.forEach(visit);
+    return Object.entries(agg).map(([f, c]) => `<span class="fl ${f}" title="${esc(FLAG_TIP[f] || "")}">${esc(FLAG_TXT[f] || f)}×${c}</span>`).join("");
+  }
+  return fl.map(f => `<span class="fl ${ANOM.has(f) || f === "running" ? f : "info"}" title="${esc(FLAG_TIP[f] || "")}">${esc(FLAG_TXT[f] || f)}</span>`).join("");
+}
+
+function durOf(n) {
+  if (["say", "think", "event", "user"].includes(n.kind)) return null;
+  if (n.t0 == null || n.t1 == null) return null;
+  return n.t1 - n.t0;
+}
+
+function resultTxt(n) {           // 调用的结果体积 (估算); 没有结果 / 估不出都如实说, 绝不写 0
+  const m = n.meta || {};
+  if (m.result_chars == null) return {cell: "—", tip: "结果体积：没有结果（还在跑 / 没等到）"};
+  const media = (m.media || []).map(x => ({image: "图片", document: "文档", tool_reference: "工具定义"}[x] || x));
+  const extra = (m.skill_body ? "；含 skill 正文注入" : "") + (media.length ? `；含${[...new Set(media)].join("、")}` : "");
+  if (n.result_est == null) return {cell: "≈?", tip: `结果体积 ≈?：${[...new Set(media)].join("、") || "部分内容"}估不出 token（${(m.result_chars || 0).toLocaleString()} 字符文字）${extra}`};
+  return {cell: "≈" + fmtTok(n.result_est), tip: `结果体积 ≈${(+n.result_est).toLocaleString()}：${(m.result_chars || 0).toLocaleString()} 字符${extra}，之后每一轮都会被重新读入`};
+}
+function tokCell(n) {
+  if (n.kind === "call") {
+    const a = n.issue_est || 0, r = resultTxt(n);
+    const tip = `估算（≈）\n发起成本 ≈${a.toLocaleString()}：发出它的那次响应的 output${n.meta.parallel > 1 ? " ÷ " + n.meta.parallel + " 个并行调用" : ""}\n${r.tip}`;
+    return `<span title="${esc(tip)}">≈${fmtTok(a)} · ${esc(r.cell)}</span>`;
+  }
+  if (n.tokens) return `<span class="true" title="${esc(tokTip(n.tokens))}">${fmtTok(n.tokens.total)}</span>`;
+  if (["agent", "workflow", "skill"].includes(n.kind)) return `<span title="${esc(tokTip(null))}">—</span>`;
+  return "";
+}
+
+function barHTML(n, T0, span) {
+  const x = t => Math.max(0, Math.min(100, (t - T0) / span * 100));
+  if (["say", "think", "event", "user"].includes(n.kind)) {
+    return n.t0 ? `<div class="tick ${n.kind}" style="left:${x(n.t0).toFixed(2)}%"></div>` : "";
+  }
+  if (n.t0 == null) return "";
+  const t1 = n.t1 == null ? n.t0 : n.t1, l = x(n.t0), w = Math.max(0, x(t1) - l);
+  let cls = "cont";
+  if (n.kind === "call") cls = anomOf(n).includes("fail") ? "fail" : (n.cat === "ask" ? "wait" : "machine");
+  else if (n.kind === "group") cls = "grp";
+  else if (n.kind === "agent") cls = "cont agent";
+  if ((n.flags || []).includes("running")) cls += " running";
+  let h = `<div class="bar ${cls}" style="left:${l.toFixed(2)}%;width:calc(${w.toFixed(2)}% + 2px)" title="${esc(fmtClock(n.t0))} → ${esc(fmtDur(t1 - n.t0))}"></div>`;
+  if (n.kind === "group") {
+    for (const m of n.members.slice(0, 80)) if (m.kind === "call" && m.t0)
+      h += `<div class="tick call ${anomOf(m).includes("fail") ? "fail" : ""}" style="left:${x(m.t0).toFixed(2)}%"></div>`;
+  }
+  return h;
+}
+
+function rowHTML(item, T0, span) {
+  const n = item.n, open = isOpen(n, item.p), exp = expandable(n);
+  const [nm, lb, sub, cls] = describe(n);
+  const d = durOf(n);
+  const anom = n.kind !== "group" && strongOf(n);
+  return `<div class="r ${cls}${anom ? " anom" : ""}" data-id="${esc(n.id)}" style="--d:${item.d}">
+    <div class="c-tree"><span class="caret">${exp ? (open ? "▾" : "▸") : ""}</span>${nm}<span class="lb" title="${esc(stripTags(lb))}">${lb}</span>${sub ? `<span class="sub" title="${esc(stripTags(sub))}">${sub}</span>` : ""}${badges(n)}</div>
+    <div class="c-dur">${d == null ? "" : esc(fmtDur(d))}</div>
+    <div class="c-tok">${tokCell(n)}</div>
+    <div class="c-wf">${barHTML(n, T0, span)}</div></div>`;
+}
+function stripTags(s) { return String(s || "").replace(/<[^>]*>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+  .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&"); }   // 去标签 + 反转义, 再交给 esc 做 title
+function parentCall(id) {        // 启动某个 agent / workflow 的那次调用
+  let hit = null;
+  const dfs = n => { if (hit) return; if (n.kind === "call" && (n.children || []).some(c => c.id === id)) { hit = n; return; } (n.children || []).forEach(dfs); };
+  dfs(CUR.tree); return hit;
+}
+function viaLine(id) {
+  const c = parentCall(id);
+  if (!c) return null;
+  return ["启动", `${esc(c.name)} 调用 · ${esc(fmtClock(c.t0))}${c.meta && c.meta.async ? " · <b>后台运行</b>（主线程不等它，完成后发通知）" : " · 前台（主线程等它跑完）"}`];
+}
+
+// ---------------------------------------------------------------- L0 摘要 + L1 回放
+function render() {
+  const s = CUR.summary, tree = CUR.tree;
+  SMALL = fullCount(tree) <= SMALL_ROWS;
+  const T0 = s.t0 || tree.t0, span = Math.max(1, (s.t1 || T0) - T0);
+  const tm = s.time || {}, act = Math.max(1e-9, tm.active || 0);
+  const pct = k => (100 * (tm[k] || 0) / act).toFixed(1);
+  const f = s.flags || {};
+  const chip = (k, cls, txt) => f[k] ? `<span class="chip ${cls}" data-jump="${k}" title="${esc(FLAG_TIP[k] || "")}；点击跳到第一处">${txt} ${f[k]}</span>` : "";
+  const anomChips = chip("fail", "bad", "✗ 失败") + chip("bg-fail", "bad", "✗ 后台失败") + chip("retry", "warn", "↻ 重试·推断")
+                  + chip("loop", "warn", "⟳ 打转·推断") + chip("huge", "warn", "📦 超大结果");
+  const slowChip = f.slow ? `<span class="chip" data-jump="slow" style="cursor:pointer" title="${esc(FLAG_TIP.slow)}；点击跳到第一处">🐢 偏慢·统计 ${f.slow}</span>` : "";
+  const cats = s.cats || {};
+  const catTxt = [cats.builtin ? `内置工具 ${cats.builtin}` : "", cats.mcp ? `MCP ${cats.mcp}（${(s.mcp_servers || []).join(", ")}）` : "",
+                  cats.skill ? `Skill ${cats.skill}` : "", cats.agent ? `Agent ${cats.agent}` : "", cats.workflow ? `Workflow ${cats.workflow}` : "",
+                  cats.ask ? `向你提问 ${cats.ask}` : ""].filter(Boolean);
+  const wfTxt = (s.workflows || []).map(w => `⚙ ${w.label}（${w.phases} 阶段 / ${w.agents} agent）`);
+  const idle = Math.max(0, (tm.span || 0) - (tm.active || 0));
+  let html = `<div class="pad"><div class="sum">
+    <h2 class="clamp" id="ptitle" title="点击展开 / 收起">${esc(s.prompt_full || s.prompt || "（无文字提问）")}</h2>
+    <div class="m"><span>${esc(s.project || "")}${s.branch ? " · " + esc(s.branch) : ""}</span><span>${esc(fmtClock(s.t0))} 开始</span>
+      ${s.running ? '<span class="live"><span class="dot"></span>运行中 · 每 5s 自动刷新</span>' : ""}
+      ${s.continuations ? `<span>含 ${s.continuations} 段后台延续</span>` : ""}<span title="会话 ID">${esc((s.session_id || "").slice(0, 8))}</span></div>
+    <div class="kpis">
+      <div class="kpi"><div class="v">${esc(fmtDur(tm.active))}</div><div class="k">活跃时长${idle > 60 ? ` · 另有空闲 ${esc(fmtDur(idle))}` : ""}</div></div>
+      <div class="kpi" title="${esc(tokTip(s.tokens))}"><div class="v">${esc(tokTxt(s.tokens, s.partial))}</div><div class="k">token 真值 · 等价 ${esc(fmtUsd((s.tokens || {}).cost))}${s.partial ? ` · <span class="warn">${s.partial} 处缺失，是下限</span>` : ""}</div></div>
+      <div class="kpi"><div class="v">${s.calls}</div><div class="k">次调用${s.agents ? ` · ${s.agents} 个子 agent` : ""}</div></div>
+    </div>
+    <div class="timebar" title="机器执行 = 有工具在跑；模型生成 = 调用之间模型在想和写；等你 = AskUserQuestion / ExitPlanMode">
+      <span style="width:${pct("machine")}%;background:var(--machine)"></span><span style="width:${pct("model")}%;background:var(--model)"></span><span style="width:${pct("wait")}%;background:var(--wait)"></span></div>
+    <div class="tlegend"><span><i class="sw" style="background:var(--machine)"></i>机器执行 ${esc(fmtDur(tm.machine))}</span>
+      <span><i class="sw" style="background:var(--model)"></i>模型生成 ${esc(fmtDur(tm.model))}</span>
+      <span><i class="sw" style="background:var(--wait)"></i>等你 ${esc(fmtDur(tm.wait))}</span></div>
+    <div class="chips">${catTxt.map(x => `<span class="chip">${esc(x)}</span>`).join("")}${(s.skills || []).map(x => `<span class="chip" style="color:#9ece6a">◆ ${esc(x)}</span>`).join("")}${wfTxt.map(x => `<span class="chip" style="color:var(--model)">${esc(x)}</span>`).join("")}</div>
+    <div class="chips">${anomChips || '<span class="chip ok">✓ 没有失败、打转或超大结果</span>'}${slowChip}</div>
+    ${(s.moments || []).length ? `<div class="moments"><div class="mh">关键时刻（点击跳到那一步）</div>${s.moments.map(m =>
+      `<div class="mo ${esc(m.kind)}" data-ref="${esc(m.ref)}"><span class="off">${esc(fmtOff(m.offset))}</span><span class="lb">${esc(m.label)}</span></div>`).join("")}</div>` : ""}
+  </div>
+  <div class="tools"><span><i class="sw" style="background:var(--machine)"></i>工具执行</span><span><i class="sw" style="background:var(--model);opacity:.5"></i>agent / skill / 阶段</span>
+    <span><i class="sw" style="background:var(--wait)"></i>等你</span><span><i class="sw" style="background:var(--bad)"></i>失败</span><span class="sp"></span>
+    <label><input type="checkbox" id="evs" ${SHOW_EVENTS ? "checked" : ""}> 显示系统事件</label>
+    <button id="exall">全部展开</button><button id="coall">全部收起</button><button id="dfl">默认</button></div>
+  <div class="grid" id="grid">${gridHTML(tree, T0, span)}</div>
+  <div class="foot">token 列：结构行（skill / agent / 阶段 / workflow）是<b style="color:var(--fg)">真值</b>；调用行是两个<b style="color:var(--fg)">估算</b>「发起 ≈ · 结果 ≈」，鼠标停上去看算法。
+    「推断」标签（重试 / 打转）是按「同一命令、同一参数」规则判断的，可能误判。所有文字已做尽力而为的脱敏。</div>
+  </div>`;
+  $("#replay").innerHTML = html;
+}
+
+function gridHTML(tree, T0, span) {
+  const rows = flatten(tree);
+  const ticks = [0, .25, .5, .75, 1].map(p => `<div class="axis" style="left:${p * 100}%"><span>${p === 1 ? "" : esc(fmtOff(span * p))}</span></div>`).join("");
+  return `<div class="r hd"><div>步骤（${rows.length} 行可见）</div><div class="c-dur">耗时</div><div class="c-tok">token</div><div class="c-wf">${ticks}</div></div>`
+       + rows.map(it => rowHTML(it, T0, span)).join("");
+}
+
+function rerenderGrid() {
+  const s = CUR.summary, T0 = s.t0 || CUR.tree.t0, span = Math.max(1, (s.t1 || T0) - T0);
+  SMALL = fullCount(CUR.tree) <= SMALL_ROWS;
+  $("#grid").innerHTML = gridHTML(CUR.tree, T0, span);
+}
+
+// ---------------------------------------------------------------- 查找 / 跳转
+function findPath(root, id) {      // 在原始树里找从根到 id 的路径 (节点 id 列表)
+  const path = [];
+  const dfs = n => {
+    path.push(n.id);
+    if (n.id === id) return true;
+    for (const c of (n.children || [])) if (dfs(c)) return true;
+    path.pop(); return false;
+  };
+  return dfs(root) ? path : null;
+}
+function findNode(root, id) {
+  let hit = null;
+  const dfs = n => { if (hit) return; if (n.id === id) { hit = n; return; } (n.children || []).forEach(dfs); };
+  dfs(root); return hit;
+}
+function reveal(id) {
+  const p = findPath(CUR.tree, id);
+  if (!p) return;
+  FORCE = new Set(p);
+  for (const pid of p) if (pid in EXP && EXP[pid] === false) delete EXP[pid];
+  for (let i = 0; i + 1 < p.length; i++) {          // 路径上的合成组 (id 不在原始树里) 也要解除「收起」
+    const par = findNode(CUR.tree, p[i]);
+    if (!par) continue;
+    const wrap = (par.kind === "call" && par.children && par.children.length === 1) ? unwrap(par) : par;
+    for (const g of grouped(wrap)) if (g.kind === "group" && g.members.some(m => p.includes(m.id))) delete EXP[g.id];
+  }
+  rerenderGrid();
+  let el = [...document.querySelectorAll("#grid .r")].find(e => e.dataset.id === id);
+  if (!el) {      // 被合并成一行的 agent 调用: 找它的子树行
+    const n = findNode(CUR.tree, id);
+    if (n && n.children && n.children.length === 1) el = [...document.querySelectorAll("#grid .r")].find(e => e.dataset.id === n.children[0].id);
+  }
+  if (el) { el.scrollIntoView({block: "center", behavior: "smooth"}); el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
+}
+function firstWithFlag(root, flag) {
+  let best = null;
+  const dfs = n => { if ((n.flags || []).includes(flag) && (!best || (n.t0 || 0) < (best.t0 || 0))) best = n; (n.children || []).forEach(dfs); };
+  dfs(root); return best;
+}
+
+// ---------------------------------------------------------------- L2 明细抽屉
+function closeDrawer() { $("#drawer").classList.remove("open"); DRAWER = null; DRAWER_REQ++; }
+function kv(pairs) { return `<div class="kv">${pairs.filter(p => p && p[1] !== "" && p[1] != null).map(([k, v]) => `<div class="k">${esc(k)}</div><div>${v}</div>`).join("")}</div>`; }
+function sec(title, extra) { return `<div class="sec">${esc(title)}<span class="sp"></span>${extra || ""}</div>`; }
+function copyBtn(id) { return `<button data-copy="${id}" style="font-size:11px;padding:2px 8px">复制</button>`; }
+const FOLD = 40;
+function codeBlock(id, text, cls) {
+  text = String(text == null ? "" : text);
+  const lines = text.split("\n");
+  if (lines.length <= FOLD) return `<pre class="code ${cls || ""}" id="${id}">${esc(text)}</pre>`;
+  return `<pre class="code ${cls || ""}" id="${id}" data-full="${esc(text)}">${esc(lines.slice(0, FOLD).join("\n"))}</pre>
+          <button class="more" data-more="${id}">展开其余 ${lines.length - FOLD} 行</button>`;
+}
+
+let DRAWER = null, DRAWER_REQ = 0;          // 抽屉当前展示的节点 + 请求序号: 晚到的旧响应一律丢弃
+function drawerLive(my, drawerId, task) { return my === DRAWER_REQ && DRAWER === drawerId && SEL === task; }
+function flagNotes(flags, meta) {
+  return [...new Set(flags)].map(f => `<div class="note"><b>${esc(FLAG_TXT[f] || f)}</b>　${esc(FLAG_TIP[f] || "")}${f === "slow" && meta && meta.p90 ? `（历史 p90 ${esc(fmtDur(meta.p90))}）` : ""}</div>`).join("");
+}
+function openDrawer(id) {
+  const raw = findNode(CUR.tree, id);
+  if (!raw) return;
+  const n = raw;
+  DRAWER = id; DRAWER_REQ++;
+  $("#drawer").classList.add("open");
+  const t = durOr(n.t0, n.t1);
+  const pc = (n.kind === "agent" || n.kind === "workflow") ? parentCall(n.id) : null;
+  const flagsHTML = flagNotes([...(pc ? pc.flags || [] : []), ...(n.flags || [])], n.meta);
+  if (n.kind === "call") {
+    $("#dtitle").innerHTML = `${esc(n.name)} · ${esc(n.label)}`;
+    $("#dsub").textContent = n.sub || "";
+    const m = n.meta || {};
+    $("#dbody").innerHTML = kv([
+      ["状态", (n.flags || []).includes("fail") ? '<span style="color:var(--bad)">✗ 失败</span>' : (n.flags || []).includes("bg-fail") ? '<span style="color:var(--bad)">✗ 后台失败</span>' : (n.flags || []).includes("running") ? '<span class="live">● 运行中</span>' : (n.flags || []).includes("no-result") ? "… 没等到结果" : '<span style="color:var(--good)">✓ 完成</span>'],
+      ["开始", esc(fmtClock(n.t0))], ["耗时", esc(t) + (m.async ? "（后台启动，只计启动那一下）" : "")],
+      ["并行", m.parallel > 1 ? `和另外 ${m.parallel - 1} 个调用在同一次响应里发出` : ""],
+      ["发起 ≈", `${(n.issue_est || 0).toLocaleString()} token <span class="muted">（该响应 output ÷ ${m.parallel || 1}）</span>`],
+      ["结果", esc(resultTxt(n).tip)],
+    ]) + flagsHTML + sec("输入", copyBtn("din")) + '<div id="din-wrap"><div class="muted">读取中…</div></div>'
+       + sec("输出", copyBtn("dout")) + '<div id="dout-wrap"><div class="muted">读取中…</div></div>'
+       + '<div class="note">内容来自 transcript 原文，按行偏移按需读取；token / key / 密码 / 长串已做<b>尽力而为</b>的脱敏。</div>';
+    loadCall(n, id);
+    return;
+  }
+  const tk = n.tokens;
+  const tokLine = tk ? `${(+tk.total).toLocaleString()} <span class="muted">（缓存读 ${fmtTok(tk.cache_read)} · 缓存写 ${fmtTok(tk.cache_write)} · 新输入 ${fmtTok(tk.input)} · 输出 ${fmtTok(tk.output)} · 等价 ${fmtUsd(tk.cost)}）</span>` : "";
+  const count = nn => { let c = 0, a = 0; const v = x => { if (x.kind === "call") { c++; if (anomOf(x).length) a++; } (x.children || []).forEach(v); }; (nn.children || []).forEach(v); return [c, a]; };
+  const [nc, na] = count(n);
+  let body = "";
+  if (n.kind === "agent") {
+    const m = n.meta || {};
+    $("#dtitle").textContent = "🤖 " + n.label; $("#dsub").textContent = [m.type, m.phase ? "阶段 " + m.phase : ""].filter(Boolean).join(" · ");
+    body = kv([viaLine(n.id), ["时间", `${esc(fmtClock(n.t0))} · ${esc(t)}`], ["token 真值", tokLine || "—（拿不到）"], ["调用", `${nc} 次${na ? `，其中 ${na} 次有异常` : ""}`]])
+         + flagsHTML + (m.instruction && !pc ? sec("它收到的指令（开头）") + codeBlock("dins", m.instruction) : "") + launchIO(pc);
+  } else if (n.kind === "workflow") {
+    $("#dtitle").textContent = "⚙ " + n.label; $("#dsub").textContent = n.run_id || "";
+    body = kv([viaLine(n.id), ["时间", `${esc(fmtClock(n.t0))} · ${esc(t)}`], ["token 真值", tokLine || "—"], ["规模", `${n.meta.phases} 个阶段 · ${n.meta.agents} 个 agent · ${nc} 次调用`],
+               ["脚本", n.meta.script ? esc(n.meta.script) : "（没找到脚本文件）"]]) + flagsHTML
+         + (n.detail ? sec("它要做什么") + `<div style="font-size:13px;line-height:1.6">${esc(n.detail)}</div>` : "")
+         + sec("阶段") + (n.children || []).map(p => `<div style="margin:6px 0"><b>${esc(p.label)}</b> <span class="muted">· ${p.meta.agents} agent · ${esc(durOr(p.t0, p.t1))} · ${esc(tokTxt(p.tokens, (p.flags || []).includes("partial")))} tok</span>${p.detail ? `<div class="note" style="margin-top:2px">${esc(p.detail)}</div>` : ""}</div>`).join("")
+         + launchIO(pc);
+  } else if (n.kind === "phase") {
+    $("#dtitle").textContent = "▸ 阶段 " + n.label; $("#dsub").textContent = "";
+    body = kv([["时间", `${esc(fmtClock(n.t0))} · ${esc(t)}`], ["token 真值", tokLine || "—"], ["agent", `${n.meta.agents} 个`], ["调用", `${nc} 次`]])
+         + (n.detail ? `<div class="note">${esc(n.detail)}</div>` : "");
+  } else if (n.kind === "skill") {
+    $("#dtitle").textContent = "◆ skill: " + n.label; $("#dsub").textContent = n.continued ? "延续（这一段的行带有它的归属标记）" : "";
+    body = kv([["时间", `${esc(fmtClock(n.t0))} · ${esc(t)}`], ["token 真值", tokLine || "—"], ["调用", `${nc} 次`]])
+         + (n.note ? `<div class="note"><b>没有归属标记</b>　${esc(n.note)}。所以这里只放了加载它的那一步，后面的动作留在上一层，不去猜它管到哪。</div>` : "");
+  } else if (n.kind === "segment") {
+    $("#dtitle").textContent = "↪ " + n.label; $("#dsub").textContent = "";
+    body = `<div class="note">${n.linked ? "后台跑完的 agent / workflow / 命令发回了完成通知，通知里的调用 ID 指回这个任务，所以这段续写归到这里。" : "<b>归属推断</b>　通知里没有能对上的调用 ID，按时间挂在当时的任务上。"}</div>`;
+  } else if (n.kind === "user") {
+    $("#dtitle").textContent = n.label; $("#dsub").textContent = fmtClock(n.t0);
+    body = n.text ? codeBlock("dtxt", n.text) : '<div class="note">你打断了正在进行的这一轮。</div>';
+  } else {
+    $("#dtitle").textContent = n.kind === "say" ? "💬 Claude 说" : n.kind === "think" ? "💭 思考片段" : "· " + (n.label || "");
+    $("#dsub").textContent = fmtClock(n.t0);
+    body = (n.kind === "say" || n.kind === "think") && n.long
+      ? '<div id="dtxt-wrap"><div class="muted">读取全文中…</div></div>'
+      : codeBlock("dtxt", n.label);
+  }
+  $("#dbody").innerHTML = body;
+  if (pc) loadCall(pc, id);
+  if ((n.kind === "say" || n.kind === "think") && n.long) loadText(n, id);
+}
+function launchIO(pc) {          // 合并行 (Agent / Workflow 调用 + 子树) 也能看到启动调用本身的输入与返回
+  if (!pc) return "";
+  return sec("启动它的调用 · 输入", copyBtn("din")) + '<div id="din-wrap"><div class="muted">读取中…</div></div>'
+       + sec("启动它的调用 · 返回", copyBtn("dout")) + '<div id="dout-wrap"><div class="muted">读取中…</div></div>';
+}
+async function loadText(n, drawerId) {
+  const my = DRAWER_REQ, task = SEL;
+  try {
+    const r = await fetch(`/api/workflow/text?task=${encodeURIComponent(task)}&node=${encodeURIComponent(n.id)}`);
+    const d = await r.json();
+    if (!drawerLive(my, drawerId, task) || !$("#dtxt-wrap")) return;
+    $("#dtxt-wrap").innerHTML = d.error ? codeBlock("dtxt", n.label) + `<div class="note">全文读取失败（${esc(d.error)}），上面是前 600 字。</div>`
+                                        : codeBlock("dtxt", d.text);
+  } catch (e) { if (drawerLive(my, drawerId, task) && $("#dtxt-wrap")) $("#dtxt-wrap").innerHTML = codeBlock("dtxt", n.label); }
+}
+
+async function loadCall(n, drawerId) {
+  const my = DRAWER_REQ, task = SEL;
+  const live = () => drawerLive(my, drawerId, task) && $("#din-wrap") && $("#dout-wrap");
+  try {
+    const r = await fetch(`/api/workflow/call?task=${encodeURIComponent(task)}&call=${encodeURIComponent(n.id)}`);
+    const d = await r.json();
+    if (!live()) return;                        // 用户已经切到别的节点 / 任务: 晚到的响应丢弃
+    if (d.error) { $("#din-wrap").innerHTML = $("#dout-wrap").innerHTML = `<div class="muted">读取失败：${esc(d.error)}</div>`; return; }
+    const inp = d.input || {};
+    let inHTML;
+    if ((d.name === "Bash" || d.name === "PowerShell") && inp.command != null) {
+      inHTML = (inp.description ? `<div class="note" style="margin:0 0 6px">${esc(inp.description)}</div>` : "") + codeBlock("din", inp.command);
+    } else if (d.name === "Edit" && inp.old_string != null) {
+      inHTML = `<div class="note" style="margin:0 0 6px">${esc(inp.file_path || "")}${inp.replace_all ? " · 全部替换" : ""}</div>`
+             + codeBlock("din", inp.old_string, "old") + '<div style="height:6px"></div>' + codeBlock("din2", inp.new_string, "new");
+    } else if (d.name === "Write" && inp.content != null) {
+      inHTML = `<div class="note" style="margin:0 0 6px">${esc(inp.file_path || "")}</div>` + codeBlock("din", inp.content, "new");
+    } else {
+      inHTML = codeBlock("din", JSON.stringify(inp, null, 2));
+    }
+    $("#din-wrap").innerHTML = inHTML;
+    const ex = d.extra || {};
+    let out = d.output == null ? "（没有结果）" : d.output;
+    if (ex.stderr) out += "\n\n── stderr ──\n" + ex.stderr;
+    $("#dout-wrap").innerHTML = codeBlock("dout", out, d.is_error ? "err" : "")
+      + (ex.persistedOutputPath ? `<div class="note">完整输出被 Claude Code 另存到：${esc(ex.persistedOutputPath)}</div>` : "");
+  } catch (e) { if (live()) $("#din-wrap").innerHTML = `<div class="muted">请求失败：${esc(e)}</div>`; }
+}
+
+// ---------------------------------------------------------------- 事件
+document.addEventListener("click", e => {
+  const tr = e.target.closest(".trow");
+  if (tr) { openTask(tr.dataset.id); return; }
+  const more = e.target.closest("[data-more]");
+  if (more) { const pre = document.getElementById(more.dataset.more); pre.textContent = pre.dataset.full; more.remove(); return; }
+  const cp = e.target.closest("[data-copy]");
+  if (cp) { const pre = document.getElementById(cp.dataset.copy); if (pre && navigator.clipboard) navigator.clipboard.writeText(pre.dataset.full || pre.textContent); cp.textContent = "已复制"; setTimeout(() => cp.textContent = "复制", 1200); return; }
+  if (e.target.id === "dclose") { closeDrawer(); return; }
+  if (e.target.id === "goall") { SINCE = "all"; $("#since").value = "all"; syncUrl(); loadTasks(); return; }
+  if (e.target.id === "clearproj") { PROJ = ""; $("#proj").value = ""; syncUrl(); renderTasks(); return; }
+  if (e.target.id === "ptitle") { e.target.classList.toggle("clamp"); return; }
+  const jump = e.target.closest("[data-jump]");
+  if (jump && CUR) { const n = firstWithFlag(CUR.tree, jump.dataset.jump); if (n) { reveal(n.id); openDrawer(n.id); } return; }
+  const mo = e.target.closest(".mo");
+  if (mo && CUR) { reveal(mo.dataset.ref); return; }
+  if (e.target.id === "exall") { MODE = "all"; EXP = {}; FORCE = new Set(); rerenderGrid(); return; }
+  if (e.target.id === "coall") { MODE = "none"; EXP = {}; FORCE = new Set(); rerenderGrid(); return; }
+  if (e.target.id === "dfl") { MODE = "default"; EXP = {}; FORCE = new Set(); rerenderGrid(); return; }
+  const row = e.target.closest("#grid .r");
+  if (row && !row.classList.contains("hd") && CUR) {
+    const n = rowNode(row.dataset.id);
+    if (!n) return;
+    if (n.kind === "group" || e.target.closest(".caret")) { toggle(n); return; }   // 三角 / 组行: 折叠展开
+    if (e.detail > 1) return;                                                       // 双击的第二下: 交给 dblclick
+    openDrawer(n.id);                                                               // 其余: 看明细
+  }
+});
+document.addEventListener("dblclick", e => {                                        // 双击任意可展开行: 折叠展开
+  const row = e.target.closest("#grid .r");
+  if (!row || row.classList.contains("hd") || !CUR) return;
+  const n = rowNode(row.dataset.id);
+  if (n && n.kind !== "group" && expandable(n)) { window.getSelection && window.getSelection().removeAllRanges(); toggle(n); }
+});
+function rowItem(id) { return flatten(CUR.tree).find(x => x.n.id === id) || null; }
+function rowNode(id) { const it = rowItem(id); return it ? it.n : null; }
+function toggle(n) {
+  if (!expandable(n)) return;
+  const it = rowItem(n.id);
+  EXP[n.id] = !isOpen(n, it ? it.p : null); FORCE.delete(n.id); rerenderGrid();
+}
+document.addEventListener("change", e => {
+  if (e.target.id === "evs") { SHOW_EVENTS = e.target.checked; rerenderGrid(); }
+  if (e.target.id === "since") { SINCE = e.target.value; syncUrl(); loadTasks(); }
+  if (e.target.id === "proj") { PROJ = e.target.value; syncUrl(); renderTasks(); }
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+$("#q").addEventListener("input", e => { QTEXT = e.target.value.trim().toLowerCase(); renderTasks(); });
+$("#reload").addEventListener("click", () => { loadTasks(); if (SEL) openTask(SEL, true); });
+$("#since").value = SINCE;
+loadTasks();
+</script>
+</body></html>

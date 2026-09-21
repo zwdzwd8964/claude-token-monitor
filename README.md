@@ -11,14 +11,15 @@
 
 ---
 
-## 现在是什么状态（2026-09-20 实测）
+## 现在是什么状态（2026-09-21 实测）
 
 | | |
 |---|---|
-| 代码 / 测试 | 6.7k 行 · **177 个测试全过**（`python -m pytest -q`） |
+| 代码 / 测试 | 约 8k 行 · **223 个测试全过**（`python -m pytest -q`） |
+| 工作流回放（新） | `/workflow`：近 7 天 97 个任务可回放；任务 token 与 /tokens **逐 token 对账 97/97** |
 | 状态推断可信度 | 回测 **97.0% 准确率 / 1343 个评估点**（`python -m tokmon backtest`） |
 | 数据契约 | `tokmon doctor` 全绿（覆盖 ≈100%、0 跨来源碰撞） |
-| **手机环** | ⚠ **通道已就绪但从未用真账号验证过**——配一次 Pushover/Telegram 才算闭环 |
+| 手机环 | ⏸ 已搁置（2026-09-21 你的决定）：通道就绪但从未用真账号验证过 |
 
 全景评估与逐条侧批见 [docs/RECAP_2026-09-20.md](docs/RECAP_2026-09-20.md)（或浏览器打开
 [docs/recap.html](docs/recap.html)）。
@@ -48,15 +49,16 @@ python -m tokmon doctor              # 体检 (升级 Claude Code 后先跑这�
 
 公共参数（写在子命令后）：`--scope {all,main}` · `--vscode-only` · `--since` · `--interval` · `--claude-dir`
 
-## 驾驶舱的 9 个页面
+## 驾驶舱的页面
 
 | 页面 | 支柱 / 层 | 内容 |
 |---|---|---|
 | `/sessions` | 对话活动 | 每个会话在 **推进 / 处理中 / 久未返回 / 等你 / 读不出**，含当前步骤与真实思考片段 |
-| `/tokens` | 成本 | KPI + 「vs 上一周期」自基线对比 + 日/周预算设置 |
+| `/tokens` | 成本 | KPI + 「vs 上一周期」自基线对比 + 日/周预算设置；项目名可点进工作流回放 |
+| `/workflow` | 工作流回放 | **一次提问是怎么被完成的**：结构化摘要（耗时三段 / token / 异常 / 关键时刻）+ 调用树与时间轴并排 + 明细抽屉（完整输入输出，已脱敏）。skill / MCP / 子 agent / workflow 的层级都在里面 |
 | `/processes` | 进程 | 进程 / 监听端口 / 活动连接 / cloudflared 隧道 / 健康探测（纯只读 + 命令行脱敏） |
-| `/notify` | 通知层 | 推送 **与抑制** 双记的 feed（看得到「为什么没打扰你」）+ 通道配置 |
-| `/control` | 控制层 | 远程批 permission · 终止进程 · 释放端口 · **steer 发指令** · **答 Claude 的选择题** |
+| `/notify` | 通知层 | ⏸ 已从导航隐藏（URL 仍可用）。推送与抑制双记的 feed + 通道配置 |
+| `/control` | 控制层 | ⏸ 已从导航隐藏（URL 仍可用）。远程批 permission · 终止进程 · 释放端口 · steer · 答选择题 |
 | `/billing` | 厂商账单 | Anthropic / OpenAI 官方 usage API（Google 无官方 API，诚实标「不可得」） |
 | `/doctor` `/backtest` | 信任基建 | 体检与回测的 Web 视图 |
 | `/` | 入口 | 分流到上面各页 |
@@ -112,6 +114,7 @@ python -m tokmon serve
 | [EVOLUTION.md](EVOLUTION.md) | 逐代进化史 + 证据分级（2026-07-01） | 📜 历史快照 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本变更 | ✅ 已恢复更新 |
 | [docs/atlas.html](docs/atlas.html) | 系统图谱（离线 Mermaid） | 📜 停在 07-01，不含 billing/steer |
+| [WORKFLOW_TAB_PLAN.md](WORKFLOW_TAB_PLAN.md) | **`/workflow` 工作流追踪器一页规格**（当前优先级） | 🟡 S1 已交付（0.10.0），待你验收 → S2 |
 | [RUNNER_SDK_PLAN.md](RUNNER_SDK_PLAN.md) | steer 改用 Agent SDK | ✅ 已实施 |
 | [SESSIONS_FILTER_PLAN.md](SESSIONS_FILTER_PLAN.md) | `/sessions` 过滤器 V1 | ✅ 已实施 |
 | [REMOTE_CONTROL_PLAN.md](REMOTE_CONTROL_PLAN.md) | 远程 steer + 上手机 | 🟡 S1/S0 已实施，S2/S3 未做 |
@@ -124,7 +127,8 @@ python -m tokmon serve
 
 ## 已知缺口（诚实记账）
 
-- **手机环未用真账号验证过**——通道、策略、线路形状都有测试守卫，只剩「你配一次账号」。
+- **手机环未用真账号验证过**（已搁置）——通道、策略、线路形状都有测试守卫，只剩「你配一次账号」。
+- **`/workflow` 的「等你」只认 AskUserQuestion / ExitPlanMode**：permission 弹窗的等待在 transcript 里和工具执行分不开，算在机器执行里。
 - **无持久化**：每次全量重扫 transcript（数据长大后会变慢，SQLite 仍是 backlog）。
 - **`report` 没有 `--by` / `--json`**——NORTH_STAR 里标着「下一个待做」，被整个平台化跳过了。
 - **推断 doctor 的 L3（事件完整性回放）/ L4（打扰预算）未做。**
@@ -149,7 +153,9 @@ tokmon/
   runner                       steer (Agent SDK + canUseTool, 唯一重依赖)
   billing                      厂商账单 (第 4 数据源, 绝不 import 成本内核)
   remote                       MC_REMOTE 读页收口 (读门 / 控制门故意分离)
+  trace                        工作流追踪支柱 (/workflow 数据层: 任务切分 / 调用树 / 耗时三段 / token 对账)
+  pages/workflow.html          /workflow 页面 (独立文件, 不再内联进 serve.py)
   inference_doctor / inference_backtest   推断层的体检与回测
-  serve                        驾驶舱外壳 (9 个页面)
-tests/                         177 例: pytest -q
+  serve                        驾驶舱外壳
+tests/                         223 例: pytest -q
 ```
