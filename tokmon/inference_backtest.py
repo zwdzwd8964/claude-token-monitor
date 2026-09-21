@@ -25,6 +25,7 @@ from pathlib import Path
 
 from . import activity
 from .discovery import discover
+from .util import term_text
 
 _EPS = 1.0                 # 评估时刻取 successor 到达前最后一刻
 _STUCK = None              # 运行时从 cfg 取
@@ -276,10 +277,10 @@ def run_backtests(base: Path, days: int = 7) -> None:
     try:
         from rich.console import Console
         console = Console()
-        emit = console.print
+        emit = lambda ln="": console.print(term_text(str(ln)))   # noqa: E731 - 编码降级后再交给 rich
         console.rule("推断准确率回测 (L2 · 三把尺, 你分别评测)")
     except ImportError:
-        emit = print
+        emit = lambda ln="": print(term_text(str(ln)))           # noqa: E731
         print("推断准确率回测 (L2 · 三把尺)")
         print("=" * 40)
     for oracle in ORACLES:

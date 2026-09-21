@@ -10,3 +10,8 @@ psutil>=5.9
 # 只有 SDK 的 canUseTool 能拦下 AskUserQuestion 并把你的选择塞回会话 (`claude -p` 结构上做不到)。
 # 不装则 /control 的 steer 明确报「Agent SDK 未安装」, 看板其余部分照常。
 claude-agent-sdk>=0.2
+
+# --- 开发用 (跑测试需要) ---
+# EVOLUTION.md §4 点名过的"开箱裂缝": 照 requirements 装完会以为"这项目没测试"
+# (unittest discover 发现 0 个 —— 测试是 pytest 风格)。装上它: `python -m pytest -q` -> 177 passed。
+pytest>=7.0

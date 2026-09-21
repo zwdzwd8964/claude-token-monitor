@@ -1,5 +1,10 @@
 # 下一代 · 远程 steer（平台自有可控会话）— 设计草图
 
+> **【状态章 · 2026-09-20 核对】🟡 部分实施。**
+> **S1（本地 steer 内核）✅ 已交付**（见 [RUNNER_SDK_PLAN.md](RUNNER_SDK_PLAN.md)，已换成 Agent SDK 驱动）。
+> **§6 的 `MC_REMOTE` 收口 ✅ 已于 0.9.0 交付**（`tokmon/remote.py`：读页鉴权 / Host 白名单 /
+> hook token 改走 header / 配置不自洽拒绝启动）。**S0 的隧道、S2、S3 仍未做。**
+
 > 给主程序的实现交接。本文件是**设计与约束**，不是最终代码。
 > 上层方向：[MISSION_CONTROL.md](MISSION_CONTROL.md) §9 的「舰队驾驶舱」+ [M4.5_PLAN.md](M4.5_PLAN.md) §B/§C 一直欠的**手机环**。
 > 来源：「远程监测和控制 Claude Code 对话」会话（2026-07-10）的锁定方案 + 本次对 `claude` CLI **2.1.37** 的实测核验（§3）。

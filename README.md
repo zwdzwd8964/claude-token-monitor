@@ -1,116 +1,155 @@
-# tokmon — Claude Code Token 监控器 (v0 雏形)
+# Claude Mission Control
 
-监控你在**所有 VSCode session** 里用 Claude Code vibe coding 产生的 token 用量与等价成本。
+> 当 Claude Code 在替我 agentic coding 时，让我随时知道它在
+> **推进 / 卡住 / 烧钱 / 乱改**，并且只在重要时刻、用恰当的方式提醒我——**有用，且不烦。**
 
-数据直接来自 Claude Code 自己写的会话 transcript（`~/.claude/projects/**/*.jsonl`），
-每条 assistant 消息都带完整 `usage` 字段——**无需任何网络代理、无需改 Claude Code 配置**，
-纯本地只读解析。
+一个**纯本地、只读**的 AI coding 运维驾驶舱。数据来自 Claude Code 自己写的会话 transcript
+（`~/.claude/projects/**/*.jsonl`）——**不装代理、不 hook、不改 Claude Code 的任何配置**。
 
-> 📍 这是雏形 v0。它该往哪进化、怎么进化，见 [NORTH_STAR.md](NORTH_STAR.md)。
->
-> 🛰️ tokmon 是更大平台 **Claude Mission Control**（AI coding 运维驾驶舱）的「成本支柱」。
-> 平台级方向（监控→事件→通知 三层架构）见 [MISSION_CONTROL.md](MISSION_CONTROL.md)。
+它由 `tokmon`（token 成本监控）长成：那部分仍是平台的**成本支柱**，宪章见 [NORTH_STAR.md](NORTH_STAR.md)；
+平台级方向见 [MISSION_CONTROL.md](MISSION_CONTROL.md)。
+
+---
+
+## 现在是什么状态（2026-09-20 实测）
+
+| | |
+|---|---|
+| 代码 / 测试 | 6.7k 行 · **177 个测试全过**（`python -m pytest -q`） |
+| 状态推断可信度 | 回测 **97.0% 准确率 / 1343 个评估点**（`python -m tokmon backtest`） |
+| 数据契约 | `tokmon doctor` 全绿（覆盖 ≈100%、0 跨来源碰撞） |
+| **手机环** | ⚠ **通道已就绪但从未用真账号验证过**——配一次 Pushover/Telegram 才算闭环 |
+
+全景评估与逐条侧批见 [docs/RECAP_2026-09-20.md](docs/RECAP_2026-09-20.md)（或浏览器打开
+[docs/recap.html](docs/recap.html)）。
+
+---
 
 ## 快速开始
 
 ```powershell
-# 1. (可选但推荐) 装 rich, 获得漂亮表格与实时 TUI
-pip install rich
+pip install -r requirements.txt      # rich / psutil 都是可选, 不装也能跑
 
-# 2. 实时盯盘 (你最想要的核心体验)
-python -m tokmon watch
-
-# 3. 按需报表
-python -m tokmon report --since 7d
-python -m tokmon report --since today --scope main
-python -m tokmon report --since all
-
-# 4. 数据体检 (升级 Claude Code 后跑一次, 确认格式没变 / 数字可信)
-python -m tokmon doctor
-
-# 5. 本地监控台 (早期预览, 只监听本机, 不外发)
-python -m tokmon serve            # 主页 http://127.0.0.1:8765/  → /tokens (Token 看板) + /processes (进程监控)
+python -m tokmon serve               # 驾驶舱: http://127.0.0.1:8765/
+python -m tokmon watch               # 终端实时盯盘
+python -m tokmon report --since 7d   # 按需报表
+python -m tokmon doctor              # 体检 (升级 Claude Code 后先跑这个)
 ```
-
-不装 rich 也能跑——自动降级为纯文本输出。
 
 ## 命令
 
 | 命令 | 说明 |
 |------|------|
-| `python -m tokmon watch` | 实时盯盘 TUI：今天/近 7 天/全部 的 token+成本，正在跑的项目高亮，每 5s 刷新 |
-| `python -m tokmon report` | 按天/项目/模型/来源 的汇总报表 |
-| `python -m tokmon doctor` | 数据契约体检：识别率/字段覆盖/去重健康/未知模型——守护「依赖 Claude Code 内部格式」这个最大风险 |
-| `python -m tokmon serve` | 本地监控台（早期预览，只监听 `127.0.0.1`、默认不外发）。主页分流到两个**并行同级**的视图，`--host`/`--port` 可调 |
+| `serve` | 本地驾驶舱（纯标准库 `http.server`，零依赖可离线，默认只监听 `127.0.0.1`） |
+| `watch` | 实时盯盘 TUI：今天/近 7 天/全部的 token + 成本，每 5s 刷新 |
+| `report` | 按天 / 项目 / 模型 / 来源的汇总报表 |
+| `doctor` | **两半体检**：成本契约（解析/去重/定价）+ 推断契约（状态判断的载重假设） |
+| `backtest` | 用 transcript 的**未来当真值**回测状态推断准确率，三把尺 + 混淆矩阵 |
 
-### 监控台的两个页面（`tokmon serve`）
+公共参数（写在子命令后）：`--scope {all,main}` · `--vscode-only` · `--since` · `--interval` · `--claude-dir`
 
-主页 `/` 是入口，下面两个监控并行同级、互不耦合：
+## 驾驶舱的 9 个页面
 
-- **`/tokens` — Token 看板**：KPI + 按天/项目/模型/来源，带 **「vs 上一周期」自基线对比**（回答「跟我的预期差多少」）。数据来自 token 监控内核（`parser/pricing/aggregate`）。
-- **`/processes` — 进程 / 端口监控**（纯标准库 + `psutil`，**纯只读**）：
-  - 本机进程资源（CPU / 内存 / 运行时长 / 命令行），内存∪CPU 各取 Top N；
-  - **localhost 监听端口 → 占用进程**（loopback / all-interfaces 标记）；
-  - **活动网络连接**（只数真正 ESTABLISHED 的 TCP + 已连 UDP，不含 TIME_WAIT 等），并按**远端 IP 聚合**看「谁在连哪里」；
-  - **本机 `cloudflared` 隧道进程**（状态 / 资源 / 监听口；隧道走 QUIC，边缘链路在 socket 层不可见，如实说明）；
-  - **本地服务健康探测**（opt-in，点按钮才跑）：对本机可经 `127.0.0.1`/`::1` 触达的端口先 TCP 连一次、开着再发 HTTP HEAD，显示 存活 / 状态码 / 响应时间。**主动连接但只碰本机、不外发**；HEAD 在 HTTP 层只读幂等，对非 HTTP 服务仅是一次会被其日志记录的异常连接（不改数据）。
-  - **只读、不外发**：只观测、绝不 kill/改任何东西。被动快照零网络请求；命令行做尽力脱敏（token/key/URI 口令等）。缺 `psutil` 时该页友好提示安装，**不影响 Token 看板**。
+| 页面 | 支柱 / 层 | 内容 |
+|---|---|---|
+| `/sessions` | 对话活动 | 每个会话在 **推进 / 处理中 / 久未返回 / 等你 / 读不出**，含当前步骤与真实思考片段 |
+| `/tokens` | 成本 | KPI + 「vs 上一周期」自基线对比 + 日/周预算设置 |
+| `/processes` | 进程 | 进程 / 监听端口 / 活动连接 / cloudflared 隧道 / 健康探测（纯只读 + 命令行脱敏） |
+| `/notify` | 通知层 | 推送 **与抑制** 双记的 feed（看得到「为什么没打扰你」）+ 通道配置 |
+| `/control` | 控制层 | 远程批 permission · 终止进程 · 释放端口 · **steer 发指令** · **答 Claude 的选择题** |
+| `/billing` | 厂商账单 | Anthropic / OpenAI 官方 usage API（Google 无官方 API，诚实标「不可得」） |
+| `/doctor` `/backtest` | 信任基建 | 体检与回测的 Web 视图 |
+| `/` | 入口 | 分流到上面各页 |
 
-> 数据层独立：进程监控在 `tokmon/procmon.py`，**不碰 token 监控内核**。
+---
 
-公共参数（写在子命令后即可）：
+## 三条安全边界（这是这个项目的人格，别改坏）
 
-| 参数 | 默认 | 说明 |
-|------|------|------|
-| `--scope {all,main}` | `all` | `all`=含子智能体/workflow；`main`=仅你直接交互的主会话 |
-| `--vscode-only` | 关 | 只统计位于 `.vscode` 之下的会话（排除其它目录的会话） |
-| `--since` | `7d` (report) | 时间窗口：`today` / `all` / `24h` / `7d` / `2w` |
-| `--interval` | `5` (watch) | TUI 刷新间隔秒数 |
-| `--claude-dir` | `~/.claude/projects` | 数据目录覆盖 |
+**1 · 监控永远只读。** 三个支柱绝不写 `~/.claude`、不 hook、不注入、不替你点 permission。
+*控制*是单独一层，只执行**你显式下达**的、allow-list 内的动作，每条二次确认 + 鉴权 + 全审计，失败一律**报「做不到」**。
 
-## 项目 = `.vscode` 下的子文件夹
+**2 · 默认一个字节不出本机。** 至今只有两个**受控破例**出站，都默认全关、显式 opt-in：
 
-『监控单位』是 **`.vscode` 文件夹下的每个直接子文件夹**（即你的每个 VSCode 工作区）。
-项目名从 transcript 里的真实 `cwd` 还原，因此：
+| 出站 | 开关 | 内容 |
+|---|---|---|
+| 通知（Telegram / Pushover） | `MC_PUSHOVER_TOKEN`+`MC_PUSHOVER_USER` 或 `MC_TELEGRAM_TOKEN`+`MC_TELEGRAM_CHAT_ID` | 只有 严重度/类型/项目/极简详情，**无命令行、无路径、无 diff、无密钥** |
+| 厂商账单 | `~/.tokmon/providers.json`（0600） | 带 admin key 去官方 usage API 拉聚合数字 |
 
-- 空格被保留（`edgar api`、`news feed 0622`，不会被编码成 `-`）。
-- 更深的工作目录会归并回它所属的子文件夹：
-  `…\.vscode\API\auto refresh strategy\prod_20260604` → 归入项目 **API**（更深的路径存为 subpath，备未来 drill-down）。
-- 不在 `.vscode` 下的会话（如你在别处跑的）回退用目录名，可用 `--vscode-only` 过滤掉。
+**3 · 暴露到本机之外必须显式收口（`MC_REMOTE`）。** 默认只听 `127.0.0.1`。要经隧道上手机：
 
-> 这条逻辑全在 `tokmon/project.py` 的纯函数 `workspace_identity()` 里，有单测覆盖。
+```powershell
+$env:MC_REMOTE = "1"
+$env:MC_REMOTE_HOSTS = "your-random-name.trycloudflare.com"   # 显式白名单, 不支持通配
+python -m tokmon serve
+```
 
-## 它统计了什么
+开启后**所有页面与 `/api/*` 都要令牌**（手机上先开 `/login` 贴一次，存 HttpOnly Cookie）。
+配置不自洽（绑非本机却没开远程 / 开了远程却没白名单或没令牌）→ **拒绝启动**。
 
-每条 assistant 消息的 `usage`：
-- `input` / `output` tokens
-- 缓存写入（区分 5m / 1h TTL，倍率不同）/ 缓存读取
-- web search / web fetch 次数
-- 按模型家族定价（Opus $5/$25、Sonnet $3/$15、Haiku $1/$5、Fable $10/$50 per 1M），
-  缓存写 ×1.25(5m)/×2(1h)、缓存读 ×0.1
+> **诚实边界**：token-only 是唯一的闸。所以——隧道 URL 当秘密、**用完即关**、泄露就轮换
+> `~/.tokmon/control_token`。它的入站攻击面**大于** Telegram 的零端口长轮询，后者才是更安全的终态。
 
-> ⚠️ 若你是 Max/Pro 订阅用户，显示的 `$` 是**等价用量价值**，不是真实账单扣费。
+---
 
-## 它还没做什么
+## 监控单位 = `.vscode` 下的子文件夹
 
-见 [NORTH_STAR.md](NORTH_STAR.md) 的「非目标」与「路线图」。一句话：v0 只做**离线/轮询式的本地统计与展示**，
-没有持久化、没有预算告警、没有 Web 看板、没有真正的文件监听（用的是定时重扫）。
+项目名从 transcript 里的真实 `cwd` **逐记录**还原（会话中途 `cd` 也不会算错项目）：
+空格保留；更深的工作目录归并回所属子文件夹（余下存 `subpath`）；不在 `.vscode` 下的会话回退目录名，
+可用 `--vscode-only` 过滤。逻辑全在 [tokmon/project.py](tokmon/project.py) 的纯函数里，有单测覆盖。
+
+> ⚠️ 订阅用户（Max/Pro）看到的 `$` 是**等价用量价值**，不是真实账单扣费。这里**不做账单对账**——
+> 实测订阅会话根本不进 API 平台账单，硬对就是自欺（理由见 [PROVIDER_BILLING_PLAN.md](PROVIDER_BILLING_PLAN.md) §0.3）。
+
+---
+
+## 文档地图（**本表是唯一索引**，别再靠猜）
+
+| 文档 | 性质 | 状态 |
+|---|---|---|
+| [MISSION_CONTROL.md](MISSION_CONTROL.md) | 平台宪章（北极星 / 事件契约 / 8 条不变量） | ✅ 现行 |
+| [NORTH_STAR.md](NORTH_STAR.md) | 成本支柱宪章 | ✅ 现行 |
+| [docs/RECAP_2026-09-20.md](docs/RECAP_2026-09-20.md) | **最新全景 + 侧批 + 重启计划** | ✅ 现行 |
+| [EVOLUTION.md](EVOLUTION.md) | 逐代进化史 + 证据分级（2026-07-01） | 📜 历史快照 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本变更 | ✅ 已恢复更新 |
+| [docs/atlas.html](docs/atlas.html) | 系统图谱（离线 Mermaid） | 📜 停在 07-01，不含 billing/steer |
+| [RUNNER_SDK_PLAN.md](RUNNER_SDK_PLAN.md) | steer 改用 Agent SDK | ✅ 已实施 |
+| [SESSIONS_FILTER_PLAN.md](SESSIONS_FILTER_PLAN.md) | `/sessions` 过滤器 V1 | ✅ 已实施 |
+| [REMOTE_CONTROL_PLAN.md](REMOTE_CONTROL_PLAN.md) | 远程 steer + 上手机 | 🟡 S1/S0 已实施，S2/S3 未做 |
+| [M4.5_PLAN.md](M4.5_PLAN.md) | 信任加固四 lens + 手机环 | 🟡 L1/L2 + 通道已做，L3/L4 未做 |
+| [FLEET_COCKPIT_V0_PLAN.md](FLEET_COCKPIT_V0_PLAN.md) | 手机答 AskUserQuestion | 🟡 网页答题已做，Telegram 双向未做 |
+| [PROVIDER_BILLING_PLAN.md](PROVIDER_BILLING_PLAN.md) | `/billing` | 🟡 代码已交付，等你填 admin key |
+| [SESSIONS_V3_PLAN.md](SESSIONS_V3_PLAN.md) | `/sessions` 表格 + 分面过滤 | ❌ **未实施**（今天只取了其中最小诚实切片） |
+| [SESSIONS_FILTER_V2_PLAN.md](SESSIONS_FILTER_V2_PLAN.md) | 被 V3 取代 | ❌ **从未实施，仅存档** |
+| [docs/HOOK_EVOLUTION_BRIEF.md](docs/HOOK_EVOLUTION_BRIEF.md) · [docs/HOOK_ISOLATED_TEST_GUIDE.md](docs/HOOK_ISOLATED_TEST_GUIDE.md) | hook 诊断与操作指引 | 📜 参考 |
+
+## 已知缺口（诚实记账）
+
+- **手机环未用真账号验证过**——通道、策略、线路形状都有测试守卫，只剩「你配一次账号」。
+- **无持久化**：每次全量重扫 transcript（数据长大后会变慢，SQLite 仍是 backlog）。
+- **`report` 没有 `--by` / `--json`**——NORTH_STAR 里标着「下一个待做」，被整个平台化跳过了。
+- **推断 doctor 的 L3（事件完整性回放）/ L4（打扰预算）未做。**
+- **风险事件（`REPEATED_FILE_EDIT` / `LARGE_DIFF` / `SENSITIVE_FILE_TOUCH`）未做**——
+  「推进 / 卡住 / 烧钱」都有了，**「它在干危险事吗」是唯一还空着的一格**。
 
 ## 结构
 
 ```
 tokmon/
-  discovery.py  发现并分类 session 文件 (main/subagent/workflow)
-  project.py    cwd -> .vscode 子文件夹 的项目身份识别 (纯函数, 有单测)
-  parser.py     JSONL -> UsageRecord, 去重 + 文件级缓存
-  pricing.py    模型定价表 + 成本计算  ← 改价只动这里
-  records.py    UsageRecord 数据模型
-  aggregate.py  按天/项目/模型/来源聚合
-  report.py     按需 CLI 报表
-  tui.py        实时盯盘 TUI
-  doctor.py     数据契约体检 (格式漂移 / 去重 / 未知模型)
-  util.py       格式化 / 时间窗口解析
-  cli.py        命令行入口
-tests/
-  test_tokmon.py  project/pricing/parser 单测 (python tests\test_tokmon.py 即可跑)
+  # 成本支柱 (内核: 纯函数, 不被展示层污染)
+  discovery / parser / pricing / aggregate / records / project / util
+  report / tui                 CLI 两种形态
+  doctor                       数据契约体检
+  # 平台
+  activity                     对话活动支柱 (classify_state 纯函数)
+  procmon                      进程支柱 (只读 + 脱敏)
+  events                       事件总线 (支柱无关, payload allow-list)
+  event_sources/               activity_source (5s) · cost_source (60s)
+  notify                       通知层 (总线消费者; Telegram + Pushover, 默认全关)
+  control                      控制层 (permission 审批, 全程失败安全)
+  runner                       steer (Agent SDK + canUseTool, 唯一重依赖)
+  billing                      厂商账单 (第 4 数据源, 绝不 import 成本内核)
+  remote                       MC_REMOTE 读页收口 (读门 / 控制门故意分离)
+  inference_doctor / inference_backtest   推断层的体检与回测
+  serve                        驾驶舱外壳 (9 个页面)
+tests/                         177 例: pytest -q
 ```

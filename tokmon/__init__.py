@@ -1,9 +1,13 @@
-"""tokmon — Claude Code 跨 VSCode session 的 token 用量监控雏形 (v0).
+"""Claude Mission Control —— 纯本地只读的 AI coding 运维驾驶舱 (由 tokmon 成本监控长成)。
 
-数据来源: ~/.claude/projects/<project>/**/*.jsonl —— Claude Code 为每个会话写的
-transcript 文件。每条 assistant 消息都带完整的 usage 字段, 我们解析、去重、定价、聚合。
+数据来源: ~/.claude/projects/<project>/**/*.jsonl —— Claude Code 为每个会话写的 transcript。
+三个只读支柱 (成本 / 进程 / 对话活动) -> 事件总线 -> 通知与控制。不 hook、不注入、不改 Claude Code。
 
-入口: `python -m tokmon watch`  /  `python -m tokmon report`
+入口: `python -m tokmon serve | watch | report | doctor | backtest`
+方向: MISSION_CONTROL.md (平台) + NORTH_STAR.md (成本支柱); 现状与侧批: docs/RECAP_2026-09-20.md
 """
 
-__version__ = "0.3.0"
+# 0.3.0 -> 0.9.0: 版本号自 2026-06-28 起就停在 0.3.0, 而代码早已走过
+# serve/M1/M2/M3/M3.5/M4/M4.5/billing/steer。0.9 = 平台各层齐备, 但"手机环真机验证"未完成,
+# 所以**还不是 1.0**。见 CHANGELOG.md 的「未记录期」条目。
+__version__ = "0.9.0"

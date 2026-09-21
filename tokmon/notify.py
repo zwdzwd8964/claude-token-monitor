@@ -9,6 +9,8 @@
 - **有用且不烦 (§7)**: 严重度门控 + 静默时段(只放行 critical) + 去抖(同 类型+会话) + 限流。默认静默胜过默认吵。
 - **token 不外露**: 任何 API/feed 只暴露 "已配置/未配置", 绝不回显 token。
 - **P4**: 只 import stdlib + events; 不碰任何 pillar。
+- **通道是可插拔 output (§6)**: Telegram(双向的一半: 现只出) + Pushover(只出)。**全部默认关**,
+  配了哪个发哪个, 都不配就一个字节不出本机。加新通道 = 加一个 `_xxx_send` + 进 `_deliver()`, 不动策略层。
 
 策略函数 `decide` 是纯函数, 易单测 (像 classify_state / derive_events 那样钉行为)。
 """
@@ -41,6 +43,8 @@ _TYPE_LABEL = {
 class NotifyConfig:
     telegram_token: str = ""
     telegram_chat_id: str = ""
+    pushover_token: str = ""             # Pushover 的 application/API token
+    pushover_user: str = ""              # Pushover 的 user key
     push_min_severity: str = "warning"   # info|warning|critical 起步门槛 (info 永不推送, 只进时间线)
     quiet_start: int | None = None       # 静默时段本地小时 [start,end); None=不启用
     quiet_end: int | None = None
@@ -52,12 +56,21 @@ class NotifyConfig:
     def telegram_configured(self) -> bool:
         return bool(self.telegram_token and self.telegram_chat_id)
 
+    def pushover_configured(self) -> bool:
+        return bool(self.pushover_token and self.pushover_user)
+
+    def any_channel(self) -> bool:
+        """有没有任何外发通道。都没有 -> 一个字节不出本机 (默认状态)。"""
+        return self.telegram_configured() or self.pushover_configured()
+
 
 def load_config() -> NotifyConfig:
     """从环境变量 + 可选 ~/.tokmon/notify.json 读取。默认 Telegram 关 (无 token)。"""
     cfg = NotifyConfig()
     cfg.telegram_token = os.environ.get("MC_TELEGRAM_TOKEN", "").strip()
     cfg.telegram_chat_id = os.environ.get("MC_TELEGRAM_CHAT_ID", "").strip()
+    cfg.pushover_token = os.environ.get("MC_PUSHOVER_TOKEN", "").strip()
+    cfg.pushover_user = os.environ.get("MC_PUSHOVER_USER", "").strip()
     p = Path.home() / ".tokmon" / "notify.json"
     if p.exists():
         try:
@@ -75,6 +88,10 @@ def load_config() -> NotifyConfig:
                 cfg.telegram_token = str(data["telegram_token"]).strip()
             if not cfg.telegram_chat_id and data.get("telegram_chat_id"):
                 cfg.telegram_chat_id = str(data["telegram_chat_id"]).strip()
+            if not cfg.pushover_token and data.get("pushover_token"):
+                cfg.pushover_token = str(data["pushover_token"]).strip()
+            if not cfg.pushover_user and data.get("pushover_user"):
+                cfg.pushover_user = str(data["pushover_user"]).strip()
             if isinstance(data.get("enabled_types"), list):
                 cfg.enabled_types = set(data["enabled_types"])
         except Exception:
@@ -143,6 +160,33 @@ def _telegram_send(token: str, chat_id: str, text: str, timeout: float = 8.0) ->
         return 200 <= r.status < 300
 
 
+def pushover_priority(severity: str) -> int:
+    """严重度 -> Pushover 优先级。**纯函数, 单测钉死。**
+
+    critical -> 1 (high: 会突破手机端的 quiet hours —— "进度被你阻塞"就该突破);
+    其余      -> 0 (normal)。
+
+    **永不使用 priority 2 (emergency)**: 它会反复重试直到你手动 ack ——
+    那正是 §7「有用且不烦」最想避免的东西。一个让人想关掉的通知系统是负价值;
+    宁可漏一次, 不做尖叫的闹钟。
+    """
+    return 1 if SEV_RANK.get(severity, 0) >= SEV_RANK["critical"] else 0
+
+
+def _pushover_send(token: str, user: str, text: str, severity: str = "warning",
+                   timeout: float = 8.0) -> bool:
+    """出站网络调用 #2。固定打到 api.pushover.net, 仅 messages.json。内容同 §6 最小化。"""
+    data = urllib.parse.urlencode({
+        "token": token, "user": user, "message": text,
+        "title": "Claude Mission Control",
+        "priority": str(pushover_priority(severity)),
+    }).encode("utf-8")
+    req = urllib.request.Request("https://api.pushover.net/1/messages.json",
+                                 data=data, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return 200 <= r.status < 300
+
+
 class Notifier:
     def __init__(self, cfg: NotifyConfig):
         self.cfg = cfg
@@ -190,19 +234,16 @@ class Notifier:
                 ev, rec = self._q.get(timeout=0.5)
             except queue.Empty:
                 continue
-            if not self.cfg.telegram_configured():
+            if not self.cfg.any_channel():
                 with self._lock:
                     rec["delivery"] = "未配置(仅本地)"
                     self.sent += 1                # 已"推送"(本地), 只是没外发
                 continue
             text = f"[{rec['severity']}] " + rec["summary"]
-            try:
-                ok = _telegram_send(self.cfg.telegram_token, self.cfg.telegram_chat_id, text)
-                info = "telegram-已送达" if ok else "telegram-错误:状态码"
-            except Exception as e:
-                ok, info = False, "telegram-错误:" + type(e).__name__
+            results = self._deliver(text, rec.get("severity") or "warning")
+            ok = any(r[1] for r in results)       # 任一通道成功即算送达 (通道互为冗余, 单家挂不拖垮全局)
             with self._lock:
-                rec["delivery"] = info
+                rec["delivery"] = " / ".join(r[2] for r in results)
                 if ok:
                     self.sent += 1
                 else:
@@ -215,21 +256,44 @@ class Notifier:
         self._sender = threading.Thread(target=self._sender_loop, name="mc-notify-sender", daemon=True)
         self._sender.start()
 
-    def send_test(self) -> dict:
+    def _deliver(self, text: str, severity: str) -> list:
+        """往**所有已配置**的通道各发一次。返回 [(通道名, 成功?, 人读的结果)]。
+
+        单个通道抛异常/超时只记在自己那一条上, 绝不影响别的通道 (原则 4 渐进降级)。
+        """
+        out = []
+        if self.cfg.telegram_configured():
+            try:
+                ok = _telegram_send(self.cfg.telegram_token, self.cfg.telegram_chat_id, text)
+                out.append(("telegram", ok, "telegram-已送达" if ok else "telegram-错误:状态码"))
+            except Exception as e:
+                out.append(("telegram", False, "telegram-错误:" + type(e).__name__))
+        if self.cfg.pushover_configured():
+            try:
+                ok = _pushover_send(self.cfg.pushover_token, self.cfg.pushover_user, text, severity)
+                out.append(("pushover", ok, "pushover-已送达" if ok else "pushover-错误:状态码"))
+            except Exception as e:
+                out.append(("pushover", False, "pushover-错误:" + type(e).__name__))
+        return out
+
+    def send_test(self, severity: str = "warning") -> dict:
         """用户主动触发的一条测试通知, 走真实通道, 验证配置。"""
-        text = "[test] Claude Mission Control 测试通知 · 若你在手机上看到这条, Telegram 已打通。"
-        if not self.cfg.telegram_configured():
-            return {"ok": False, "detail": "Telegram 未配置 (设 MC_TELEGRAM_TOKEN / MC_TELEGRAM_CHAT_ID 后重启)"}
-        try:
-            ok = _telegram_send(self.cfg.telegram_token, self.cfg.telegram_chat_id, text)
-            return {"ok": ok, "detail": "已尝试发送 (查收手机)" if ok else "发送失败: 状态码非 2xx"}
-        except Exception as e:
-            return {"ok": False, "detail": "发送失败: " + type(e).__name__}
+        text = "[test] Claude Mission Control 测试通知 · 若你在手机上看到这条, 手机环已经闭上了。"
+        if not self.cfg.any_channel():
+            return {"ok": False,
+                    "detail": "没有任何通道 (Telegram: MC_TELEGRAM_TOKEN+MC_TELEGRAM_CHAT_ID; "
+                              "Pushover: MC_PUSHOVER_TOKEN+MC_PUSHOVER_USER; 设好后重启)"}
+        results = self._deliver(text, severity)
+        return {"ok": any(r[1] for r in results),
+                "detail": " / ".join(r[2] for r in results) or "无通道"}
 
     def status(self) -> dict:
         with self._lock:
             return {
                 "telegram_configured": self.cfg.telegram_configured(),
+                "pushover_configured": self.cfg.pushover_configured(),
+                "channels": [c for c, on in (("telegram", self.cfg.telegram_configured()),
+                                             ("pushover", self.cfg.pushover_configured())) if on],
                 "push_min_severity": self.cfg.push_min_severity,
                 "quiet_hours": (None if self.cfg.quiet_start is None
                                 else [self.cfg.quiet_start, self.cfg.quiet_end]),
@@ -238,7 +302,9 @@ class Notifier:
                 "sent": self.sent, "suppressed": self.suppressed, "errors": self.errors,
                 "feed": [dict(r) for r in list(self.feed)[-150:]],   # 锁内深拷贝, 避免与 sender 线程改 rec 撕裂读
 
-                "egress": "仅本地(默认)" if not self.cfg.telegram_configured() else "Telegram 出站",
+                "egress": ("仅本地(默认)" if not self.cfg.any_channel() else
+                           " + ".join(c for c, on in (("Telegram", self.cfg.telegram_configured()),
+                                                      ("Pushover", self.cfg.pushover_configured())) if on) + " 出站"),
             }
 
 

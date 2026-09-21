@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import activity, billing, control, notify, procmon, runner
+from . import activity, billing, control, notify, procmon, remote, runner
 from .aggregate import Agg, filter_since, group_by, summarize
 from .event_sources import activity_source, cost_source
 from .events import bus as event_bus
@@ -312,7 +313,10 @@ def _backtest_status(base: Path, days: int = 7) -> dict:
     return {"days": days, "oracles": out}
 
 
-def _make_handler(base: Path):
+def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
+    rcfg = rcfg or remote.RemoteConfig()          # 默认 = 本机模式 (零行为变化)
+    throttle = remote.LoginThrottle()
+
     class Handler(BaseHTTPRequestHandler):
         # 静默默认日志, 避免污染终端 (盯盘时不想被刷屏)。
         def log_message(self, *args):  # noqa: D401
@@ -336,17 +340,40 @@ def _make_handler(base: Path):
                 self._send(500, err, "application/json; charset=utf-8")
 
         def _host_ok(self) -> bool:
-            """挡 DNS-rebinding: 浏览器发起的重绑定请求带的是攻击者域名的 Host; 只放行本机 Host / 无 Host(本机非浏览器客户端)。
-            (若日后要经隧道远程控制, 需把隧道域名加进白名单; 现阶段控制面只走本机。)"""
-            host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip().lower()
-            return host in ("", "127.0.0.1", "localhost", "::1", "[::1]")
+            """挡 DNS-rebinding: 重绑定请求带的是攻击者域名的 Host。
+            本机 Host 永远放行; 远程模式下额外放行 MC_REMOTE_HOSTS 里**显式登记**的隧道域名 (非通配)。"""
+            return rcfg.host_allowed(self.headers.get("Host"))
 
         def _ctl_guard(self) -> bool:
-            """控制类端点统一守卫: 本机 Host + 有效 control token (自定义头 -> 跨站/重绑定都过不了)。"""
+            """控制门: Host 白名单 + 有效 control token, **只认自定义头, 永不认 Cookie**。
+
+            自定义头跨站发不出去 (会触发 CORS 预检) —— 这正是控制面today的抗 CSRF 性质。
+            读门 (`_read_guard`) 认 Cookie 是因为浏览器导航没别的办法; 两者**故意不合并**,
+            谁要"顺手统一"成一个, 就等于把控制面送给 CSRF。"""
             if not self._host_ok() or not control.plane.check_token(self.headers.get("X-Control-Token")):
                 self._send(403, b"forbidden", "text/plain; charset=utf-8")
                 return False
             return True
+
+        def _read_guard(self, is_page: bool = False) -> bool:
+            """读门: 本机模式下恒放行 (零行为变化); 远程模式下**读页/读 API 也要令牌**。
+
+            令牌来自 HttpOnly Cookie (浏览器导航唯一可行的方式) 或 X-Control-Token 头 (命令行客户端)。
+            未持令牌: 页面 -> 登录页 (不泄任何数据); API -> 403。"""
+            if not self._host_ok():
+                self._send(403, b"forbidden", "text/plain; charset=utf-8")
+                return False
+            if not rcfg.enabled:
+                return True
+            tok = (remote.cookie_token(self.headers.get("Cookie"))
+                   or self.headers.get("X-Control-Token"))
+            if control.plane.check_token(tok):
+                return True
+            if is_page:
+                self._send(401, LOGIN_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            else:
+                self._send(403, b"forbidden", "text/plain; charset=utf-8")
+            return False
 
         def do_HEAD(self):
             # 让健康探测识别本服务为「存活」(返回状态、无 body), 而非 BaseHTTPRequestHandler 默认的 501。
@@ -355,7 +382,11 @@ def _make_handler(base: Path):
                      "/api/summary", "/api/processes", "/api/health", "/api/sessions", "/api/events",
                      "/api/notifications", "/api/notify-test", "/api/control", "/api/budget", "/api/doctor",
                      "/api/backtest", "/api/billing"}
-            code = 200 if urlparse(self.path).path in known else 404
+            p = urlparse(self.path).path
+            code = 200 if p in known else 404
+            if code == 200 and rcfg.enabled and not control.plane.check_token(
+                    remote.cookie_token(self.headers.get("Cookie")) or self.headers.get("X-Control-Token")):
+                code = 401                        # 远程模式: 未鉴权只回"我活着", 不确认这个端点存在
             self.send_response(code)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -369,7 +400,15 @@ def _make_handler(base: Path):
                      "/sessions": SESS_PAGE, "/notify": NOTIFY_PAGE, "/control": CONTROL_PAGE,
                      "/doctor": DOCTOR_PAGE, "/backtest": BACKTEST_PAGE, "/billing": BILLING_PAGE}
             if path in pages:
+                if not self._read_guard(is_page=True):
+                    return
                 self._send(200, pages[path].encode("utf-8"), "text/html; charset=utf-8")
+                return
+            if path == "/login":                  # 远程模式下的令牌输入页 (本机模式下也可访问, 无害)
+                self._send(200, LOGIN_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+                return
+            # 读 API 统一过读门: 远程模式下它们同样吐会话正文/花费, 不能比页面松
+            if path.startswith("/api/") and not self._read_guard():
                 return
             if path == "/api/billing":
                 self._json(billing.status)          # 只回聚合数字, 绝不含 key
@@ -459,11 +498,49 @@ def _make_handler(base: Path):
                     body = {}
             except Exception:
                 body = {}
-            # Claude Code PermissionRequest hook 回调 (token 在 query): 阻塞拿决定或 defer (失败安全)
+            # Claude Code PermissionRequest hook 回调: 阻塞拿决定或 defer (失败安全)
+            # token 优先走 header (§6: 隧道/边缘可能把 query 写进日志); query 仅为兼容已装好的旧 hook 配置,
+            # 且**只在本机 Host 上**接受 —— 经隧道来的请求一律要 header。
             if path == "/hook/permission":
-                token = q.get("token", [None])[0]
+                token = self.headers.get("X-Control-Token")
+                if not token and remote.normalize_host(self.headers.get("Host")) in remote.LOCAL_HOSTS:
+                    token = q.get("token", [None])[0]
                 result = control.plane.handle_permission(body, token)
                 self._json(lambda: control.shape_hook_response(result))
+                return
+            # 远程模式的读门登录: 拿令牌换一个 HttpOnly Cookie (浏览器导航没法带自定义头)。
+            # 注意: 这只开**读**门 —— 控制端点照旧只认 X-Control-Token 头, Cookie 对它无效。
+            if path == "/api/login":
+                if not self._host_ok():
+                    self._send(403, b"forbidden", "text/plain; charset=utf-8")
+                    return
+                tok = str(body.get("token") or "")
+                if not control.plane.check_token(tok):
+                    warn = throttle.on_failure()
+                    if warn:
+                        print(warn)               # 让"有人在试"这件事出现在你的终端里
+                    time.sleep(throttle.delay_s)  # 常数时间比较已在 check_token; 这层只为拖慢尝试
+                    self._send(403, b'{"ok":false}', "application/json; charset=utf-8")
+                    return
+                throttle.on_success()
+                body_ok = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body_ok)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Set-Cookie", remote.build_set_cookie(tok, secure=rcfg.cookie_secure()))
+                self.end_headers()
+                self.wfile.write(body_ok)
+                return
+            if path == "/api/logout":
+                out = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(out)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Set-Cookie", remote.clear_cookie(secure=rcfg.cookie_secure()))
+                self.end_headers()
+                self.wfile.write(out)
                 return
             # 本机用户从看板发起的状态变更: 本机 Host + token (自定义头 -> 跨站/DNS-rebinding 都过不了)
             if path in ("/api/control/mode", "/api/control/decide", "/api/budget",
@@ -498,14 +575,24 @@ def run_serve(base: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     if not Path(base).exists():
         print(f"找不到 Claude 数据目录: {base}")
         return
+    # 远程暴露收口 (MC_REMOTE): 配置不自洽 -> **拒绝启动**, 绝不带着半个洞跑起来 (P7 ⑤ 失败安全)。
+    rcfg = remote.from_env()
+    problem = remote.preflight(rcfg, host, control.plane.token)
+    if problem:
+        print(problem)
+        return
     activity_source.start_pump(Path(base), live_factory=procmon.live_claude_index)   # M2: 对话活动事件 pump (5s, 带活性消歧)
     cost_source.start_pump(Path(base))        # M3.5: 成本预算 pump (60s)
     billing.start_pump()                      # B1: 厂商账单 pump (5min; 未配 key 则零外发)
     notifier = notify.start_notifier()        # M3: 通知层订阅总线 (默认仅本地, 配 token 才外发)
-    httpd = ThreadingHTTPServer((host, port), _make_handler(Path(base)))
+    httpd = ThreadingHTTPServer((host, port), _make_handler(Path(base), rcfg))
     url = f"http://{host}:{port}/"
-    tg = "Telegram 出站已配置" if notifier.cfg.telegram_configured() else "默认仅本地 (设 MC_TELEGRAM_TOKEN/CHAT_ID 开手机推送)"
-    print(f"Claude Mission Control 已启动 (只监听本机):  {url}")
+    _chans = [c for c, ok in (("Telegram", notifier.cfg.telegram_configured()),
+                              ("Pushover", notifier.cfg.pushover_configured())) if ok]
+    tg = (" + ".join(_chans) + " 出站已配置") if _chans else \
+        "默认仅本地 (Pushover: MC_PUSHOVER_TOKEN/USER 或 Telegram: MC_TELEGRAM_TOKEN/CHAT_ID)"
+    scope = "远程模式: 读页也要令牌" if rcfg.enabled else "只监听本机"
+    print(f"Claude Mission Control 已启动 ({scope}):  {url}")
     print(f"  · 对话/Session 状态  {url}sessions")
     print(f"  · 通知 / 规则         {url}notify   ({tg})")
     print(f"  · 远程审批 / 控制      {url}control  (默认本地; 装 hook + 开远程模式才路由)")
@@ -514,6 +601,11 @@ def run_serve(base: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     print(f"  · 体检 (doctor)       {url}doctor   (成本契约 + 推断契约, 对真相校验)")
     print(f"  控制令牌 (页面首次开控制模式/终止进程时粘贴一次, 之后存浏览器): {control.plane.token}")
     print("  (令牌不再经 HTTP 下发, 只在这里/~/.tokmon/control_token 可见 —— 防本机他进程/网页窃取后终止你的进程)")
+    if rcfg.enabled:
+        print(f"  ⚠ 远程模式已开: 全部页面与 /api/* 都要令牌; Host 白名单 = {', '.join(sorted(rcfg.hosts))}")
+        print("    手机上先开 /login 贴一次令牌 (存 HttpOnly Cookie, 12h 过期)。")
+        print("    补偿纪律 (token-only 是唯一的闸): 隧道 URL 当秘密 · 用完即关隧道 · 泄露即轮换 ~/.tokmon/control_token")
+        print("    诚实边界: 它的入站攻击面 > Telegram 零端口长轮询 —— 那才是更安全的终态。")
     print("在浏览器打开主页。Ctrl+C 停止。")
     try:
         httpd.serve_forever()
@@ -524,6 +616,73 @@ def run_serve(base: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
 
 
 # ---- 单页前端 (内联, 无外部依赖, 可离线) ----
+# 远程模式 (MC_REMOTE) 的令牌输入页。它在未鉴权时**代替**被请求的页面返回 (HTTP 401),
+# 所以登录成功后只需 reload —— 浏览器带着新 Cookie 重新请求同一个 URL, 直接落在你本来要去的页。
+# 纪律: 令牌只进 password 框, 绝不回显、绝不进 URL (隧道边缘会记 query)、绝不存 localStorage(读门用 HttpOnly Cookie)。
+LOGIN_PAGE = r"""<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mission Control · 需要令牌</title>
+<style>
+  :root { --bg:#0f1115; --panel:#181b22; --line:#262b36; --fg:#e6e9ef; --dim:#8b93a7;
+          --accent:#7aa2f7; --warn:#e0af68; --bad:#f7768e; }
+  * { box-sizing:border-box }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--fg);
+         font-family:"Segoe UI",system-ui,-apple-system,"Microsoft YaHei",sans-serif; font-size:15px; padding:20px; }
+  .box { width:100%; max-width:390px; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:26px 24px; }
+  h1 { font-size:18px; margin:0 0 6px; }
+  p.sub { color:var(--dim); font-size:13px; margin:0 0 18px; line-height:1.6; }
+  input { width:100%; padding:11px 13px; font-size:15px; border-radius:9px; border:1px solid var(--line);
+          background:#11141a; color:var(--fg); }
+  input:focus { outline:none; border-color:var(--accent); }
+  button { width:100%; margin-top:11px; padding:11px; font-size:15px; border-radius:9px; border:0; cursor:pointer;
+           background:var(--accent); color:#0f1115; font-weight:600; }
+  button:disabled { opacity:.55; cursor:default; }
+  .msg { margin-top:12px; font-size:13px; min-height:18px; }
+  .msg.err { color:var(--bad); }
+  .note { margin-top:18px; padding-top:14px; border-top:1px solid var(--line); color:var(--dim); font-size:12px; line-height:1.65; }
+  .note b { color:var(--warn); font-weight:600; }
+</style></head>
+<body>
+<div class="box">
+  <h1>需要控制令牌</h1>
+  <p class="sub">这台机器开了远程模式，所有页面与接口都要令牌。<br>
+     令牌在启动 <code>tokmon serve</code> 的终端里，或 <code>~/.tokmon/control_token</code>。</p>
+  <form id="f" autocomplete="off">
+    <input type="password" id="t" placeholder="control token" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button id="b" type="submit">进入</button>
+  </form>
+  <div class="msg" id="m"></div>
+  <div class="note">
+    <b>token-only 是唯一的闸</b>，所以：隧道 URL 当秘密、用完即关隧道、泄露就轮换令牌。<br>
+    令牌只存在这台浏览器的 HttpOnly Cookie 里（12 小时过期），不进 URL、不进 localStorage。
+  </div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+$('#f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const tok = $('#t').value.trim();
+  if(!tok) return;
+  $('#b').disabled = true; $('#m').className='msg'; $('#m').textContent='校验中…';
+  try {
+    const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'},
+                                         body: JSON.stringify({token: tok})});
+    if (r.ok) { $('#m').textContent='通过，正在进入…'; location.reload(); return; }
+    $('#m').className='msg err'; $('#m').textContent='令牌不对（服务端会拖慢重试，并在终端记一笔）';
+  } catch (err) {
+    $('#m').className='msg err'; $('#m').textContent='请求失败: ' + err;
+  }
+  $('#t').value=''; $('#b').disabled=false;
+});
+$('#t').focus();
+</script>
+</body></html>
+"""
+
+
 PAGE = r"""<!doctype html>
 <html lang="zh">
 <head>
@@ -1218,7 +1377,10 @@ SESS_PAGE = r"""<!doctype html>
 <main>
   <div class="controls">
     <input type="text" id="filter" placeholder="过滤: 标题 / 项目 / 步骤 / 工具…" style="min-width:260px">
-    <label class="chk"><input type="checkbox" id="hideidle" checked> 隐藏空闲会话</label>
+    <!-- 默认**不勾**: 实测 71 个「等你」里 70 个都 >10min, 默认勾上等于把这一页唯一的存在理由藏掉 71 分之 70
+         (SESSIONS_V3_PLAN §0/§186 审计)。原则 1「真实优先」+ P6「误报零容忍」同样适用于 UI 的默认值:
+         **默认静默**说的是通知, 不是看板。未来若想改回 checked, 先回答"用户打开这一页是为了看什么"。 -->
+    <label class="chk"><input type="checkbox" id="hideidle" title="「等你已久」= Claude 已经回复你、超过 10min 没人接话 —— 是你欠它一句话, 不是它闲着"> 隐藏「等你已久」</label>
     <span class="muted" style="font-size:12px">活跃时间窗</span>
     <select id="agewin"><option value="">全部</option><option value="3600">近 1h</option><option value="86400">近 24h</option><option value="604800">近 7d</option></select>
     <label class="chk"><input type="checkbox" id="auto" checked> 自动刷新 30s</label>
@@ -1333,7 +1495,7 @@ function render(){
     ${c.background?`<span class="pill live">后台在跑 <b>${c.background}</b></span>`:''}
     ${spill('久未返回', c.ambiguous, 'amb', 'amb')}
     ${spill('等你', c.awaiting, 'wait', '')}
-    <span class="pill">空闲 <b>${c.idle}</b></span>
+    <span class="pill" title="「等你」的子集: Claude 已回复你且 >10min 无人接话 (不是并列状态)">其中等你已久 <b>${c.idle}</b></span>
     ${spill('已关闭', c.closed, 'closed', 'unk')}
     ${spill('读不出', c.unknown, 'unk', 'unk')}
     <span class="pill">共 <b>${c.total}</b></span></div>`;
@@ -1368,7 +1530,7 @@ function render(){
   }
   const body = rows.map(s=>{
     const cls=CLS[s.state]||'unk';
-    const idleBadge = (s.state==='AWAITING_USER'&&s.idle) ? '<span class="idle">空闲</span>' : '';
+    const idleBadge = (s.state==='AWAITING_USER'&&s.idle) ? '<span class="idle" title="Claude 已回复你, 超过 10min 没人接话 —— 你欠它一句话">等你已久</span>' : '';
     const titleText = s.title || s.project;                 // 标题为主, 无标题回退项目名
     const metaBits = [];
     if(s.title) metaBits.push(esc(s.project)+(s.subpath?' /'+esc(s.subpath):''));   // 有标题时项目名降为辅
@@ -1392,14 +1554,14 @@ function render(){
       ${evs?`<div class="events">${evs}</div>`:''}
     </div>`;
   }).join('');
-  // 无 filter 生效时才用旧的低调 note (被隐藏空闲/文本不匹配); 有 filter 时上面的 fbar 已醒目说清
-  const shownNote = (!bits.length && rows.length<d.sessions.length) ? `<span class="meta">（显示 ${rows.length}/${d.sessions.length}，已隐藏空闲/不匹配）</span>` : '';
+  // 无 filter 生效时才用旧的低调 note (被隐藏"等你已久"/文本不匹配); 有 filter 时上面的 fbar 已醒目说清
+  const shownNote = (!bits.length && rows.length<d.sessions.length) ? `<span class="meta">（显示 ${rows.length}/${d.sessions.length}，已隐藏「等你已久」/不匹配）</span>` : '';
   $('#app').innerHTML = fbar + counts + `<div class="sess">${body||'<div class="muted">无匹配会话</div>'}</div>` + (shownNote?`<div style="margin-top:6px">${shownNote}</div>`:'');
 
   const ts=new Date(d.generated_at_epoch*1000).toLocaleTimeString();
   const th=d.thresholds;
   $('#foot').innerHTML=`采样于 ${ts} · 状态据每个 session 最后一条<b>消息</b>的时间戳(非文件 mtime) · `
-    +`空闲阈值 ${Math.round(th.idle_after_s/60)}min · 久未返回阈值 ${Math.round(th.stuck_after_s/60)}min · `
+    +`「等你已久」阈值 ${Math.round(th.idle_after_s/60)}min · 久未返回阈值 ${Math.round(th.stuck_after_s/60)}min · `
     +`<span class="warn">久未返回=无法从 transcript 区分「长任务/等授权/会话已关闭」</span> · 纯本地只读, 不通知不外发`;
 }
 
@@ -1483,11 +1645,12 @@ async function load(){
     const r=await fetch('/api/notifications'); const d=await r.json();
     if(my!==reqId) return;
     if(d.error){ $('#status').innerHTML='<span class="pill off">通知层未启动</span>'; return; }
-    const on=d.telegram_configured;
+    const tg=d.telegram_configured, po=d.pushover_configured, on=tg||po;
     const qh=d.quiet_hours?('每天 '+d.quiet_hours[0]+':00–'+d.quiet_hours[1]+':00 只放行 critical'):'未设';
     $('#status').innerHTML=[
       ['出站', d.egress, on?'on':'off'],
-      ['Telegram', on?'已配置':'未配置', on?'on':'off'],
+      ['Telegram', tg?'已配置':'未配置', tg?'on':'off'],
+      ['Pushover', po?'已配置':'未配置', po?'on':'off'],
       ['推送阈值', d.push_min_severity, ''],
       ['静默时段', qh, ''],
       ['去抖', d.debounce_s+'s/同类', ''],
@@ -1495,11 +1658,17 @@ async function load(){
       ['已推送', d.sent, 'on'], ['已抑制', d.suppressed, ''], ['错误', d.errors, d.errors?'off':''],
     ].map(x=>`<span class="pill ${x[2]}">${x[0]} <b>${esc(x[1])}</b></span>`).join('');
     $('#setup').innerHTML = on ? '' :
-      `<div class="card setup">📵 <b>当前默认仅本地, 不外发任何字节。</b> 想让重要事件推到手机:<br>
-       1) Telegram 找 <code>@BotFather</code> 建一个 bot, 拿到 token; 2) 给你的 bot 发一句话, 用
-       <code>https://api.telegram.org/bot&lt;token&gt;/getUpdates</code> 拿到你的 chat id;<br>
-       3) 设环境变量 <code>MC_TELEGRAM_TOKEN</code> 和 <code>MC_TELEGRAM_CHAT_ID</code> (或写进 <code>~/.tokmon/notify.json</code>) 后重启本服务。
-       仅出站长轮询, 不开任何入站端口、不暴露看板。</div>`;
+      `<div class="card setup">📵 <b>当前默认仅本地, 不外发任何字节。</b>
+       两个通道任选其一即可让手机真的震 (也可两个都配, 互为冗余):<br><br>
+       <b>A · Pushover (最快, 只出)</b><br>
+       1) pushover.net 注册 → 首页拿 <code>User Key</code>; 2) Create an Application → 拿 <code>API Token</code>;<br>
+       3) 设 <code>MC_PUSHOVER_USER</code> 和 <code>MC_PUSHOVER_TOKEN</code> 后重启本服务 → 点上方「发送测试通知」。<br>
+       <span class="muted">critical 会以 high priority 发 (突破手机端免打扰); 永不用 emergency 优先级 —— 不做尖叫的闹钟。</span><br><br>
+       <b>B · Telegram (未来双向的基础)</b><br>
+       1) 找 <code>@BotFather</code> 建 bot 拿 token; 2) 给 bot 发一句话, 用
+       <code>https://api.telegram.org/bot&lt;token&gt;/getUpdates</code> 拿 chat id;<br>
+       3) 设 <code>MC_TELEGRAM_TOKEN</code> / <code>MC_TELEGRAM_CHAT_ID</code> (或写进 <code>~/.tokmon/notify.json</code>) 后重启。<br>
+       <span class="muted">两者都是纯出站, 不开任何入站端口、不暴露看板。内容已最小化: 无命令行/路径/密钥。</span></div>`;
     const rows=(d.feed||[]).slice().reverse().map(f=>{
       const res = f.decision==='push'
         ? `<span class="tag push">推送</span> <span class="muted">${esc(f.delivery||'…')}</span>`
@@ -1585,8 +1754,9 @@ CONTROL_PAGE = r"""<!doctype html>
     <h2 class="sec">安装 hook (一次性, 你手动加)</h2>
     <div class="card setup">
       把下面这段合并进 <code>~/.claude/settings.json</code>, 然后<b>重启你的 Claude Code 会话</b>生效。它只拦截 permission 弹窗,
-      调本机 <code>127.0.0.1</code> (带 token), 不开任何入站端口。服务没开 / 超时 / token 不符 -> Claude Code 自动回退正常本地弹窗。
+      调本机 <code>127.0.0.1</code> (token 走 <code>X-Control-Token</code> 头), 不开任何入站端口。服务没开 / 超时 / token 不符 -> Claude Code 自动回退正常本地弹窗。
       <pre id="snippet">加载中…</pre>
+      <div id="hooknote" class="meta" style="margin:-4px 0 8px"></div>
       <button id="copy">复制</button> <span id="copied" class="meta"></span>
     </div>
   </div>
@@ -1634,7 +1804,8 @@ async function loadHook(){   // hook 片段现需令牌才可取 (含 token, 只
   if(!ensureToken()){ $('#snippet').textContent='(粘贴控制令牌后显示 hook 配置)'; return; }
   try{ const res=await fetch('/api/control/hook-config',{headers:ctrlHeaders()});
     if(res.status===403){ localStorage.removeItem('mc_ctl_token'); CTRL_TOKEN=''; $('#snippet').textContent='令牌无效'; return; }
-    const d=await res.json(); snippetText=JSON.stringify(d.snippet,null,2); $('#snippet').textContent=snippetText; }
+    const d=await res.json(); snippetText=JSON.stringify(d.snippet,null,2); $('#snippet').textContent=snippetText;
+    if($('#hooknote')) $('#hooknote').textContent=d.note||''; }
   catch(e){ $('#snippet').textContent='读取失败'; }
 }
 async function setMode(on){ await ctlPost('/api/control/mode',{on}); load(); }

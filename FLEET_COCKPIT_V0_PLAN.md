@@ -1,5 +1,10 @@
 # Fleet Cockpit v0 · SDK-spawn + 手机远程答题（AskUserQuestion）
 
+> **【状态章 · 2026-09-20 核对】🟡 部分实施。**
+> **网页答题 ✅ 已交付**：`canUseTool` 拦下 `AskUserQuestion` → `/control` 页出按钮 → 点一下会话带着你的选择继续。
+> **Telegram 双向 ❌ 未做**（`getUpdates` / inline keyboard 均无实现）——所以「在手机消息里点选项」仍不可用；
+> 目前上手机的路径是 `MC_REMOTE` + 隧道 + 网页（0.9.0 已补齐鉴权）。
+
 > 给主程序的实现交接。设计与约束，非最终代码。上层方向见 [MISSION_CONTROL.md](MISSION_CONTROL.md) §9「舰队驾驶舱」。
 >
 > **动机（真实痛点）**：用户给 Claude Code 大任务、让它有问题用 AskUserQuestion 选择题问；但它常在一大段 MCP 运算+思考后卡在提问上，

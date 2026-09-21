@@ -25,6 +25,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .events import Event, bus
 from .project import workspace_identity
@@ -187,16 +188,40 @@ class ControlPlane:
                 "token_set": bool(self.token)}      # 绝不回显 token 本体
 
     def hook_config(self, base_url: str) -> dict:
-        """给用户手动粘进 ~/.claude/settings.json 的精确片段 (含 token + 本服务 URL)。"""
-        url = f"{base_url}/hook/permission?token={self.token}"
+        """给用户手动粘进 ~/.claude/settings.json 的精确片段 (含 token + 本服务 URL)。
+
+        **token 走 header, 不走 query** (REMOTE_CONTROL_PLAN §6: 隧道/边缘可能把 query 写进日志)。
+        诚实边界: 若你装的 Claude Code 版本**不认** hook 的 `headers` 字段, header 就不会被发出来 ——
+        那时服务端收不到 token -> **defer -> 回退本地弹窗** (失败安全, 不会误批)。
+        所以本机 URL 仍附带 `?token=`(loopback 无边缘日志) 作为兼容;
+        **隧道 URL 则绝不附带** —— 宁可远程审批不可用, 也不把令牌写进别人的日志。
+        """
+        local = _is_local_base(base_url)
+        url = f"{base_url}/hook/permission" + (f"?token={self.token}" if local else "")
         snippet = {
             "hooks": {
                 "PermissionRequest": [
-                    {"matcher": "*", "hooks": [{"type": "http", "url": url, "timeout": 30}]}
+                    {"matcher": "*", "hooks": [{
+                        "type": "http", "url": url, "timeout": 30,
+                        "headers": {"X-Control-Token": self.token},
+                    }]}
                 ]
             }
         }
-        return {"url": url, "snippet": snippet}
+        note = ("本机地址: token 同时走 header 与 query(兼容旧版本)。"
+                if local else
+                "隧道地址: token **只走 header**(不进边缘日志)。若你的 Claude Code 不支持 hook headers, "
+                "远程审批会一律 defer 回退本地弹窗 —— 这是失败安全, 不是 bug。")
+        return {"url": url, "snippet": snippet, "note": note}
+
+
+def _is_local_base(base_url: str) -> bool:
+    """base_url 是否指向本机 (决定要不要在 URL 里附带 token 作兼容)。解析失败一律按"非本机"处理 (保守)。"""
+    try:
+        host = urlparse(base_url).hostname or ""
+    except Exception:
+        return False
+    return host.lower() in ("127.0.0.1", "localhost", "::1")
 
 
 def shape_hook_response(result: dict) -> dict:

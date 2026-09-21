@@ -26,6 +26,7 @@ from pathlib import Path
 
 from . import activity
 from .discovery import discover
+from .util import term_text
 
 # activity 状态机 / 尾读实际依赖或认识的东西 (其余即"未知类型" = 漂移信号)
 _KNOWN_TYPES = {"assistant", "user", "ai-title", "custom-title", "mode", "last-prompt",
@@ -254,6 +255,7 @@ def build_inference_lines(rep: InferenceReport) -> tuple[list[str], int]:
 def run_inference_doctor(base: Path) -> int:
     rep = scan_inference(base)
     lines, warns = build_inference_lines(rep)
+    lines = [term_text(ln) for ln in lines]      # 同 doctor: 编码降级而非崩溃
     try:
         from rich.console import Console
         console = Console()

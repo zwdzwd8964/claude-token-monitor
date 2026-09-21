@@ -21,7 +21,7 @@ from pathlib import Path
 from .discovery import discover
 from .parser import _parse_ts
 from .pricing import rates_for
-from .util import fmt_tokens
+from .util import fmt_tokens, term_text
 
 try:
     from rich.console import Console
@@ -251,6 +251,8 @@ def run_doctor(base: Path) -> None:
     rep = scan(base)
     lines, warns = build_lines(rep)
     title = "Claude Code 数据体检 (tokmon doctor)"
+    lines = [term_text(ln) for ln in lines]      # 原则 5: GBK 控制台写不出 ✓ 也不该让体检崩掉
+    title = term_text(title)
     if _HAS_RICH:
         console = Console()
         console.rule(title)

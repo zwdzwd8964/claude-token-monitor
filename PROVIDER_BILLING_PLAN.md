@@ -1,5 +1,8 @@
 # 新能力 · 厂商 API 用量与费用监控（`/billing`）— 设计草图
 
+> **【状态章 · 2026-09-20 核对】🟡 代码已交付，等你填 key。** `tokmon/billing.py` + `/billing` 页均在，
+> 未配 key 则**一个字节不出本机**。Anthropic/OpenAI 走官方 usage API，Google 诚实标「不可得」。
+
 > 给主程序的实现交接。本文件是**设计与约束**，不是最终代码。
 > 惯例同 [M4.5_PLAN.md](M4.5_PLAN.md) / [REMOTE_CONTROL_PLAN.md](REMOTE_CONTROL_PLAN.md)。
 > §1 的 API 事实**全部来自 2026-07-13 的官方文档实证调研**（三个并行 agent，附出处），**不是记忆、不是猜测**。

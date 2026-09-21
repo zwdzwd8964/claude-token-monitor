@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mission Control · Recap 与侧批</title>
+<style>
+  :root{
+    --bg:#0a0e14; --panel:#121a24; --panel2:#0e151e;
+    --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.14);
+    --tx:#c7d3e3; --dim:#8494a9; --hi:#eef3fa;
+    --blue:#6ea8fe; --good:#5fd08a; --warn:#f0b23e; --bad:#ef7a6d; --purple:#b784f0;
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+    --sans:"Segoe UI",system-ui,-apple-system,"Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:15px;line-height:1.7;display:flex}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  code{font-family:var(--mono);font-size:.88em;background:rgba(255,255,255,.06);padding:1px 5px;border-radius:5px;color:var(--hi)}
+  pre{font-family:var(--mono);font-size:12.5px;line-height:1.6;background:var(--panel2);border:1px solid var(--line);
+      border-radius:10px;padding:14px 16px;overflow-x:auto;color:var(--tx)}
+  strong{color:var(--hi);font-weight:650}
+  em{color:var(--hi);font-style:normal;border-bottom:1px dashed var(--line2)}
+
+  /* sidebar */
+  .side{width:250px;flex:0 0 250px;height:100vh;position:sticky;top:0;overflow-y:auto;
+        background:linear-gradient(180deg,#0c121b,#090d13);border-right:1px solid var(--line);padding:22px 14px 40px}
+  .brand{padding:4px 8px 14px;border-bottom:1px solid var(--line);margin-bottom:12px}
+  .brand b{display:block;color:var(--hi);font-size:15px;letter-spacing:.2px}
+  .brand span{display:block;color:var(--dim);font-size:11.5px;margin-top:6px;line-height:1.5}
+  .navgroup{margin-top:14px}
+  .gt{color:var(--dim);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;padding:0 8px 6px;font-weight:600}
+  .nav{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:8px;color:var(--tx);font-size:13px;
+       border:1px solid transparent;cursor:pointer}
+  .nav:hover{background:rgba(255,255,255,.04);text-decoration:none}
+  .nav .dot{width:8px;height:8px;border-radius:50%;flex:0 0 8px;box-shadow:0 0 8px currentColor}
+
+  /* main */
+  .main{flex:1;min-width:0;padding:0 0 80px}
+  .wrap{max-width:900px;margin:0 auto;padding:0 32px}
+  header.hero{padding:46px 0 26px;border-bottom:1px solid var(--line);margin-bottom:28px}
+  h1{font-size:30px;line-height:1.3;margin:0 0 12px;color:var(--hi);letter-spacing:-.01em}
+  .sub{color:var(--dim);font-size:13.5px}
+  .verdict{margin-top:20px;padding:16px 18px;background:var(--panel);border:1px solid var(--line);
+           border-left:3px solid var(--blue);border-radius:11px;font-size:15.5px;color:var(--hi)}
+
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:26px 0 8px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:13px 15px}
+  .stat .v{font-family:var(--mono);font-size:21px;color:var(--hi);font-weight:600;letter-spacing:-.02em}
+  .stat .k{color:var(--dim);font-size:11.5px;margin-top:4px;line-height:1.45}
+  .stat.good .v{color:var(--good)} .stat.bad .v{color:var(--bad)} .stat.warn .v{color:var(--warn)}
+
+  h2{font-size:21px;color:var(--hi);margin:46px 0 4px;letter-spacing:-.01em;scroll-margin-top:20px}
+  h2 .n{font-family:var(--mono);color:var(--dim);font-size:15px;margin-right:9px;font-weight:500}
+  h3{font-size:16px;color:var(--hi);margin:30px 0 8px}
+  .lede{color:var(--dim);font-size:13.5px;margin:0 0 18px}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;
+     border-bottom:1px solid var(--line2)}
+  tbody tr:hover{background:rgba(255,255,255,.02)}
+  td code{white-space:nowrap}
+
+  /* 侧批 cards */
+  .crit{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--dim);
+        border-radius:12px;padding:20px 22px;margin:18px 0}
+  .crit.moat{border-left-color:var(--good)}
+  .crit.red{border-left-color:var(--bad)}
+  .crit.amber{border-left-color:var(--warn)}
+  .crit.violet{border-left-color:var(--purple)}
+  .crit h3{margin:0 0 10px;font-size:16.5px;display:flex;gap:10px;align-items:baseline}
+  .crit h3 .tag{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--line2);
+                border-radius:6px;padding:1px 7px;white-space:nowrap;flex:0 0 auto}
+  .crit p{margin:10px 0}
+  .note{margin-top:14px;padding:13px 15px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;
+        font-size:14px;color:var(--tx)}
+  .note b:first-child{color:var(--hi)}
+
+  .plan td:first-child{font-family:var(--mono);color:var(--hi);width:34px}
+  .plan .cost{color:var(--dim);font-family:var(--mono);font-size:12.5px;white-space:nowrap}
+
+  footer{max-width:900px;margin:60px auto 0;padding:22px 32px 0;border-top:1px solid var(--line);
+         color:var(--dim);font-size:12.5px}
+
+  @media (max-width:860px){
+    body{display:block}
+    .side{display:none}
+    .wrap{padding:0 18px}
+    h1{font-size:24px}
+  }
+</style>
+</head>
+<body>
+
+<aside class="side">
+  <div class="brand">
+    <b>Recap 与侧批</b>
+    <span>Claude Mission Control<br>2026-09-20</span>
+  </div>
+  <div class="navgroup">
+    <div class="gt">正文</div>
+    <a class="nav" href="#what"><span class="dot" style="color:var(--blue)"></span>一、这是什么</a>
+    <a class="nav" href="#feat"><span class="dot" style="color:var(--good)"></span>二、功能全景</a>
+    <a class="nav" href="#crit"><span class="dot" style="color:var(--bad)"></span>三、侧批</a>
+    <a class="nav" href="#plan"><span class="dot" style="color:var(--warn)"></span>四、重启计划</a>
+  </div>
+  <div class="navgroup">
+    <div class="gt">九条侧批</div>
+    <a class="nav" href="#c1"><span class="dot" style="color:var(--good)"></span>1 · 护城河是诚实</a>
+    <a class="nav" href="#c2"><span class="dot" style="color:var(--bad)"></span>2 · 页面在撒谎</a>
+    <a class="nav" href="#c3"><span class="dot" style="color:var(--warn)"></span>3 · 设计通胀</a>
+    <a class="nav" href="#c4"><span class="dot" style="color:var(--bad)"></span>4 · 读页零鉴权</a>
+    <a class="nav" href="#c5"><span class="dot" style="color:var(--purple)"></span>5 · 北极星漂移</a>
+    <a class="nav" href="#c6"><span class="dot" style="color:var(--warn)"></span>6 · serve.py 腐化</a>
+    <a class="nav" href="#c7"><span class="dot" style="color:var(--bad)"></span>7 · 手机环没闭</a>
+    <a class="nav" href="#c8"><span class="dot" style="color:var(--warn)"></span>8 · 文档熵</a>
+    <a class="nav" href="#c9"><span class="dot" style="color:var(--dim)"></span>9 · 停在计划态</a>
+  </div>
+  <div class="navgroup">
+    <div class="gt">同类文档</div>
+    <a class="nav" href="RECAP_2026-09-20.md"><span class="dot" style="color:var(--dim)"></span>本文 Markdown 版</a>
+    <a class="nav" href="atlas.html"><span class="dot" style="color:var(--dim)"></span>系统图谱 atlas</a>
+    <a class="nav" href="../EVOLUTION.md"><span class="dot" style="color:var(--dim)"></span>逐代进化史</a>
+  </div>
+</aside>
+
+<main class="main">
+<div class="wrap">
+
+<header class="hero">
+  <h1>Claude Mission Control · 全景 Recap 与侧批</h1>
+  <div class="sub">
+    2026-09-20 · 读完 15 份文档 + 8.2k 行代码 + 实跑测试后产出 ·
+    与 <a href="../EVOLUTION.md">EVOLUTION.md</a>（它<em>怎么</em>长成今天）互补，本文回答它<em>现在</em>是什么
+  </div>
+  <div class="verdict">
+    一个人、3.5 天造出主体、如今停在「计划态」的个人 AI-coding 运维平台。<br>
+    <span style="color:var(--dim);font-size:14px">
+      机器造得很干净，信任基建甚至做到了可测量的 97%——但最有价值的那一下（把重要的事推到手机、让你远程处置），三个月来一次都没通过电。
+    </span>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="v">6,676</div><div class="k">行代码（tokmon/）</div></div>
+    <div class="stat warn"><div class="v">3,793</div><div class="k">行文档 · 是测试的 2.4 倍</div></div>
+    <div class="stat good"><div class="v">177 ✓</div><div class="k">测试全过（重启后 130→177）</div></div>
+    <div class="stat good"><div class="v">97.0%</div><div class="k">状态推断回测准确率</div></div>
+    <div class="stat"><div class="v" style="color:var(--good)">已修</div><div class="k">默认藏掉「等你」的会话 · 0.9.0</div></div>
+    <div class="stat bad"><div class="v">0</div><div class="k">手机闭环验证次数</div></div>
+  </div>
+</header>
+
+<h2 id="what"><span class="n">01</span>这是什么</h2>
+<p class="lede">两个纪元，断层线清楚。</p>
+
+<table>
+  <thead><tr><th></th><th>纪元一 · tokmon</th><th>纪元二 · Mission Control</th></tr></thead>
+  <tbody>
+    <tr><td><b>北极星</b></td>
+        <td>我 vibe coding 烧了多少 token / 多少钱</td>
+        <td>它在替我跑时，是在<strong>推进 / 卡住 / 烧钱 / 乱改</strong>，重要时刻主动找我</td></tr>
+    <tr><td><b>宪章</b></td><td><a href="../NORTH_STAR.md">NORTH_STAR.md</a></td><td><a href="../MISSION_CONTROL.md">MISSION_CONTROL.md</a></td></tr>
+    <tr><td><b>形态</b></td><td>CLI（watch / report / doctor）</td><td>本地 Web 驾驶舱，9 个页面</td></tr>
+  </tbody>
+</table>
+
+<p><strong>数据源的核心洞察</strong>：Claude Code 自己会把每个会话的 transcript 写进
+<code>~/.claude/projects/**/*.jsonl</code>，每条 assistant 消息带完整 <code>usage</code>。
+所以<strong>不需要代理、不需要 hook、不需要改配置</strong>——纯本地只读解析就能拿到全部真相。
+整个平台建在这一个发现上。</p>
+
+<pre>┌ Layer 1 监控层  成本(tokmon) · 进程(procmon) · 对话活动(activity)   三支柱互不引用
+│                                    ↓ raw signals
+├ Layer 2 事件总线  有类型的事件 + 严重度 + payload allow-list        支柱只往这里发
+│                                    ↓ typed events
+└ Layer 3 通知 / 控制  该不该打扰你 · 怎么打扰 · 你显式下达的指令      唯一的出站与入站</pre>
+
+<h2 id="feat"><span class="n">02</span>功能全景</h2>
+
+<h3>CLI · 5 个命令</h3>
+<table>
+  <thead><tr><th>命令</th><th>干什么</th></tr></thead>
+  <tbody>
+    <tr><td><code>watch</code></td><td>实时盯盘 TUI，5s 轮询</td></tr>
+    <tr><td><code>report</code></td><td>按天 / 项目 / 模型 / 来源汇总</td></tr>
+    <tr><td><code>doctor</code></td><td><strong>两半体检</strong>：成本契约 + 推断契约</td></tr>
+    <tr><td><code>backtest</code></td><td>用 transcript 的<strong>未来当真值</strong>回测推断准确率，三把尺</td></tr>
+    <tr><td><code>serve</code></td><td>起本地驾驶舱（纯标准库 <code>http.server</code>，零依赖可离线）</td></tr>
+  </tbody>
+</table>
+
+<h3>Web 驾驶舱 · 9 个页面</h3>
+<table>
+  <thead><tr><th>页面</th><th>层</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>/tokens</code></td><td>成本</td><td>KPI + 「vs 上一周期」自基线对比 + 预算设置</td></tr>
+    <tr><td><code>/processes</code></td><td>进程</td><td>进程 / 端口 / 连接 / cloudflared / 健康探测，纯只读 + 脱敏</td></tr>
+    <tr><td><code>/sessions</code></td><td>活动</td><td>每会话状态徽章 + mini-timeline</td></tr>
+    <tr><td><code>/notify</code></td><td>通知</td><td>Telegram 出站 + <strong>推送/抑制双记 feed</strong>（看得到「为什么没打扰你」）</td></tr>
+    <tr><td><code>/control</code></td><td>控制</td><td>远程批 permission、终止进程、释放端口、steer、<strong>答选择题</strong></td></tr>
+    <tr><td><code>/billing</code></td><td>第 4 源</td><td>Anthropic / OpenAI 官方 usage API（Google 诚实标「不可得」）</td></tr>
+    <tr><td><code>/doctor</code> <code>/backtest</code></td><td>信任</td><td>体检与回测的 Web 视图</td></tr>
+  </tbody>
+</table>
+
+<h3>三个真正的技术硬货</h3>
+<table>
+  <thead><tr><th>模块</th><th>硬在哪</th></tr></thead>
+  <tbody>
+    <tr><td><code>activity.py</code><br><span class="cost">classify_state</span></td>
+        <td>纯函数，从 transcript 尾部推断状态。<strong>时钟用最后一条消息的 timestamp，绝不用 mtime</strong>
+        （实测 29 个会话 mtime 比末条消息新 &gt;30min）。回测 <strong>97.0% / 1343 个评估点</strong>，
+        最伤信任的「假完成 / 假在跑」各仅 1 例。</td></tr>
+    <tr><td><code>control.py</code><br><span class="cost">失败安全</span></td>
+        <td>用官方 <code>PermissionRequest</code> http hook 做远程审批。token 错 / 超时 / 异常 / 模式关 →
+        <strong>每一条非正常路径都 defer 回退本地弹窗</strong>，绝不自动批准。</td></tr>
+    <tr><td><code>runner.py</code><br><span class="cost">canUseTool</span></td>
+        <td>实测钉死：<code>claude -p</code> 结构上拿不到多选按钮（模型把选择题打成纯文本就结束回合）。
+        只有 Agent SDK 的 <code>canUseTool</code> 能拦下 <code>AskUserQuestion</code> 并把你的选择塞回会话。
+        为此<strong>有意破了「零依赖」原则</strong>，记录在案。</td></tr>
+  </tbody>
+</table>
+
+<h2 id="crit"><span class="n">03</span>侧批</h2>
+<p class="lede">每一条都带可复核的坐标（文件:行号 / 实跑输出 / grep 结果）。</p>
+
+<div class="crit moat" id="c1">
+  <h3><span class="tag">优势</span>1 · 它真正的护城河不是功能，是「把诚实工具化」</h3>
+  <p>绝大多数个人项目的「我很严谨」停留在形容词，这个项目把它变成了<strong>可运行的命令</strong>：
+  <code>doctor</code> 检查「我对数据格式的假设还成立吗」、<code>inference_doctor</code> 检查「我对<strong>自己的推断</strong>的假设还成立吗」、
+  <code>backtest</code> 用时间旅行给推断打分——<strong>97% 不是声称，是算出来的</strong>。</p>
+  <p>而且诚实是 <strong>grep 得到</strong>的：未知模型返回 <code>(0,0,False)</code> 而不是瞎估；
+  <code>Event.make</code> 在构造函数里就用 allow-list 把会话正文滤掉，<strong>生产者想塞敏感内容都塞不进去</strong>；
+  久未返回时统一并列「长任务 / 等授权 / 会话已关闭」而不伪造 <code>PERMISSION_NEEDED</code>。</p>
+  <div class="note"><b>侧批</b>：这套东西的价值高于平台本身。如果有一天这个项目死了，值得带走的是这个范式——
+  <strong>对每一条载重假设，写一个能跑的校验器</strong>。</div>
+</div>
+
+<div class="crit red" id="c2">
+  <h3><span class="tag">最刺眼</span>2 · 以「诚实」为人格的系统，在最核心的页面上默认对自己撒谎</h3>
+  <p><code>serve.py</code> 的 <code>/sessions</code> 页今天仍然是
+  <code>&lt;input type="checkbox" id="hideidle" checked&gt; 隐藏空闲会话</code>。</p>
+  <p>而 V3 审计算得清清楚楚：160 个会话里 71 个「等你」，其中 <strong>70 个</strong>被这个默认勾选删掉——
+  <strong>「谁在等我」这个这一页唯一存在的理由，被藏掉了 71 分之 70。</strong></p>
+  <p>更糟的是「空闲」这个词<strong>语义是反的</strong>：它实际意思是「Claude 已经回复了你、超过 10 分钟没人接话」
+  = <strong>你欠 Claude 一句话</strong>，不是「它闲着没事」。</p>
+  <div class="note"><b>侧批</b>：这违反的是项目自己的原则 1（真实优先）和 P6（误报零容忍）——而且是<strong>在离用户最近的那一层</strong>。
+  内核干净得像手术室，UI 却在默认状态下做减法。结构性偏科：<strong>纪律全部投在「数据对不对」，几乎没投在「你看到的东西对不对」。</strong></div>
+</div>
+
+<div class="crit amber" id="c3">
+  <h3><span class="tag">流程</span>3 · 设计通胀：1164 行的设计文档，0 行实现</h3>
+  <table>
+    <thead><tr><th>文档</th><th>体量</th><th>状态</th></tr></thead>
+    <tbody>
+      <tr><td><code>SESSIONS_FILTER_PLAN.md</code>（V1）</td><td>162 行</td><td style="color:var(--good)">✅ 已交付</td></tr>
+      <tr><td><code>SESSIONS_FILTER_V2_PLAN.md</code></td><td>196 行</td><td style="color:var(--bad)">❌ 写了从未实施</td></tr>
+      <tr><td><code>SESSIONS_V3_PLAN.md</code></td><td><strong>1164 行</strong></td><td style="color:var(--bad)">❌ 取代 V2，仍未实施</td></tr>
+    </tbody>
+  </table>
+  <p>V3 自己诚实写着「V2 不是『上一版实现』，它是『一份没落地的诊断』」——然后重蹈覆辙，体量翻了 6 倍。
+  全仓：<strong>文档 3793 行 / 代码 6676 行 / 测试 1566 行</strong>。</p>
+  <div class="note"><b>侧批</b>：V3 的分析质量极高（<code>|| 0</code> 让「未知」冒充 1970 年浮到第一行伪装成「最该看的那个」——这种细节是真本事）。
+  但<strong>分析质量越高，不实施的浪费越大</strong>。而它要修的核心 bug，是一个 <code>checked</code> 属性。
+  <strong>1164 行设计挡在 10 行修复前面</strong>，这是最贵的完美主义税。</div>
+</div>
+
+<div class="crit red" id="c4">
+  <h3><span class="tag">安全</span>4 · 唯一会真的伤人的债：读页零鉴权</h3>
+  <p><code>_ctl_guard</code> 只护控制端点。<code>/sessions</code> <code>/tokens</code> <code>/processes</code> <code>/api/*</code>
+  <strong>至今没有任何鉴权</strong>（<code>grep MC_REMOTE tokmon/</code> 零命中）。</p>
+  <p>而这台机器<strong>真的起过 cloudflared 公网隧道</strong>（PID 100908 → <code>127.0.0.1:8794</code>，2026-07-14 kill）。
+  裸奔期间，拿到 URL 的人能看到全部<strong>会话标题、当前步骤、思考片段、花费</strong>。三份文档都用红字标了这条，全都没做。</p>
+  <div class="note"><b>侧批</b>：控制面的安全做得很讲究——常量时间比较、token 0600 原子写不回显、挡 DNS rebinding、令牌只在终端打印。
+  <strong>防御思维是在线的，只是漏在了「读」这个被默认为无害的动词上。</strong>
+  隧道现在是关的，所以这是「睡着的雷」——<strong>下次谁顺手再起一次隧道，洞原样回来。</strong></div>
+</div>
+
+<div class="crit violet" id="c5">
+  <h3><span class="tag">方向</span>5 · 北极星漂移：从「我烧了多少钱」到「舰队远程驾驶舱」</h3>
+  <p>三次原则破例，每次都有白纸黑字的理由（这点比 99% 的项目好）：「绝不干预」→「从不<em>自动</em>干预」；
+  「不调计费 API」→「不爬 console，但可调<strong>官方</strong> usage API」；「零额外依赖」→ 引入 <code>claude-agent-sdk</code>。</p>
+  <p>但累积效应是：<strong>tokmon 的原初待办被跳过了</strong>。<code>NORTH_STAR</code> §6 写着
+  「<code>report --by/--json</code> ← <strong>下一个待做</strong>」——至今 <code>report</code> 只有 <code>--since</code>。
+  而 §10 给未来自己的话是「别把它做成一个炫的 dashboard 集合」——今天是 <strong>9 个页面的 dashboard 集合</strong>。</p>
+  <div class="note"><b>侧批</b>：这不是失败——痛点是真的，每次拓宽都是<strong>显式选择</strong>而不是滑过去。
+  但这句自我告诫现在应该<strong>重新标定</strong>，而不是继续挂在墙上当反讽。</div>
+</div>
+
+<div class="crit amber" id="c6">
+  <h3><span class="tag">架构</span>6 · 唯一的腐化点：serve.py 1958 行</h3>
+  <p>内核的 P4 纪律是真守住了（<code>events.py</code> 只依赖 stdlib、<code>procmon</code> 零 pillar 耦合、
+  <code>billing</code> 绝不 import 成本内核）。<strong>但外壳在长脂肪</strong>：9 个页面的 HTML / CSS / JS 全部内联在一个文件里，
+  <code>table { width:100%; border-collapse:collapse; }</code> 在 <strong>563 / 915 / 1442 / 1552 / 1851 行各写了一遍</strong>。</p>
+  <p>叠加测试分布：130 passed 很健康，但覆盖集中在纯函数，<strong><code>serve.py</code> 的 1958 行几乎零覆盖</strong>，前端 JS 完全没有。</p>
+  <div class="note"><b>侧批</b>：这两件事是同一件事的两面——<strong>腐化的地方恰好是没测的地方，也恰好是 bug 所在的地方</strong>
+  （<code>hideidle</code> 就是前端 JS）。「测试全绿」和「用户看到的东西对」之间，有 1958 行的真空。</div>
+</div>
+
+<div class="crit red" id="c7">
+  <h3><span class="tag">兑现</span>7 · 「左绿右红」：三个月了，手机环一次都没闭过</h3>
+  <pre>观测 / 度量 / 信任  ━━━━━  通知 / 控制（外发与入站）
+Gen0.1 内核    🟢      M3 通知     🔴 外发未验证
+Gen0.3 doctor  🟢      M3.5 预算   🔴 送达未验证
+M1 活动        🟢      M4 控制     🔴 远程审批未真机验证
+M4.5 信任加固  🟢      M4.5(b)     ❌ Pushover 根本没写</pre>
+  <p>核过代码：<code>grep -i pushover tokmon/</code> <strong>零命中</strong>；Telegram <strong>只有出站</strong>，
+  双向 <code>getUpdates</code> 只在 UI 帮助文字里出现过；隧道已关。</p>
+  <p><strong>所以「重要时刻主动找到我」——这个平台存在的全部理由——从 2026-06-27 到今天，一次都没在真实手机上兑现过。</strong></p>
+  <div class="note"><b>侧批</b>：这不是懒，是典型的<strong>能力偏好陷阱</strong>：作者擅长且享受「把判断做到可测量的 97%」，
+  而最后一公里是脏活（注册账号、配 token、忍受噪音、调打扰率）。于是每次到了这一步，就诞生了一份新的计划文档。
+  <strong>S1-v2 的 steer 是这条红线上唯一被真正通电的一段</strong>——它证明作者做得到，只是每次都先转向了别处。</div>
+</div>
+
+<div class="crit amber" id="c8">
+  <h3><span class="tag">元问题</span>8 · 文档熵：它自己就是它警告的那个病</h3>
+  <table>
+    <thead><tr><th>项</th><th>现状</th><th>真实</th></tr></thead>
+    <tbody>
+      <tr><td><code>__version__</code></td><td><code>"0.3.0"</code></td><td>实际已到 M4.5 + B1 + S1-v2</td></tr>
+      <tr><td>git commit</td><td>Initial commit: tokmon v0.3.0</td><td>同上，标签错了</td></tr>
+      <tr><td><code>CHANGELOG.md</code></td><td>停在 0.3.0</td><td>漂移 ~10 个切片</td></tr>
+      <tr><td><code>README.md</code></td><td>只提 <code>/tokens</code> <code>/processes</code></td><td>另外 5 个页面/命令<strong>零次出现</strong></td></tr>
+      <tr><td><code>EVOLUTION.md</code></td><td>「这不是 git 仓库」</td><td>8/2 已 git init</td></tr>
+      <tr><td><code>docs/atlas.html</code></td><td>7/1 生成</td><td>不含 billing / steer / V3</td></tr>
+      <tr><td><code>requirements.txt</code></td><td>无 pytest</td><td>EVOLUTION §4 点名过，至今未修</td></tr>
+    </tbody>
+  </table>
+  <div class="note"><b>侧批</b>：一个把「让漂移可被发现」当作头号风险管理手段的系统，<strong>自己的文档漂移没有 doctor</strong>。
+  最低成本的解法不是补文档，是<strong>宣布单一真相源</strong>。现在这 15 份文档互相引用、互相取代、部分已失效——
+  <strong>新来的人（包括未来的你、包括未来的 Claude session）读完会得到一张过期地图。</strong></div>
+</div>
+
+<div class="crit" id="c9">
+  <h3><span class="tag">节奏</span>9 · 它现在停在「计划态」</h3>
+  <pre>06-27 → 06-30   3.5 天    两个纪元全部造完（峰值 $397/天）
+07-04 → 07-20   2.5 周    5 份计划 2000+ 行；代码只动 runner / billing / serve
+08-02           git init  一次提交
+08-02 → 09-20   7 周      零提交</pre>
+  <div class="note"><b>侧批</b>：最后一次代码改动是 7/19 的 <code>runner.py</code>（steer 换 SDK）——那是<strong>造血</strong>。之后全是文档。
+  这个曲线很典型：爆发期结束后，项目进入「设计比实现便宜」的阶段，而<strong>设计文档的质量越高，越容易让人误以为工作在推进</strong>。</div>
+</div>
+
+<h2 id="plan"><span class="n">04</span>重启计划（已采纳）</h2>
+<p class="lede">不按原路线图，按「什么最该先做」——杠杆 / 成本排序。</p>
+
+<table class="plan">
+  <thead><tr><th>#</th><th>动作</th><th>成本</th><th>为什么是它</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><strong>删掉 <code>/sessions</code> 那个默认 <code>checked</code></strong></td><td class="cost">10 分钟</td>
+        <td>全仓性价比最高的一次修改。不吞 V3 的 1164 行设计，先把 70/71 的谎话停掉</td></tr>
+    <tr><td>2</td><td><strong>补 <code>MC_REMOTE</code> 读页鉴权</strong></td><td class="cost">半天</td>
+        <td>唯一会真的伤人的债，且是「上手机」的硬前置</td></tr>
+    <tr><td>3</td><td><strong>闭一次手机环</strong>（Pushover 单向出站起步）</td><td class="cost">一天</td>
+        <td>三个月没兑现过的核心承诺，所有材料已备好</td></tr>
+    <tr><td>4</td><td><strong>文档降熵</strong>：定单一真相源、版本号对齐、README 重写</td><td class="cost">半天</td>
+        <td>让下一个接手的人拿到的是地图而不是考古层</td></tr>
+  </tbody>
+</table>
+
+<p>前三件约 2 天，能让这个系统<strong>第一次真正开始履职</strong>。</p>
+
+<h3>执行记录 · 2026-09-20 当天做完（版本 0.9.0）</h3>
+<table>
+  <thead><tr><th>#</th><th>结果</th><th>落点</th><th>验证</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td style="color:var(--good);white-space:nowrap">✅ 完成</td>
+        <td><code>/sessions</code> 默认 <code>checked</code> 删除；「空闲」→「<strong>等你已久</strong>」；pill 标明它是「等你」的<strong>子集</strong></td>
+        <td>实时数据实测：当天 10 个「等你」里 <strong>9 个</strong>会被旧默认删掉</td></tr>
+    <tr><td>2</td><td style="color:var(--good);white-space:nowrap">✅ 完成</td>
+        <td>新增 <code>tokmon/remote.py</code>：读页/<code>/api/*</code> 全要令牌、<code>/login</code> + HttpOnly Cookie、Host 白名单、hook token 走 header、配置不自洽<strong>拒绝启动</strong></td>
+        <td>21 例单测，含一条真 HTTP 用例钉死「<strong>Cookie 永不开控制门</strong>」；真实启动实测拒绝路径与登录链路</td></tr>
+    <tr><td>3</td><td style="color:var(--warn);white-space:nowrap">🟡 就绪未验证</td>
+        <td><code>notify.py</code> 升级为可插拔多通道；新增 Pushover（默认关、critical→high、<strong>永不用 emergency</strong>）</td>
+        <td>15 例单测，含<strong>零外发</strong>的线路形状测试（本地 stub 逐字段断言）。<strong>真账号送达仍需你配一次</strong></td></tr>
+    <tr><td>4</td><td style="color:var(--good);white-space:nowrap">✅ 完成</td>
+        <td>README 重写成唯一索引；8 份计划文档盖「真实状态」章；CHANGELOG 恢复；版本 0.3.0 → <strong>0.9.0</strong>；补 pytest；<strong>修掉 GBK 下 doctor 崩溃</strong></td>
+        <td><code>PYTHONIOENCODING=gbk python -m tokmon doctor</code> 从 <code>UnicodeEncodeError</code> 变为正常跑完</td></tr>
+  </tbody>
+</table>
+
+<div class="crit red" style="margin-top:18px">
+  <h3><span class="tag">仍欠</span>唯一还没通过电的一厘米</h3>
+  <p>第 3 件的最后一步——<strong>手机真的震一次</strong>。通道、策略、线路形状都已有机器守卫，
+  只剩「注册一个 Pushover 账号、填两个环境变量、点一下发送测试」。</p>
+  <div class="note"><b>在那之前</b>，本文 <a href="#c7">§7 的判断依然成立</a>——
+  <strong>不要因为代码写好了，就把它当成已兑现。</strong></div>
+</div>
+
+<footer>
+  证据纪律：本文每一条批评都带可复核的坐标。凡属推断而非实测的均已标注。
+  下次大改后最诚实的做法是<strong>重跑一遍</strong> <code>pytest / doctor / report / backtest</code>，
+  用真实输出刷新本文——而不是相信这份文档（包括这句话）。
+</footer>
+
+</div>
+</main>
+</body>
+</html>

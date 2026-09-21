@@ -1,5 +1,9 @@
 # S1-v2 · runner 改用 Agent SDK — 拿到「远程多选按钮」
 
+> **【状态章 · 2026-09-20 核对】✅ 已实施。** `tokmon/runner.py` 就是本文件的 SDK 版实现，
+> `/api/control/asks` + `/api/control/answer` + `/control` 页的按钮区块均在。
+> 仍未做的只有 §8 的 **A3「上手机」**——其前置 `MC_REMOTE` 已于 0.9.0 补上（见 CHANGELOG）。
+
 > **给主程序的实现交接。设计与约束，不是代码。**
 > 承接 [REMOTE_CONTROL_PLAN.md](REMOTE_CONTROL_PLAN.md)（S1 后端已交付）。
 > **本文件只改一件事：runner 的驱动方式。** 其余（control 的 P7 gate、审计、serve 端点、UI 骨架）基本不动。
