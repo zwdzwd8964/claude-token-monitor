@@ -11,4 +11,5 @@
 # serve/M1/M2/M3/M3.5/M4/M4.5/billing/steer。0.9 = 平台各层齐备, 但"手机环真机验证"未完成,
 # 所以**还不是 1.0**。见 CHANGELOG.md 的「未记录期」条目。
 # 0.10.0: /workflow 工作流回放 S1 (见 WORKFLOW_TAB_PLAN.md)。
-__version__ = "0.10.0"
+# 0.11.0: S2 学习层 (阶段标注 / 数据依赖 / 名词说明 / 脚本对照)。
+__version__ = "0.11.0"

@@ -542,6 +542,280 @@ def parse_script_meta(src: str) -> dict:
     return out
 
 
+# ================================================================ S2: 阶段标注 (推断)
+
+STAGES = ("查看", "修改", "验证", "运行", "调研", "编排", "等你")
+_VIEW_TOOLS = frozenset({"Read", "Grep", "Glob", "ToolSearch", "NotebookRead", "LS", "BashOutput", "TaskOutput"})
+_EDIT_TOOLS = frozenset({"Edit", "Write", "NotebookEdit", "MultiEdit", "Artifact", "ArtifactData"})
+_RESEARCH_TOOLS = frozenset({"WebSearch", "WebFetch"})
+_ORCH_TOOLS = frozenset({"Agent", "Task", "Workflow", "Skill", "SendMessage", "TaskStop", "Monitor", "StructuredOutput",
+                         "SubagentHandback", "TodoWrite", "CronCreate", "CronDelete", "CronList", "RemoteTrigger",
+                         "EnterWorktree", "ExitWorktree", "EnterPlanMode", "KillShell"})
+_RE_VERIFY = re.compile(
+    r"^(python3?\s+-m\s+(pytest|unittest|py_compile|mypy|ruff|flake8)|pytest|py\.test|uv\s+run\s+(pytest|python3?\s+-m\s+pytest|ruff|mypy)"
+    r"|(npm|pnpm|yarn)\s+(run\s+)?(test|lint|typecheck|check)\b|npx\s+(jest|vitest|mocha|playwright\s+test|tsc|eslint)"
+    r"|jest|vitest|mocha|go\s+(test|vet)|cargo\s+(test|check|clippy)|node\s+--(test|check)|tsc\b|eslint|ruff|flake8|mypy"
+    r"|pyright|black\s+--check|dotnet\s+test|mvn\s+(test|verify)|gradle\s+test|make\s+(test|check|lint))", re.I)
+_RE_VIEW = re.compile(
+    r"^(cat|head|tail|less|more|sed\s+-n|grep|egrep|fgrep|rg|ag|ls|dir|find|tree|wc|stat|file|du|df|which|where|type|jq|awk"
+    r"|diff|cmp|md5sum|sha\d*sum|basename|dirname|realpath|pwd|echo|printf"
+    r"|git\s+(status|diff|log|show|blame|branch|remote|rev-parse|ls-files|describe|reflog|shortlog)"
+    r"|get-content|get-childitem|select-string|get-item|test-path|gc|gci|sls|cat\b)", re.I)
+_RE_EDIT = re.compile(
+    r"^(sed\s+-i|perl\s+-pi|mv|cp|rm|rmdir|mkdir|touch|chmod|chown|ln|unzip|tar\s+-?x"
+    r"|git\s+(add|commit|checkout|switch|merge|rebase|stash|reset|restore|push|pull|tag|cherry-pick|revert|mv|rm|apply|init|clone)"
+    r"|new-item|remove-item|move-item|copy-item|set-content|out-file|add-content|rename-item)", re.I)
+_RE_REDIRECT = re.compile(r"(?<![0-9&])>{1,2}\s*(?!&)[^\s|&;>]")          # cmd > file / >> file (不含 2>、>&1)
+_RE_DESC_VERIFY = re.compile(r"\b(test|tests|testing|verify|verification|lint|smoke|typecheck)\b|测试|验证|冒烟|自检", re.I)
+_RE_DESC_VIEW = re.compile(r"^\s*(read|list|show|inspect|view|print|display|find|search|look)\b|查看|读取|列出|显示|搜索", re.I)
+_RE_MCP_RESEARCH = re.compile(r"(^|_)(docs?|documentation|search_docs|fetch_docs)(_|$)", re.I)
+_RE_MCP_VIEW = re.compile(r"^(get|list|read|search|fetch|status|whoami|describe|show|query|find|check|inspect|view)"
+                          r"|_(status|metrics|logs?|rate|time|requests|info)$", re.I)
+_RE_MCP_EDIT = re.compile(r"^(create|set|update|delete|remove|deploy|connect|disconnect|generate|add|scale|link|retry"
+                          r"|write|put|post|patch|upload|publish|rename|move|merge|close|open)", re.I)
+
+
+def _bash_core(cmd: str) -> str:
+    """去掉命令开头的 cd xx && / 变量赋值 / timeout N / time / sudo, 露出真正在干的事。"""
+    s = str(cmd or "").strip()
+    for _ in range(8):
+        t = re.sub(r"^cd\s+(\"[^\"]*\"|'[^']*'|\S+)\s*(&&|;)\s*", "", s)
+        t = re.sub(r"^[A-Za-z_][A-Za-z0-9_]*=(\"[^\"]*\"|'[^']*'|\S*)\s+", "", t)
+        t = re.sub(r"^(timeout\s+\d+[smh]?|time|sudo|nohup|env|exec)\s+", "", t)
+        if t == s:
+            break
+        s = t
+    return s
+
+
+def _bash_stage(cmd: str, desc: str = "") -> str:
+    core = _bash_core(cmd)
+    segs = [x.strip() for x in re.split(r"\s*(?:&&|\|\||;|\n)\s*", core) if x.strip()]
+    if not segs:
+        return "运行"
+    heads = []
+    for sg in segs:
+        sg2 = _bash_core(sg)
+        first = sg2.split("|")[0].strip()                    # 管道: 看第一段是在干什么
+        heads.append((sg2, first))
+    if any(_RE_VERIFY.match(f) for _, f in heads):
+        return "验证"                                        # 链里有测试/检查 -> 这一步的目的是验证
+    if any(_RE_EDIT.match(f) or _RE_REDIRECT.search(sg) or re.search(r"\btee\b", sg) for sg, f in heads):
+        return "修改"
+    if all(_RE_VIEW.match(f) for _, f in heads):
+        return "查看"
+    if desc and _RE_DESC_VERIFY.search(desc):
+        return "验证"
+    if desc and _RE_DESC_VIEW.search(desc):
+        return "查看"
+    return "运行"
+
+
+def classify_call(name: str, inp: dict | None) -> str:
+    """一次调用 -> 阶段 (**推断**, 规则见 STAGES)。判断不了的一律归「运行」, 不硬猜。"""
+    inp = inp or {}
+    if name in HUMAN_WAIT_TOOLS:
+        return "等你"
+    if name in _VIEW_TOOLS:
+        return "查看"
+    if name in _EDIT_TOOLS:
+        return "修改"
+    if name in _RESEARCH_TOOLS:
+        return "调研"
+    if name in _ORCH_TOOLS:
+        return "编排"
+    if name in ("Bash", "PowerShell"):
+        return _bash_stage(str(inp.get("command") or ""), str(inp.get("description") or ""))
+    if name.startswith("mcp__"):
+        tool = name.split("__", 2)[-1]
+        if _RE_MCP_RESEARCH.search(tool):
+            return "调研"
+        if _RE_MCP_EDIT.match(tool):
+            return "修改"
+        if _RE_MCP_VIEW.search(tool):
+            return "查看"
+        return "运行"
+    return "运行"
+
+
+def stage_runs(calls: list[dict], t_end: float | None = None) -> list[dict]:
+    """同一条时间线上的调用 -> 阶段段落。连续同阶段合一段; 夹在两个同类阶段之间、只有 1 次调用的碎片并进去
+    (比如改代码中途读了一眼文件), 但**失败、强异常、等你永远不并**。每段带时长 (到下一段开始, 空闲不算)。
+    calls: 按时间排好的 [{"id","name","stage","t0","t1","fail","strong"}]。"""
+    runs: list[dict] = []
+    for c in calls:
+        t0 = c.get("t0")
+        if t0 is None:
+            continue
+        t1 = c.get("t1") if c.get("t1") is not None else t0
+        if runs and runs[-1]["stage"] == c["stage"]:
+            r = runs[-1]
+            r["n"] += 1
+            r["t1"] = max(r["t1"], t1)
+            r["fail"] = r["fail"] or bool(c.get("fail"))
+            r["strong"] = r["strong"] or bool(c.get("strong"))
+            r["tools"][c["name"]] = r["tools"].get(c["name"], 0) + 1
+        else:
+            runs.append({"stage": c["stage"], "t0": t0, "t1": t1, "n": 1, "fail": bool(c.get("fail")),
+                         "strong": bool(c.get("strong")), "tools": {c["name"]: 1}, "first": c["id"], "absorbed": 0})
+    changed = True
+    while changed:
+        changed = False
+        for i in range(1, len(runs) - 1):
+            r, a, b = runs[i], runs[i - 1], runs[i + 1]
+            if (r["n"] == 1 and a["stage"] == b["stage"] and r["stage"] != "等你"
+                    and not r["fail"] and not r["strong"]):
+                a["n"] += r["n"] + b["n"]
+                a["t1"] = max(a["t1"], r["t1"], b["t1"])
+                a["fail"] = a["fail"] or b["fail"]
+                a["strong"] = a["strong"] or b["strong"]
+                for src in (r["tools"], b["tools"]):
+                    for k2, v in src.items():
+                        a["tools"][k2] = a["tools"].get(k2, 0) + v
+                a["absorbed"] += 1 + b["absorbed"]
+                a.setdefault("absorbed_stages", []).append(r["stage"])
+                del runs[i:i + 2]
+                changed = True
+                break
+    for i, r in enumerate(runs):                            # 时长: 到下一段开始 (中间是模型在想), 空闲不算
+        nxt = runs[i + 1]["t0"] if i + 1 < len(runs) else t_end
+        end = r["t1"]
+        if nxt is not None and 0 <= nxt - r["t1"] <= IDLE_GAP:
+            end = max(end, nxt)
+        r["dur"] = max(0.0, end - r["t0"])
+        r.pop("strong", None)
+    return runs
+
+
+# ================================================================ S2: 数据依赖 (推断)
+
+_RE_UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+_RE_IDTOK = re.compile(r"(?<![A-Za-z0-9_-])(" + _RE_UUID + r"|[A-Za-z0-9_-]{16,64})(?![A-Za-z0-9_-])")
+
+
+def _is_id(t: str) -> bool:
+    """像 ID 的串: UUID / ≥16 位十六进制 / ≥20 位且至少 4 个数字的混合串。
+    (排除 claude-fable-5-1 这类名字、纯单词路径段 —— 否则到处都是假依赖)"""
+    if re.fullmatch(_RE_UUID, t):
+        return True
+    if len(t) >= 16 and re.fullmatch(r"[0-9a-fA-F]+", t) and re.search(r"[a-fA-F]", t) and re.search(r"\d", t):
+        return True
+    return len(t) >= 20 and sum(ch.isdigit() for ch in t) >= 4 and sum(ch.isalpha() for ch in t) >= 4
+
+
+def id_tokens(text: str | None, limit: int = 120) -> list[str]:
+    out, seen = [], set()
+    if not text or not any(ch.isdigit() for ch in text[:200000]):
+        return out
+    for m in _RE_IDTOK.finditer(text[:200000]):
+        t = m.group(1)
+        if t in seen or not _is_id(t):
+            continue
+        seen.add(t)
+        out.append(t)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def input_ids(inp, path: str = "", out: dict | None = None) -> dict:
+    """调用输入里的 ID 串 -> 所在字段路径 (如 project_id / variables.SERVICE_ID)。"""
+    out = {} if out is None else out
+    if isinstance(inp, dict):
+        for k, v in inp.items():
+            input_ids(v, f"{path}.{k}" if path else str(k), out)
+    elif isinstance(inp, list):
+        for i, v in enumerate(inp[:50]):
+            input_ids(v, f"{path}[{i}]", out)
+    elif isinstance(inp, str):
+        for t in id_tokens(inp, limit=20):
+            out.setdefault(t, path or "input")
+    return out
+
+
+# ================================================================ S2: 名词说明 (官方原文)
+
+def parse_listing(names: list | None, lines) -> dict:
+    """skill / agent 清单: 按「- 名字: 说明」逐行对上名字 (名字本身可能带冒号, 如 plugin:skill)。"""
+    out = {}
+    text_lines = lines.splitlines() if isinstance(lines, str) else [str(x) for x in (lines or [])]
+    for n in names or []:
+        n = str(n)
+        pre = f"- {n}:"
+        for ln in text_lines:
+            if ln.strip().startswith(pre):
+                out[n] = ln.strip()[len(pre):].strip()[:600]
+                break
+    return out
+
+
+# ================================================================ S2: 脚本对照
+
+def script_map(src: str) -> dict:
+    """workflow 脚本 -> {phases: {标题: 行号}, phase_how: {标题: 来源}, agents: [{line, label_line, label, rx}]}。
+    只做字面量扫描, **不执行 JS**。阶段有三种写法, 按优先级认: phase('X') 调用 > agent() 参数里的 phase: 'X'
+    > 头部 meta.phases 的声明。agent 标签三种写法: 字面量 / 模板 `investigate:${lens.key}` / 拼接 'read:' + x
+    —— 后两种转成正则, 用来对上回放里 agent 的 description。"""
+    src = src or ""
+    starts = [0] + [i + 1 for i, ch in enumerate(src) if ch == "\n"]
+
+    def lineno(pos):
+        lo, hi = 0, len(starts) - 1
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if starts[mid] <= pos:
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo + 1
+
+    phases: dict = {}
+    how: dict = {}
+    for m in re.finditer(r"\bphase\(\s*" + _RE_JS_STR, src):
+        if m.group(2) not in phases:
+            phases[m.group(2)], how[m.group(2)] = lineno(m.start()), "phase()"
+    for m in re.finditer(r"\bphase\s*:\s*" + _RE_JS_STR, src):
+        if m.group(2) not in phases:
+            phases[m.group(2)], how[m.group(2)] = lineno(m.start()), "opts"
+    mm = re.search(r"export\s+const\s+meta\s*=\s*\{", src)
+    if mm:
+        end = _js_balanced(src, mm.end() - 1) or mm.end()
+        for m in re.finditer(r"\btitle\s*:\s*" + _RE_JS_STR, src[mm.end():end]):
+            if m.group(2) not in phases:
+                phases[m.group(2)], how[m.group(2)] = lineno(mm.end() + m.start()), "meta"
+    agents = []
+    for m in re.finditer(r"\bagent\(", src):
+        a = m.end() - 1
+        b = _js_balanced(src, a) or min(len(src), a + 3000)
+        body = src[a:b]
+        lm = re.search(r"\blabel\s*:\s*" + _RE_JS_STR + r"(\s*\+)?", body, re.S)
+        tpl, rx = None, None
+        if lm:
+            tpl = lm.group(2)
+            if lm.group(3):                                   # 'read:' + x  -> 前缀
+                rx = "^" + re.escape(tpl) + ".+$"
+                tpl = tpl + "…"
+            elif "${" in tpl:
+                parts = re.split(r"\$\{[^}]*\}", tpl)
+                rx = "^" + ".+?".join(re.escape(x) for x in parts) + "$"
+        agents.append({"line": lineno(m.start()), "label_line": lineno(a + lm.start()) if lm else lineno(m.start()),
+                       "label": tpl, "rx": rx})
+    return {"phases": phases, "phase_how": how, "agents": agents, "lines": len(starts)}
+
+
+def match_agent_line(desc: str | None, agents: list[dict]) -> int | None:
+    """回放里 agent 的 description -> 启动它的 agent() 调用所在行。静态标签优先于模板; 对不上 -> None (不猜)。"""
+    if not desc:
+        return None
+    for a in agents:
+        if a["label"] is not None and not a["rx"] and a["label"] == desc:
+            return a["label_line"]
+    for a in agents:
+        if a["rx"] and re.match(a["rx"], desc, re.S):
+            return a["label_line"]
+    return None
+
+
 def fmt_dur(s: float) -> str:
     s = max(0, int(round(s)))
     if s < 60:
@@ -559,7 +833,7 @@ class FileTrace:
 
     __slots__ = ("path", "sig", "offset", "rows", "resp", "resp_calls", "resp_model", "first_ts", "last_ts",
                  "session_id", "agent_id", "cwd", "branch", "first_user", "first_user_hash", "meta_body",
-                 "_last_model", "_last_effort")
+                 "gloss", "_last_model", "_last_effort")
 
     def __init__(self, path: Path):
         self.path = path
@@ -578,6 +852,7 @@ class FileTrace:
         self.first_user = None                   # agent 文件的首条指令 (显示用, 截断)
         self.first_user_hash = None              # 首条指令全文的归一哈希 (按指令回链用)
         self.meta_body: dict = {}                # sourceToolUseID -> (字符数, 估算 token): Skill 正文注入
+        self.gloss: dict = {"skill": {}, "agent": {}, "mcp": {}}   # 名词说明 (官方原文, 来自清单附件)
         self._last_model = None
         self._last_effort = None
 
@@ -662,7 +937,9 @@ def _scan_line(ft: FileTrace, o: dict, off: int) -> None:
                     row = {"k": "call", "ts": ts, "id": b.get("id"), "name": name, "label": label, "sub": sub,
                            "key": norm_key(name, inp), "resp": key, "skill": skill, "in_chars": in_chars,
                            "off": off, "bg": bool(inp.get("run_in_background")),
-                           "wait": is_deliberate_wait(name, inp)}
+                           "wait": is_deliberate_wait(name, inp), "stage": classify_call(name, inp)}
+                    if name.startswith("mcp__"):
+                        row["in_ids"] = input_ids(inp)           # 数据依赖 (推断): 参数里的 ID -> 字段路径
                     if name in AGENT_TOOLS:
                         row["prompt_hash"] = _norm_hash(inp.get("prompt"))
                     emit(row)
@@ -702,7 +979,7 @@ def _scan_line(ft: FileTrace, o: dict, off: int) -> None:
                 extra, interrupted = {}, False
                 if isinstance(tur, dict):
                     for k2 in ("agentId", "runId", "workflowName", "status", "isAsync", "taskId",
-                               "persistedOutputPath", "backgroundTaskId", "summary"):
+                               "persistedOutputPath", "backgroundTaskId", "summary", "scriptPath", "transcriptDir"):
                         v = tur.get(k2)
                         if v not in (None, "", False):
                             extra[k2] = short(v, 200) if k2 == "summary" else v
@@ -710,7 +987,7 @@ def _scan_line(ft: FileTrace, o: dict, off: int) -> None:
                 emit({"k": "result", "ts": ts, "tid": b.get("tool_use_id"),
                       "err": bool(b.get("is_error")) or interrupted, "interrupted": interrupted,
                       "chars": chars, "est": est, "media": media, "preview": short(txt, PREVIEW_CHARS),
-                      "extra": extra, "off": off})
+                      "extra": extra, "off": off, "ids": id_tokens(txt)})
             return
         if ft.first_user is None and origin is None and not (isinstance(content, str) and content.startswith("<")):
             full = prompt_text(content)[0]
@@ -737,6 +1014,18 @@ def _scan_line(ft: FileTrace, o: dict, off: int) -> None:
     if t == "attachment":
         a = o.get("attachment") if isinstance(o.get("attachment"), dict) else {}
         at = a.get("type")
+        if at == "skill_listing":                                # 名词说明: 只收进词典, 不进回放
+            ft.gloss["skill"].update(parse_listing(a.get("names"), a.get("content")))
+            return
+        if at == "agent_listing_delta":
+            ft.gloss["agent"].update(parse_listing(a.get("addedTypes"), a.get("addedLines")))
+            return
+        if at == "mcp_instructions_delta":
+            for blk in a.get("addedBlocks") or []:
+                m = re.match(r"^## (\S+)\n(.*)", str(blk), re.S)
+                if m:
+                    ft.gloss["mcp"][m.group(1)] = m.group(2).strip()[:600]
+            return
         if not at or at in _NOISE_ATTACHMENTS:
             return
         ats = ts if ts is not None else parse_ts(a.get("timestamp"))
@@ -870,14 +1159,30 @@ def agent_meta(path: Path) -> dict:
     return d
 
 
+def _inside(path, root: Path) -> Path | None:
+    """transcript 里记下的路径只在 ~/.claude/projects 之内才读 (不跟着任意路径走)。"""
+    try:
+        rp = Path(path).resolve()
+        rp.relative_to(root.resolve())
+        return rp
+    except (TypeError, ValueError, OSError):
+        return None
+
+
 def _workflow_script(sdir: Path, run_id: str) -> Path | None:
+    """本会话目录下找; 找不到再去「同一会话 id 的兄弟项目目录」找 —— Claude Code 按**启动 workflow 那一刻的 cwd**
+    选项目目录存脚本 (会话中途 cd 进子目录 / 在 worktree 里启动时, 脚本就不在会话自己的目录下)。"""
     now = time.time()
     hit = _SCRIPTS.get(str(sdir))
     if not hit or now - hit[0] >= _DIR_TTL:
-        sd = sdir / "workflows" / "scripts"
-        hit = (now, sorted(sd.iterdir()) if sd.is_dir() else [])
+        found = []
+        for d in [sdir] + [q for q in sdir.parent.parent.glob(f"*/{sdir.name}") if q != sdir]:
+            sd = d / "workflows" / "scripts"
+            if sd.is_dir():
+                found.extend(sorted(sd.iterdir()))
+        hit = (now, found)
         _SCRIPTS[str(sdir)] = hit
-    return next((p for p in hit[1] if run_id in p.name), None)
+    return next((p for p in hit[1] if run_id in p.name and p.suffix == ".js"), None)
 
 
 # ================================================================ 任务切分
@@ -983,9 +1288,19 @@ class _Ctx:
         self.visited: set = set()            # 已展开的 agentId (防环 / 防重复计数)
         self.cwds: set = set()               # 任务里各响应生效时的 cwd (项目归属对齐 /tokens)
         self.claimed = _claimed_agents(self)  # 本会话里被 agentId **明确**引用过的 agent (兜底回链不许碰)
+        self.gloss: dict = {"skill": {}, "agent": {}, "mcp": {}}
+        self.script_loc: dict = {}           # runId -> (脚本路径或 None, run transcript 目录)
+
+
+_CLAIMED: dict = {}                               # 会话目录 -> (t, 被明确引用的 agentId 集合)
 
 
 def _claimed_agents(ctx: _Ctx) -> set:
+    """本会话里被某个结果**明确**写了 agentId 的 agent。同一会话在一次列表刷新里要算几十遍, 缓存 _DIR_TTL 秒。"""
+    now = time.time()
+    hit = _CLAIMED.get(str(ctx.sdir))
+    if hit and now - hit[0] < _DIR_TTL:
+        return hit[1]
     ids = set()
     for p in [ctx.main] + list(ctx.agents.values()):
         ft = load_file(p)
@@ -996,6 +1311,7 @@ def _claimed_agents(ctx: _Ctx) -> set:
                 aid = (r.get("extra") or {}).get("agentId")
                 if aid:
                     ids.add(str(aid))
+    _CLAIMED[str(ctx.sdir)] = (now, ids)
     return ids
 
 
@@ -1020,15 +1336,19 @@ def usage_sum(keys, ctx: _Ctx) -> dict | None:
             "by_model": {m: list(v) for m, v in by_model.items()}, "responses": n}
 
 
-def _timeline(rows: list[dict], ft: FileTrace, ctx: _Ctx, depth: int) -> tuple[list, set]:
+def _timeline(rows: list[dict], ft: FileTrace, ctx: _Ctx, depth: int) -> tuple[list, set, list]:
     """一条时间线 (主线程某段 / 某个 agent 文件) -> (子节点, 本线及其全部子树的 resp keys)。
 
     - skill 分组: `Skill` 调用开一个 skill 节点; 之后行的 attributionSkill 等于它就留在里面, 否则收口。
       没有标记的行**不猜**归属。你的插话 / 打断 / 后台通知会先收口, 保证树按时间顺序。
     - Agent / Workflow 调用展开成子树 (agentId / runId 真值链接), 子树 keys 并入本线。
     - 「模型生成」打底区间只由活动行按 IDLE_GAP 连出 (空闲不算)。
+    - S2: 每个调用标阶段 (推断), 连成阶段段落; MCP 调用找数据来源 (推断: 参数里的 ID 出现在此前某个返回里)。
+    返回 (子节点, keys, 阶段段落)。
     """
     keys: set = set()
+    call_rows = {r["id"]: r for r in rows if r["k"] == "call" and r.get("id")}
+    seen_ids: list = []                                      # [(来源调用 id, ID 集合)] —— 只收**已经返回**的结果
     results = {r["tid"]: r for r in rows if r["k"] == "result" and r.get("tid")}
     last_resp_pos = max((j for j, r in enumerate(rows) if r["k"] == "resp" and not r.get("synthetic")), default=-1)
     top: list[dict] = []
@@ -1044,7 +1364,11 @@ def _timeline(rows: list[dict], ft: FileTrace, ctx: _Ctx, depth: int) -> tuple[l
         if k in ACT_KINDS and r.get("ts") is not None and not r.get("synthetic") \
                 and not (k == "notify" and r.get("status") in BG_STOPPED):
             act_ts.append(r["ts"])
-        if k in ("prompt", "result"):
+        if k == "result":
+            if r.get("ids") and r.get("tid") in call_rows:
+                seen_ids.append((r["tid"], set(r["ids"])))
+            continue
+        if k == "prompt":
             continue
         sk = r.get("skill")
         if k in ("call", "say", "think", "resp") and not r.get("synthetic"):
@@ -1074,7 +1398,23 @@ def _timeline(rows: list[dict], ft: FileTrace, ctx: _Ctx, depth: int) -> tuple[l
             continue
         if k == "call":
             stale = j < last_resp_pos                        # 时间线已经往下走了 -> 这个没结果的调用不会再回来
+            deps = []
+            if r.get("in_ids"):                              # 数据依赖 (推断): 目标只看 MCP, 来源可以是任何调用
+                used = set()
+                for tok, path in r["in_ids"].items():
+                    for src_id, ids in reversed(seen_ids):
+                        if tok in ids and src_id != r["id"]:
+                            if src_id not in used:
+                                src = call_rows[src_id]
+                                deps.append({"from": src_id, "from_name": src["name"], "from_label": src["label"],
+                                             "key": path, "value": tok})
+                                used.add(src_id)
+                            break
+                    if len(deps) >= 3:
+                        break
             node = _call_node(r, results.get(r["id"]), ft, ctx, depth, stale)
+            if deps:
+                node["meta"]["deps"] = deps
             sub = node.pop("_keys", set())
             keys |= sub
             call_nodes.append(node)
@@ -1123,7 +1463,13 @@ def _timeline(rows: list[dict], ft: FileTrace, ctx: _Ctx, depth: int) -> tuple[l
     flag_repeats([{"key": c["meta"]["key"], "failed": "fail" in c["flags"], "flags": c["flags"],
                    "out": c["meta"].get("out_sig"), "async": c["meta"]["async"]} for c in call_nodes])
     ctx.intervals.extend(active_intervals(act_ts))
-    return top, keys
+    strong = {"fail", "bg-fail", "huge", "loop"}
+    stages = stage_runs([{"id": c["id"], "name": c["name"], "stage": c["meta"].get("stage") or "运行",
+                          "t0": c.get("t0"), "t1": c.get("t1"),
+                          "fail": bool({"fail", "bg-fail"} & set(c["flags"])),
+                          "strong": bool(strong & set(c["flags"]))} for c in call_nodes],
+                        t_end=max(act_ts) if act_ts else None)
+    return top, keys, stages
 
 
 def _find_agent_by_prompt(r: dict, res: dict | None, ctx: _Ctx) -> tuple[str | None, str]:
@@ -1186,7 +1532,7 @@ def _call_node(r: dict, res: dict | None, ft: FileTrace, ctx: _Ctx, depth: int, 
         "t0": t0, "t1": t1, "flags": flags,
         "issue_est": int((resp_u[1] if resp_u else 0) / n_par + 0.5), "result_est": r_est,
         "meta": {"key": r["key"], "result_chars": r_chars, "in_chars": r.get("in_chars", 0),
-                 "async": is_async, "parallel": n_par, "wait": bool(r.get("wait")),
+                 "async": is_async, "parallel": n_par, "wait": bool(r.get("wait")), "stage": r.get("stage"),
                  "media": media, "skill_body": bool(body),
                  "out_sig": (hashlib.sha1((res.get("preview") or "").encode("utf-8", "replace")).hexdigest()[:12]
                              + f":{res.get('chars', 0)}") if res else None},
@@ -1220,7 +1566,8 @@ def _call_node(r: dict, res: dict | None, ft: FileTrace, ctx: _Ctx, depth: int, 
                 flags.append("ambiguous")
     elif cat == "workflow" and extra.get("runId"):
         wf = _workflow_node(str(extra["runId"]), str(extra.get("workflowName") or r["label"]), ctx, depth + 1,
-                            summary=extra.get("summary"))
+                            summary=extra.get("summary"), script_path=extra.get("scriptPath"),
+                            transcript_dir=extra.get("transcriptDir"))
         node["children"].append(wf)
         keys |= wf.pop("_keys", set())
     node["_keys"] = keys
@@ -1243,16 +1590,29 @@ def _agent_node(agent_id: str, ctx: _Ctx, depth: int, fallback_label: str = "",
     ft = load_file(path)
     if ft is None:
         return None
-    children, keys = _timeline(list(ft.rows), ft, ctx, depth)     # 其中已按活动行连出「模型生成」区间
+    children, keys, stages = _timeline(list(ft.rows), ft, ctx, depth)   # 其中已按活动行连出「模型生成」区间
+    for kind, d in ft.gloss.items():
+        ctx.gloss[kind].update(d)
     info["instruction"] = short(ft.first_user, 400, flatten=False) if ft.first_user else ""
     return {"id": f"agent:{agent_id}", "kind": "agent", "label": label, "agent_id": agent_id,
             "t0": ft.first_ts, "t1": ft.last_ts, "children": children, "flags": [], "meta": info,
-            "tokens": usage_sum(keys, ctx), "_keys": keys}
+            "stages": stages, "tokens": usage_sum(keys, ctx), "_keys": keys}
 
 
-def _workflow_node(run_id: str, name: str, ctx: _Ctx, depth: int, summary: str | None = None) -> dict:
+def _workflow_node(run_id: str, name: str, ctx: _Ctx, depth: int, summary: str | None = None,
+                   script_path: str | None = None, transcript_dir: str | None = None) -> dict:
+    base = ctx.sdir.parent.parent
     rdir = ctx.sdir / "subagents" / "workflows" / run_id
-    script = _workflow_script(ctx.sdir, run_id)
+    td = _inside(transcript_dir, base) if transcript_dir else None
+    if td is not None and td.is_dir() and not rdir.is_dir():
+        rdir = td                                            # 返回里记下的 transcript 目录 (真值)
+    script = None
+    sp = _inside(script_path, base) if script_path else None
+    if sp is not None and sp.is_file():
+        script = sp                                          # 返回里记下的脚本路径 (真值)
+    if script is None:
+        script = _workflow_script(ctx.sdir, run_id)
+    ctx.script_loc[run_id] = (str(script) if script else None, str(rdir))
     smeta = {"name": None, "description": None, "phases": []}
     if script is not None:
         try:
@@ -1320,10 +1680,16 @@ def build_task(task: dict, now: float | None = None, running: bool = False,
     ctx = _Ctx(task["main"], now, running)
     children: list[dict] = []
     task_keys: set = set()
+    main_stages: list[dict] = []
+    for kind, d in (ft.gloss if ft else {}).items():
+        ctx.gloss[kind].update(d)
     for seg in task["segments"]:
         rows = seg["rows"]
-        nodes, keys = _timeline(rows, ft, ctx, 0)
+        nodes, keys, stages = _timeline(rows, ft, ctx, 0)
         task_keys |= keys
+        if seg["kind"] == "continuation" and stages:
+            stages[0]["after_bg"] = True                     # 后台完成后的延续: 流程条上画一道分隔
+        main_stages.extend(stages)
         tss = [r["ts"] for r in rows if r.get("ts") is not None and r["k"] in ACT_KINDS and not r.get("synthetic")]
         if seg["kind"] == "continuation":
             children.append({"id": f"seg:{rows[0].get('i')}", "kind": "segment", "label": "后台完成后的延续",
@@ -1391,12 +1757,27 @@ def build_task(task: dict, now: float | None = None, running: bool = False,
         "flags": dict(flags), "moments": moments(t0, nodes, ctx.calls),
         "continuations": sum(1 for s in task["segments"] if s["kind"] == "continuation"),
         "projects": sorted(projects),
+        "stages": main_stages,
+        "glossary": _used_glossary(ctx, nodes),
     }
     for c in ctx.calls:
         c["meta"].pop("out_sig", None)                       # 只在判打转时用
     root = {"id": f"task:{task['id']}", "kind": "task", "label": short(task["prompt"]["text"], 120),
             "t0": t0, "t1": t1, "tokens": total, "children": children}
-    return {"summary": summary, "tree": root, "call_loc": ctx.call_loc, "text_loc": ctx.text_loc, "keys": task_keys}
+    return {"summary": summary, "tree": root, "call_loc": ctx.call_loc, "text_loc": ctx.text_loc,
+            "script_loc": ctx.script_loc, "keys": task_keys}
+
+
+def _used_glossary(ctx: _Ctx, nodes: list[dict]) -> dict:
+    """只下发这个任务里用到的名词说明 (skill / agent 类型 / MCP server), 原文。"""
+    skills = {n["label"] for n in nodes if n["kind"] == "skill"}
+    agents = {(n.get("meta") or {}).get("type") for n in nodes if n["kind"] == "agent"}
+    agents |= {c.get("sub") for c in nodes if c["kind"] == "call" and c.get("cat") == "agent"}
+    servers = {(c.get("meta") or {}).get("server") for c in nodes if c["kind"] == "call" and c.get("cat") == "mcp"}
+    g = ctx.gloss
+    return {"skill": {k: v for k, v in g["skill"].items() if skill_norm(k) in skills or k in skills},
+            "agent": {k: v for k, v in g["agent"].items() if k in agents},
+            "mcp": {k: v for k, v in g["mcp"].items() if k in servers}}
 
 
 def moments(t0: float | None, nodes: list[dict], calls: list[dict]) -> list[dict]:
@@ -1575,6 +1956,30 @@ def get_text_detail(task_id: str, node_id: str, base: Path | None = None) -> dic
         if isinstance(b, dict):
             return {"kind": kind, "text": str(b.get("thinking" if kind == "think" else "text") or "")}
     return None
+
+
+def get_script(task_id: str, run_id: str, base: Path | None = None) -> dict | None:
+    """workflow 的编排脚本 + 它和回放的对应关系 (阶段 -> phase 所在行, agent -> 启动它的 agent() 行)。
+    脚本位置取构建时登记的 (优先 Workflow 返回里的 scriptPath 真值), 不按请求参数拼路径。脱敏在 serve 层做。"""
+    built = _built(task_id, base)
+    if not built:
+        return None
+    loc = (built.get("script_loc") or {}).get(run_id)
+    if not loc or not loc[0]:
+        return None
+    try:
+        src = Path(loc[0]).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    smap = script_map(src)
+    agents = {}
+    rdir = Path(loc[1])
+    if rdir.is_dir():
+        for p in sorted(rdir.glob("agent-*.jsonl")):
+            agents[p.stem[len("agent-"):]] = match_agent_line(agent_meta(p).get("description"), smap["agents"])
+    return {"name": Path(loc[0]).name, "text": src, "lines": smap["lines"], "phases": smap["phases"],
+            "phase_how": smap["phase_how"], "agents": agents,
+            "agent_calls": [{"line": a["label_line"], "label": a["label"]} for a in smap["agents"]]}
 
 
 def baseline(base: Path | None = None, ttl: float = 300) -> dict:

@@ -122,6 +122,32 @@
   .axis { position:absolute; top:0; bottom:0; border-left:1px dashed #262b36; }
   .axis span { position:absolute; top:4px; left:4px; font-size:10.5px; color:var(--dim); white-space:nowrap; }
   .foot { font-size:11.5px; color:var(--dim); margin-top:10px; line-height:1.7; }
+  /* S2: 流程条 / 阶段色带 / 依赖 / 脚本 */
+  .stages { border:1px solid var(--line); border-radius:10px; background:var(--panel); padding:6px 12px 8px; margin-bottom:12px;
+      display:flex; flex-wrap:wrap; gap:4px 0; align-items:center; }
+  .stages .mh { flex:1 1 100%; font-size:11.5px; color:var(--dim); padding:0 0 4px; }
+  .stg { font-size:12px; padding:1px 8px; border-radius:6px; border:1px solid var(--line); border-left:3px solid var(--c);
+      cursor:pointer; white-space:nowrap; background:#141820; }
+  .stg:hover { border-color:var(--c); }
+  .stg b { font-weight:500; color:var(--dim); margin-left:4px; }
+  .stg.bad { color:var(--bad); }
+  .arr { color:var(--dim); padding:0 5px; font-size:11px; }
+  .r.band { min-height:18px; background:#12151b; }
+  .r.band .c-tree { font-size:11px; color:var(--dim); cursor:default; }
+  .seg { position:absolute; top:4px; height:10px; border-radius:2px; opacity:.85; min-width:2px; }
+  .seg.bad { box-shadow:inset 0 0 0 1px var(--bad); }
+  .fl.dep { color:#7dcfff; background:#132229; cursor:pointer; }
+  .r.hl { background:#1d2a3d !important; box-shadow:inset 3px 0 0 #7dcfff; }
+  .gl { font-size:12.5px; line-height:1.6; background:#10141b; border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .gl .src { color:var(--dim); font-size:11px; margin-top:4px; }
+  .script { background:#0c0e12; border:1px solid var(--line); border-radius:8px; max-height:55vh; overflow:auto;
+      font-family:ui-monospace,Consolas,monospace; font-size:12px; line-height:1.5; }
+  .script .ln { display:flex; white-space:pre; }
+  .script .no { flex:0 0 44px; text-align:right; padding-right:10px; color:#4b5263; user-select:none; }
+  .script .tx { flex:1; padding-right:10px; }
+  .script .ln.ph { background:#1d1a2a; } .script .ln.ph .no { color:var(--model); }
+  .script .ln.ag { background:#132229; }
+  .script .ln.focus { background:#2b3450; } .script .ln.focus .no { color:var(--fg); }
 
   /* L2 明细抽屉 */
   .drawer { position:fixed; right:0; top:0; bottom:0; width:min(640px,94vw); background:#141820; border-left:1px solid var(--line);
@@ -197,6 +223,35 @@ const FLAG_TIP = {fail:"工具返回 is_error，或命令被中断",
                   ambiguous:"结果里没有 agentId，且有多个子 agent 文件都对得上——不猜，留空",
                   "bg-stopped":"它在后台被停止了（常见于恢复会话时上次没跑完）", partial:"这个阶段里有 agent 的文件缺失，合计是下限"};
 
+const STAGE_COLOR = {"查看": "#7dcfff", "修改": "#9ece6a", "验证": "#ff9e64", "运行": "#7aa2f7", "调研": "#bb9af7",
+                     "编排": "#73daca", "等你": "#e0af68"};
+const STAGE_RULE = {"查看": "Read / Grep / Glob，只读的命令（cat、grep、ls、git diff…），MCP 的 get / list 类调用",
+                    "修改": "Edit / Write，会改文件或状态的命令（sed -i、mv、重定向写文件、git commit…），MCP 的 create / set / update 类调用",
+                    "验证": "跑测试、类型检查、lint 的命令（pytest、npm test、tsc、eslint…）",
+                    "运行": "其余命令（脚本、构建、启动服务…）——从命令本身看不出目的的都归这里",
+                    "调研": "WebSearch / WebFetch，MCP 的文档类调用",
+                    "编排": "Skill / Agent / Workflow 与后台任务管理",
+                    "等你": "AskUserQuestion / ExitPlanMode：停下来等你回答或批准"};
+const TOOL_ZH = {
+  Bash: "在 shell 里执行命令：跑测试、构建、git、脚本等。", PowerShell: "在 Windows PowerShell 里执行命令。",
+  Read: "读取一个文件的内容（可指定行范围；也能读图片、PDF、notebook）。", Write: "创建一个文件，或整体覆盖已有文件。",
+  Edit: "在文件里做精确的字符串替换——改代码的主要方式。", MultiEdit: "对同一个文件一次做多处替换。",
+  NotebookEdit: "编辑 Jupyter notebook 的单元格。", Grep: "按正则在文件内容里搜索（基于 ripgrep）。",
+  Glob: "按文件名模式找文件，比如 **/*.py。", WebSearch: "联网搜索，返回结果摘要。", WebFetch: "抓取一个网页并提取内容。",
+  ToolSearch: "按需加载「延迟加载」工具的定义：用某个工具之前，先把它的参数说明取来。",
+  Skill: "加载一个 skill：把它的说明书注入上下文，之后按说明书干活。",
+  Agent: "派一个子 agent 独立完成一项子任务：它有自己的上下文，做完把结果交回来。", Task: "派一个子 agent 独立完成一项子任务（旧名）。",
+  Workflow: "启动一个多 agent 编排脚本：按阶段并行或流水线地派出多个子 agent。",
+  AskUserQuestion: "用选择题向你提问，等你回答才继续。", ExitPlanMode: "把计划交给你批准，批准后才动手。",
+  EnterPlanMode: "进入「只规划、不动手」模式。", TaskStop: "停止一个后台任务（后台命令 / 子 agent / workflow）。",
+  Monitor: "盯着一个后台任务，等它有输出或结束。", SendMessage: "给另一个 agent 或会话发消息，比如让已完成的子 agent 接着干。",
+  StructuredOutput: "子 agent 按规定的格式交回结构化结果。", SubagentHandback: "子 agent 把结果和控制权交回主线程。",
+  Artifact: "把一个页面发布成 claude.ai 上的 Artifact。", ArtifactData: "读写 Artifact 页面的共享数据库。",
+  TodoWrite: "维护任务清单（待办 / 进行中 / 完成）。", CronCreate: "创建定时任务。", CronDelete: "删除定时任务。", CronList: "列出定时任务。",
+  EnterWorktree: "切到一个独立的 git worktree 里工作。", ExitWorktree: "离开 git worktree。",
+  BashOutput: "读取一个后台 shell 的输出。", KillShell: "结束一个后台 shell。", LS: "列出目录内容。",
+};
+
 // ---------------------------------------------------------------- 状态
 const QS = new URLSearchParams(location.search);
 let SINCE = QS.get("since") || "7d", PROJ = QS.get("project") || "", QTEXT = "";
@@ -206,6 +261,7 @@ let MODE = "default";         // default | all | none
 let SHOW_EVENTS = false;
 let FORCE = new Set();        // 「跳到这一步」时强制展开的节点
 let SMALL = false;            // 当前任务是不是小任务 (render 时算一次)
+let STAGE_ALL = false;        // 流程条: 段数很多时是否全部展开
 let pollT = null, listT = null, reqId = 0;
 
 // ---------------------------------------------------------------- 格式化
@@ -225,6 +281,54 @@ function fmtAgo(t) { if (!t) return ""; const s = Date.now()/1000 - t; if (s < 6
 function fmtClock(t) { if (!t) return ""; const d = new Date(t*1000); return d.toLocaleDateString(undefined,{month:"2-digit",day:"2-digit"})+" "+d.toTimeString().slice(0,5); }
 function tokTip(t) { if (!t) return "拿不到（文件缺失或没有归属标记）";
   return `真值（API usage 去重求和）\n合计 ${(+t.total).toLocaleString()}\n  缓存读 ${(+t.cache_read).toLocaleString()}\n  缓存写 ${(+t.cache_write).toLocaleString()}\n  新输入 ${(+t.input).toLocaleString()}\n  输出 ${(+t.output).toLocaleString()}\n等价 ${fmtUsd(t.cost)}${t.unpriced ? "（含未知单价模型）" : ""} · ${t.responses} 次 API 响应`; }
+
+// ---------------------------------------------------------------- S2: 名词说明 / 流程条
+function glossOf(n) {           // -> {title, text, src}  (说明文字 + 出处); 没有就 null
+  const g = (CUR && CUR.summary.glossary) || {skill: {}, agent: {}, mcp: {}};
+  if (n.kind === "call") {
+    if (n.cat === "mcp") {
+      const srv = (n.meta || {}).server, tool = String(n.name).split("__").slice(2).join("__");
+      const t = g.mcp[srv];
+      return {title: `MCP · ${srv}`, text: (t ? t + "\n\n" : "") + `工具 ${tool}：由 ${srv} 这个 MCP server 提供（单个工具的说明不在 transcript 里，不编造）。`,
+              src: t ? "server 说明来自 transcript 里的 MCP 指令（原文）" : "transcript 里没有这个 server 的说明"};
+    }
+    if (n.cat === "skill" && g.skill[n.label]) return {title: `skill · ${n.label}`, text: g.skill[n.label], src: "skill 官方说明（原文）"};
+    if (n.cat === "agent" && n.sub && g.agent[n.sub]) return {title: `agent 类型 · ${n.sub}`, text: g.agent[n.sub], src: "agent 类型官方说明（原文）"};
+    if (TOOL_ZH[n.name]) return {title: n.name, text: TOOL_ZH[n.name], src: "内置工具（中文简介）"};
+    return null;
+  }
+  if (n.kind === "skill") {
+    const t = g.skill[n.label] || Object.entries(g.skill).find(([k]) => k.split(":").pop() === n.label)?.[1];
+    return t ? {title: `skill · ${n.label}`, text: t, src: "skill 官方说明（原文）"} : null;
+  }
+  if (n.kind === "agent") {
+    const ty = (n.meta || {}).type;
+    if (ty && g.agent[ty]) return {title: `agent 类型 · ${ty}`, text: g.agent[ty], src: "agent 类型官方说明（原文）"};
+    if (ty === "workflow-subagent") return {title: "workflow 子 agent", text: "workflow 编排脚本里用 agent() 派出的子 agent，按脚本给的指令和标签干活。", src: "说明"};
+    return null;
+  }
+  if (n.kind === "workflow") return {title: "Workflow", text: TOOL_ZH.Workflow, src: "内置工具（中文简介）"};
+  return null;
+}
+function glossTip(n) { const g = glossOf(n); return g ? `${g.title}\n${g.text}` : ""; }
+function glossBox(n) {
+  const g = glossOf(n);
+  return g ? sec("这是什么") + `<div class="gl">${esc(g.text).replace(/\n/g, "<br>")}<div class="src">${esc(g.src)}</div></div>` : "";
+}
+function stageTip(r) {
+  const tools = Object.entries(r.tools || {}).sort((a, b) => b[1] - a[1]).map(([t, c]) => `${t}×${c}`).join(" ");
+  return `${r.stage}（推断）· ${r.n} 次调用 · ${fmtDur(r.dur)}\n${tools}`
+    + (r.absorbed ? `\n并进了 ${r.absorbed} 段顺带的${[...new Set(r.absorbed_stages || [])].join("、")}` : "")
+    + `\n归类规则：${STAGE_RULE[r.stage] || ""}`;
+}
+function stageStrip(stages, withToggle) {
+  if (!stages || !stages.length) return "";
+  const show = (STAGE_ALL || !withToggle) ? stages : stages.slice(0, 12);
+  const chips = show.map(r => `<span class="stg${r.fail ? " bad" : ""}" data-ref="${esc(r.first)}" style="--c:${STAGE_COLOR[r.stage] || "#8b93a7"}" title="${esc(stageTip(r))}">`
+    + `${r.after_bg ? "↪ " : ""}${esc(r.stage)}${r.stage === "验证" ? (r.fail ? " ✗" : " ✓") : (r.fail ? " ✗" : "")}<b>${esc(fmtDur(r.dur))}</b></span>`).join('<span class="arr">→</span>');
+  const more = withToggle && stages.length > 12 ? ` <button id="stgall" style="font-size:11px;padding:1px 8px;margin-left:8px">${STAGE_ALL ? "收起" : `共 ${stages.length} 段，全部展开`}</button>` : "";
+  return `<div class="stages"><div class="mh">流程（推断：按调用类型归类，悬浮看规则；点一段跳到它的第一步）</div>${chips}${more}</div>`;
+}
 
 // ---------------------------------------------------------------- 任务列表
 async function loadTasks(silent) {
@@ -423,14 +527,14 @@ function describe(n) {        // -> [html of name, label, sub, cls]
   if (k === "call") {
     const cat = n.cat, tagCls = cat === "mcp" ? "mcp" : cat === "ask" ? "ask" : cat === "skill" ? "skill" : "builtin";
     const tag = cat === "mcp" ? `mcp·${n.meta && n.meta.server || "?"}` : n.name;
-    return [`<span class="tag ${tagCls}">${esc(tag)}</span>`, esc(n.label), n.sub ? esc(n.sub) : "", "k-call"];
+    return [`<span class="tag ${tagCls}" title="${esc(glossTip(n))}">${esc(tag)}</span>`, esc(n.label), n.sub ? esc(n.sub) : "", "k-call"];
   }
-  if (k === "skill") return ['<span class="nm">◆ skill</span>', esc(n.label) + (n.continued ? " <span class='sub'>（延续）</span>" : ""),
+  if (k === "skill") return [`<span class="nm" title="${esc(glossTip(n))}">◆ skill</span>`, esc(n.label) + (n.continued ? " <span class='sub'>（延续）</span>" : ""),
                              n.tokens ? "" : "未标注归属", "k-skill"];
   if (k === "agent") {
     const m = n.meta || {};
     const bits = [m.type && m.type !== "workflow-subagent" ? m.type : "", n.via && n.via.meta && n.via.meta.async ? "后台" : ""].filter(Boolean);
-    return ['<span class="nm">🤖 agent</span>', esc(n.label), esc(bits.join(" · ")), "k-agent"];
+    return [`<span class="nm" title="${esc(glossTip(n))}">🤖 agent</span>`, esc(n.label), esc(bits.join(" · ")), "k-agent"];
   }
   if (k === "workflow") return ['<span class="nm">⚙ workflow</span>', esc(n.label),
                                 esc(`${n.meta.phases} 阶段 · ${n.meta.agents} agent`), "k-workflow"];
@@ -461,9 +565,15 @@ function badges(n) {
     n.members.forEach(visit);
     return Object.entries(agg).map(([f, c]) => `<span class="fl ${f}" title="${esc(FLAG_TIP[f] || "")}">${esc(FLAG_TXT[f] || f)}×${c}</span>`).join("");
   }
-  return fl.map(f => `<span class="fl ${ANOM.has(f) || f === "running" ? f : "info"}" title="${esc(FLAG_TIP[f] || "")}">${esc(FLAG_TXT[f] || f)}</span>`).join("");
+  const deps = (n.kind === "call" && n.meta && n.meta.deps) || [];
+  const depHTML = deps.slice(0, 2).map(d => `<span class="fl dep" data-src="${esc(d.from)}" title="${esc(depTip(d))}">⤷ ${esc(String(d.from_label || d.from_name).slice(0, 24))}·推断</span>`).join("");
+  return fl.map(f => `<span class="fl ${ANOM.has(f) || f === "running" ? f : "info"}" title="${esc(FLAG_TIP[f] || "")}">${esc(FLAG_TXT[f] || f)}</span>`).join("") + depHTML;
 }
 
+function depTip(d) {
+  return `数据依赖（推断）：参数 ${d.key} = ${d.value} 出现在「${String(d.from_name).replace(/^mcp__[^_]+__/, "")} · ${d.from_label}」的返回里。`
+       + `\n判断方法：参数里像 ID 的值（UUID / 长的十六进制 / 带数字的长串）在此前某次调用的结果里出现过。可能误判。\n点击跳到来源；悬浮时来源行高亮。`;
+}
 function durOf(n) {
   if (["say", "think", "event", "user"].includes(n.kind)) return null;
   if (n.t0 == null || n.t1 == null) return null;
@@ -566,6 +676,7 @@ function render() {
     <div class="tlegend"><span><i class="sw" style="background:var(--machine)"></i>机器执行 ${esc(fmtDur(tm.machine))}</span>
       <span><i class="sw" style="background:var(--model)"></i>模型生成 ${esc(fmtDur(tm.model))}</span>
       <span><i class="sw" style="background:var(--wait)"></i>等你 ${esc(fmtDur(tm.wait))}</span></div>
+    ${stageStrip(s.stages, true)}
     <div class="chips">${catTxt.map(x => `<span class="chip">${esc(x)}</span>`).join("")}${(s.skills || []).map(x => `<span class="chip" style="color:#9ece6a">◆ ${esc(x)}</span>`).join("")}${wfTxt.map(x => `<span class="chip" style="color:var(--model)">${esc(x)}</span>`).join("")}</div>
     <div class="chips">${anomChips || '<span class="chip ok">✓ 没有失败、打转或超大结果</span>'}${slowChip}</div>
     ${(s.moments || []).length ? `<div class="moments"><div class="mh">关键时刻（点击跳到那一步）</div>${s.moments.map(m =>
@@ -585,8 +696,12 @@ function render() {
 function gridHTML(tree, T0, span) {
   const rows = flatten(tree);
   const ticks = [0, .25, .5, .75, 1].map(p => `<div class="axis" style="left:${p * 100}%"><span>${p === 1 ? "" : esc(fmtOff(span * p))}</span></div>`).join("");
+  const st = (CUR.summary.stages || []);
+  const x = t => Math.max(0, Math.min(100, (t - T0) / span * 100));
+  const band = st.length ? `<div class="r band"><div class="c-tree">流程（推断）</div><div></div><div></div><div class="c-wf">${st.map(r =>
+      `<div class="seg${r.fail ? " bad" : ""}" data-ref="${esc(r.first)}" style="left:${x(r.t0).toFixed(2)}%;width:calc(${Math.max(0, x(r.t0 + (r.dur || 0)) - x(r.t0)).toFixed(2)}% + 2px);background:${STAGE_COLOR[r.stage] || "#8b93a7"}" title="${esc(stageTip(r))}"></div>`).join("")}</div></div>` : "";
   return `<div class="r hd"><div>步骤（${rows.length} 行可见）</div><div class="c-dur">耗时</div><div class="c-tok">token</div><div class="c-wf">${ticks}</div></div>`
-       + rows.map(it => rowHTML(it, T0, span)).join("");
+       + band + rows.map(it => rowHTML(it, T0, span)).join("");
 }
 
 function rerenderGrid() {
@@ -674,7 +789,8 @@ function openDrawer(id) {
       ["并行", m.parallel > 1 ? `和另外 ${m.parallel - 1} 个调用在同一次响应里发出` : ""],
       ["发起 ≈", `${(n.issue_est || 0).toLocaleString()} token <span class="muted">（该响应 output ÷ ${m.parallel || 1}）</span>`],
       ["结果", esc(resultTxt(n).tip)],
-    ]) + flagsHTML + sec("输入", copyBtn("din")) + '<div id="din-wrap"><div class="muted">读取中…</div></div>'
+      ["阶段", m.stage ? `<span style="color:${STAGE_COLOR[m.stage] || "inherit"}">${esc(m.stage)}</span> <span class="muted">（推断 · ${esc(STAGE_RULE[m.stage] || "")}）</span>` : ""],
+    ]) + flagsHTML + depBox(m.deps) + glossBox(n) + sec("输入", copyBtn("din")) + '<div id="din-wrap"><div class="muted">读取中…</div></div>'
        + sec("输出", copyBtn("dout")) + '<div id="dout-wrap"><div class="muted">读取中…</div></div>'
        + '<div class="note">内容来自 transcript 原文，按行偏移按需读取；token / key / 密码 / 长串已做<b>尽力而为</b>的脱敏。</div>';
     loadCall(n, id);
@@ -689,18 +805,20 @@ function openDrawer(id) {
     const m = n.meta || {};
     $("#dtitle").textContent = "🤖 " + n.label; $("#dsub").textContent = [m.type, m.phase ? "阶段 " + m.phase : ""].filter(Boolean).join(" · ");
     body = kv([viaLine(n.id), ["时间", `${esc(fmtClock(n.t0))} · ${esc(t)}`], ["token 真值", tokLine || "—（拿不到）"], ["调用", `${nc} 次${na ? `，其中 ${na} 次有异常` : ""}`]])
-         + flagsHTML + (m.instruction && !pc ? sec("它收到的指令（开头）") + codeBlock("dins", m.instruction) : "") + launchIO(pc);
+         + flagsHTML + stageStrip(n.stages, false) + glossBox(n)
+         + (m.instruction && !pc ? sec("它收到的指令（开头）") + codeBlock("dins", m.instruction) : "") + launchIO(pc)
+         + (runOf(n.id) ? scriptBox() : "");
   } else if (n.kind === "workflow") {
     $("#dtitle").textContent = "⚙ " + n.label; $("#dsub").textContent = n.run_id || "";
     body = kv([viaLine(n.id), ["时间", `${esc(fmtClock(n.t0))} · ${esc(t)}`], ["token 真值", tokLine || "—"], ["规模", `${n.meta.phases} 个阶段 · ${n.meta.agents} 个 agent · ${nc} 次调用`],
                ["脚本", n.meta.script ? esc(n.meta.script) : "（没找到脚本文件）"]]) + flagsHTML
          + (n.detail ? sec("它要做什么") + `<div style="font-size:13px;line-height:1.6">${esc(n.detail)}</div>` : "")
          + sec("阶段") + (n.children || []).map(p => `<div style="margin:6px 0"><b>${esc(p.label)}</b> <span class="muted">· ${p.meta.agents} agent · ${esc(durOr(p.t0, p.t1))} · ${esc(tokTxt(p.tokens, (p.flags || []).includes("partial")))} tok</span>${p.detail ? `<div class="note" style="margin-top:2px">${esc(p.detail)}</div>` : ""}</div>`).join("")
-         + launchIO(pc);
+         + scriptBox() + launchIO(pc);
   } else if (n.kind === "phase") {
     $("#dtitle").textContent = "▸ 阶段 " + n.label; $("#dsub").textContent = "";
     body = kv([["时间", `${esc(fmtClock(n.t0))} · ${esc(t)}`], ["token 真值", tokLine || "—"], ["agent", `${n.meta.agents} 个`], ["调用", `${nc} 次`]])
-         + (n.detail ? `<div class="note">${esc(n.detail)}</div>` : "");
+         + (n.detail ? `<div class="note">${esc(n.detail)}</div>` : "") + scriptBox();
   } else if (n.kind === "skill") {
     $("#dtitle").textContent = "◆ skill: " + n.label; $("#dsub").textContent = n.continued ? "延续（这一段的行带有它的归属标记）" : "";
     body = kv([["时间", `${esc(fmtClock(n.t0))} · ${esc(t)}`], ["token 真值", tokLine || "—"], ["调用", `${nc} 次`]])
@@ -720,7 +838,41 @@ function openDrawer(id) {
   }
   $("#dbody").innerHTML = body;
   if (pc) loadCall(pc, id);
+  if (n.kind === "workflow") loadScript(n.run_id, null, id);
+  else if (n.kind === "phase") { const rid = runOf(n.id); if (rid) loadScript(rid, {phase: n.label}, id); }
+  else if (n.kind === "agent") { const rid = runOf(n.id); if (rid) loadScript(rid, {agent: n.agent_id}, id); }
   if ((n.kind === "say" || n.kind === "think") && n.long) loadText(n, id);
+}
+function depBox(deps) {
+  if (!deps || !deps.length) return "";
+  return sec("数据依赖（推断）") + deps.map(d => `<div class="note" style="margin:4px 0">参数 <b style="color:var(--fg)">${esc(d.key)}</b> = <code>${esc(d.value)}</code>
+      出现在 <a href="#" data-jumpto="${esc(d.from)}">「${esc(String(d.from_name).replace(/^mcp__[^_]+__/, ""))} · ${esc(d.from_label)}」</a> 的返回里</div>`).join("")
+    + '<div class="note">判断方法：参数里像 ID 的值在此前某次调用的结果里出现过——按字符串对上的，可能误判。</div>';
+}
+function runOf(id) {             // 节点所在的 workflow 运行 id (找路径上的 wf:<run> 节点)
+  const p = findPath(CUR.tree, id) || [];
+  for (const pid of p) { const nd = findNode(CUR.tree, pid); if (nd && nd.kind === "workflow") return nd.run_id; }
+  return null;
+}
+function scriptBox() { return sec("编排脚本（对照）") + '<div id="script-wrap"><div class="muted">读取脚本中…</div></div>'; }
+async function loadScript(runId, target, drawerId) {
+  const my = DRAWER_REQ, task = SEL;
+  try {
+    const r = await fetch(`/api/workflow/script?task=${encodeURIComponent(task)}&run=${encodeURIComponent(runId)}`);
+    const d = await r.json();
+    if (!drawerLive(my, drawerId, task) || !$("#script-wrap")) return;
+    if (d.error) { $("#script-wrap").innerHTML = `<div class="muted">${esc(d.error)}</div>`; return; }
+    const phaseLines = new Set(Object.values(d.phases || {}));
+    const agentLines = new Set((d.agent_calls || []).map(a => a.line));
+    let focus = null, why = "";
+    if (target && target.phase != null) { focus = (d.phases || {})[target.phase] || null; why = focus ? `阶段「${target.phase}」在第 ${focus} 行（${({"phase()": "phase() 调用", opts: "agent() 参数里的 phase:", meta: "头部 meta 声明"})[(d.phase_how || {})[target.phase]] || ""}）` : `脚本里没找到阶段「${target.phase}」`; }
+    if (target && target.agent) { focus = (d.agents || {})[target.agent] || null; why = focus ? `启动这个 agent 的 agent() 调用在第 ${focus} 行（按标签对上）` : "没能把这个 agent 对到脚本里的 agent() 调用（标签是运行时拼出来的）"; }
+    const lines = String(d.text).split("\n");
+    const body = lines.map((t, i) => `<div class="ln${phaseLines.has(i + 1) ? " ph" : ""}${agentLines.has(i + 1) ? " ag" : ""}${focus === i + 1 ? " focus" : ""}" id="sl-${i + 1}"><span class="no">${i + 1}</span><span class="tx">${esc(t)}</span></div>`).join("");
+    $("#script-wrap").innerHTML = `<div class="note" style="margin:0 0 6px">${esc(d.name)} · ${d.lines} 行 · <span style="color:var(--model)">紫底</span> = 阶段 · <span style="color:#7dcfff">蓝底</span> = 派 agent 的地方${why ? " · " + esc(why) : ""}</div>`
+      + `<div class="script" id="script-box">${body}</div>`;
+    if (focus) { const box = $("#script-box"), el = document.getElementById("sl-" + focus); if (box && el) box.scrollTop = Math.max(0, el.offsetTop - box.offsetTop - 80); }
+  } catch (e) { if (drawerLive(my, drawerId, task) && $("#script-wrap")) $("#script-wrap").innerHTML = `<div class="muted">请求失败：${esc(e)}</div>`; }
 }
 function launchIO(pc) {          // 合并行 (Agent / Workflow 调用 + 子树) 也能看到启动调用本身的输入与返回
   if (!pc) return "";
@@ -783,6 +935,11 @@ document.addEventListener("click", e => {
   if (jump && CUR) { const n = firstWithFlag(CUR.tree, jump.dataset.jump); if (n) { reveal(n.id); openDrawer(n.id); } return; }
   const mo = e.target.closest(".mo");
   if (mo && CUR) { reveal(mo.dataset.ref); return; }
+  const stg = e.target.closest(".stg, .seg");
+  if (stg && CUR && stg.dataset.ref) { reveal(stg.dataset.ref); return; }
+  if (e.target.id === "stgall") { STAGE_ALL = !STAGE_ALL; render(); return; }
+  const dep = e.target.closest(".dep, [data-jumpto]");
+  if (dep && CUR) { e.preventDefault(); reveal(dep.dataset.src || dep.dataset.jumpto); return; }
   if (e.target.id === "exall") { MODE = "all"; EXP = {}; FORCE = new Set(); rerenderGrid(); return; }
   if (e.target.id === "coall") { MODE = "none"; EXP = {}; FORCE = new Set(); rerenderGrid(); return; }
   if (e.target.id === "dfl") { MODE = "default"; EXP = {}; FORCE = new Set(); rerenderGrid(); return; }
@@ -814,6 +971,11 @@ document.addEventListener("change", e => {
   if (e.target.id === "proj") { PROJ = e.target.value; syncUrl(); renderTasks(); }
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+document.addEventListener("mouseover", e => {    // 依赖徽章: 悬浮时高亮来源行
+  const dep = e.target.closest(".dep");
+  document.querySelectorAll("#grid .r.hl").forEach(r => r.classList.remove("hl"));
+  if (dep) { const src = [...document.querySelectorAll("#grid .r")].find(r => r.dataset.id === dep.dataset.src); if (src) src.classList.add("hl"); }
+});
 $("#q").addEventListener("input", e => { QTEXT = e.target.value.trim().toLowerCase(); renderTasks(); });
 $("#reload").addEventListener("click", () => { loadTasks(); if (SEL) openTask(SEL, true); });
 $("#since").value = SINCE;

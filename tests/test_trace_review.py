@@ -17,7 +17,7 @@ from test_trace import SID, T0, asst, human, iso, result, tool_use, usage, write
 @pytest.fixture
 def clean(monkeypatch):
     for name, val in (("_FILES", {}), ("_TASK_INDEX", {}), ("_AGENT_IDX", {}), ("_SCRIPTS", {}), ("_META", {}),
-                      ("_BUILT", {})):
+                      ("_BUILT", {}), ("_CLAIMED", {})):
         monkeypatch.setattr(trace, name, val)
     monkeypatch.setattr(trace, "_BASELINE", {"t": 0.0, "data": None})
     monkeypatch.setattr(parser, "_file_cache", {})

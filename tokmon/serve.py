@@ -423,6 +423,10 @@ def _wf_scrub_tree(node):
             m.pop("key", None)                   # 归一键只在后端判重复用, 可能含原始命令/参数
             if "instruction" in m:
                 m["instruction"] = _wf_red(m["instruction"])
+            for d in m.get("deps") or []:        # 数据依赖: 字段名像密钥就不给值; 其余只给开头 12 位
+                d["from_label"] = _wf_red(d.get("from_label"))
+                v = _wf_red(str(d.get("value") or ""))
+                d["value"] = "***" if _WF_SECRET_KEY.search(str(d.get("key") or "")) else (v[:12] + ("…" if len(v) > 12 else ""))
         _wf_cost(n.get("tokens"))
         stack.extend(n.get("children") or [])
 
@@ -433,6 +437,8 @@ def _wf_scrub_summary(sm):
             sm[f] = _wf_red(sm[f])
     for m in sm.get("moments") or []:
         m["label"] = _wf_red(m.get("label"))
+    for kind, d in (sm.get("glossary") or {}).items():
+        sm["glossary"][kind] = {k: _wf_red(v) for k, v in d.items()}
     _wf_cost(sm.get("tokens"))
     return sm
 
@@ -462,6 +468,15 @@ def _wf_call(base, q) -> dict:
     if not d:
         return {"error": "找不到这个调用"}
     return {k: _wf_red_obj(v) for k, v in d.items()}
+
+
+def _wf_script(base, q) -> dict:
+    tid, run = (q.get("task") or [""])[0], (q.get("run") or [""])[0]
+    d = trace.get_script(tid, run, base) if tid and run else None
+    if not d:
+        return {"error": "找不到这个 workflow 的脚本"}
+    d["text"] = _wf_red(d["text"])
+    return d
 
 
 def _wf_text(base, q) -> dict:
@@ -538,7 +553,7 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
             # 让健康探测识别本服务为「存活」(返回状态、无 body), 而非 BaseHTTPRequestHandler 默认的 501。
             known = {"/", "/tokens", "/processes", "/sessions", "/notify", "/control", "/doctor", "/backtest",
                      "/billing", "/workflow", "/api/workflow/tasks", "/api/workflow/task", "/api/workflow/call",
-                     "/api/workflow/text",
+                     "/api/workflow/text", "/api/workflow/script",
                      "/api/summary", "/api/processes", "/api/health", "/api/sessions", "/api/events",
                      "/api/notifications", "/api/notify-test", "/api/control", "/api/budget", "/api/doctor",
                      "/api/backtest", "/api/billing"}
@@ -581,6 +596,9 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
                 return
             if path == "/api/workflow/text":
                 self._json(lambda: _wf_text(base, parse_qs(parsed.query)))
+                return
+            if path == "/api/workflow/script":
+                self._json(lambda: _wf_script(base, parse_qs(parsed.query)))
                 return
             if path == "/api/billing":
                 self._json(billing.status)          # 只回聚合数字, 绝不含 key
