@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -353,17 +354,21 @@ def _wf_running(base) -> set:
     return out
 
 
+def _wf_price(by_model: dict) -> tuple:
+    """按模型分别换算 $ -> (美元, 含未知单价模型)。统计层通过注入使用 (trace 不依赖计价)。"""
+    total, unknown = 0.0, False
+    for model, v in (by_model or {}).items():
+        c, known = cost_usd(model, v[0], v[1], v[2], v[3], v[4])
+        total += c
+        unknown = unknown or (not known and sum(v) > 0)   # 0 token 的 <synthetic> 占位消息不算「未知单价」
+    return round(total, 4), unknown
+
+
 def _wf_cost(tokens):
     """在 token 分项上原地补 cost / unpriced (按模型分别换算; 未知模型如实标出, 不瞎估)。"""
     if not isinstance(tokens, dict) or "by_model" not in tokens:
         return
-    total, unknown = 0.0, False
-    for model, v in tokens["by_model"].items():
-        c, known = cost_usd(model, v[0], v[1], v[2], v[3], v[4])
-        total += c
-        unknown = unknown or (not known and sum(v) > 0)   # 0 token 的 <synthetic> 占位消息不算「未知单价」
-    tokens["cost"] = round(total, 4)
-    tokens["unpriced"] = unknown
+    tokens["cost"], tokens["unpriced"] = _wf_price(tokens["by_model"])
     tokens.pop("by_model", None)                 # 前端不需要按模型的原始数组
 
 
@@ -487,6 +492,75 @@ def _wf_text(base, q) -> dict:
     return {"kind": d["kind"], "text": _wf_red(d["text"])}
 
 
+def _wf_window(q) -> tuple:
+    return _wf_since((q.get("since") or ["7d"])[0]), ((q.get("project") or [""])[0] or None)
+
+
+def _wf_scrub_stats(out: dict) -> dict:
+    """统计结果的脱敏 (就地; 传进来的必须是副本)。明细按哈希键取, 显示名打码不影响追溯。"""
+    for t in (out.get("tasks") or {}).values():
+        if t:
+            t["prompt"] = _wf_red(t.get("prompt"))
+    for r in out.get("tools") or []:
+        r["name"] = _wf_red(r["name"])
+    for r in out.get("skills") or []:
+        r["name"] = _wf_red(r["name"])
+    for m in out.get("mcp") or []:
+        m["server"] = _wf_red(m["server"])
+        for tt in m.get("tools") or []:
+            tt["tool"] = _wf_red(tt["tool"])
+        for e in m.get("errors") or []:
+            e["tool"], e["excerpt"] = _wf_red(e.get("tool")), _wf_red(e.get("excerpt"))
+    done = set()                                     # 最慢 / 最贵 与 points 里的是同一个对象 (deepcopy 保留共享): 只处理一次
+    for rows in (out.get("compare") or {}).values():
+        for r in rows:
+            r["name"] = _wf_red(r["name"])
+            for o in [r.get("slowest"), r.get("priciest")] + list(r.get("points") or []):
+                if o and id(o) not in done:
+                    done.add(id(o))
+                    if o.get("sub"):
+                        o["sub"] = _wf_red(o["sub"])
+    return out
+
+
+def _wf_stats(base, q) -> dict:
+    since, project = _wf_window(q)
+    res = trace.stats(base, since=since, project=project, running_sessions=_wf_running(base), price=_wf_price,
+                      fresh=(q.get("fresh") or [""])[0] == "1")
+    return _wf_scrub_stats(copy.deepcopy(res))       # 缓存里的原件不动 (明细还要用它)
+
+
+def _wf_drill(base, q) -> dict:
+    """统计数字背后的明细。那份统计已过期 -> 按同样的窗口重新统计再取, 并告诉页面数字已刷新。"""
+    g = lambda k, d="": (q.get(k) or [d])[0]
+    ref = g("ref")
+    if not ref:
+        return {"error": "缺少 ref"}
+    try:
+        offset, limit = int(g("offset", "0")), int(g("limit", "100"))
+    except ValueError:
+        offset, limit = 0, 100
+    kw = {"flag": g("flag") or None, "sort": g("sort", "time"), "offset": offset, "limit": limit}
+    d = trace.stats_refs(g("stamp"), ref, **kw) if g("stamp") else None
+    restamped = d is None
+    if d is None:
+        since, project = _wf_window(q)
+        res = trace.stats(base, since=since, project=project, running_sessions=_wf_running(base), price=_wf_price)
+        d = trace.stats_refs(res["stamp"], ref, **kw)
+        if d is None:
+            return {"error": "统计刚被刷新, 请再点一次"}
+    out = copy.deepcopy(d)
+    for x in out["items"]:
+        for f in ("label", "sub"):
+            if x.get(f):
+                x[f] = _wf_red(x[f])
+    for t in out["tasks"].values():
+        if t:
+            t["prompt"] = _wf_red(t.get("prompt"))
+    out["restamped"] = restamped
+    return out
+
+
 def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
     rcfg = rcfg or remote.RemoteConfig()          # 默认 = 本机模式 (零行为变化)
     throttle = remote.LoginThrottle()
@@ -553,7 +627,7 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
             # 让健康探测识别本服务为「存活」(返回状态、无 body), 而非 BaseHTTPRequestHandler 默认的 501。
             known = {"/", "/tokens", "/processes", "/sessions", "/notify", "/control", "/doctor", "/backtest",
                      "/billing", "/workflow", "/api/workflow/tasks", "/api/workflow/task", "/api/workflow/call",
-                     "/api/workflow/text", "/api/workflow/script",
+                     "/api/workflow/text", "/api/workflow/script", "/api/workflow/stats", "/api/workflow/drill",
                      "/api/summary", "/api/processes", "/api/health", "/api/sessions", "/api/events",
                      "/api/notifications", "/api/notify-test", "/api/control", "/api/budget", "/api/doctor",
                      "/api/backtest", "/api/billing"}
@@ -599,6 +673,12 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
                 return
             if path == "/api/workflow/script":
                 self._json(lambda: _wf_script(base, parse_qs(parsed.query)))
+                return
+            if path == "/api/workflow/stats":
+                self._json(lambda: _wf_stats(base, parse_qs(parsed.query)))
+                return
+            if path == "/api/workflow/drill":
+                self._json(lambda: _wf_drill(base, parse_qs(parsed.query)))
                 return
             if path == "/api/billing":
                 self._json(billing.status)          # 只回聚合数字, 绝不含 key

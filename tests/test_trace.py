@@ -186,6 +186,8 @@ def session(tmp_path, monkeypatch):
     monkeypatch.setattr(trace, "_BASELINE", {"t": 0.0, "data": None})
     monkeypatch.setattr(trace, "_BUILT", {})
     monkeypatch.setattr(trace, "_CLAIMED", {})
+    monkeypatch.setattr(trace, "_STATS", {})
+    monkeypatch.setattr(trace, "_STAMPS", {})
     monkeypatch.setattr(parser, "_file_cache", {})
     base = tmp_path / "projects"
     proj = base / "c--Users-u--vscode-demo"

@@ -1290,6 +1290,7 @@ class _Ctx:
         self.claimed = _claimed_agents(self)  # 本会话里被 agentId **明确**引用过的 agent (兜底回链不许碰)
         self.gloss: dict = {"skill": {}, "agent": {}, "mcp": {}}
         self.script_loc: dict = {}           # runId -> (脚本路径或 None, run transcript 目录)
+        self.errs: dict = {}                 # 失败调用 id -> 返回开头 (统计页的「最近错误」用; 不进回放树)
 
 
 _CLAIMED: dict = {}                               # 会话目录 -> (t, 被明确引用的 agentId 集合)
@@ -1512,6 +1513,7 @@ def _call_node(r: dict, res: dict | None, ft: FileTrace, ctx: _Ctx, depth: int, 
             flags.append("no-result")                        # 没等到结果 (被打断 / 会话结束 / 已被越过)
     elif res.get("err"):
         flags.append("fail")
+        ctx.errs[r["id"]] = res.get("preview") or ""
     resp_u = ft.resp.get(r["resp"])
     n_par = max(1, ft.resp_calls.get(r["resp"], 1))
     # 结果体积: 没有结果 -> None (不是 0); 含图片/文档等估不出的块 -> None; Skill 加上注入的正文
@@ -1765,7 +1767,7 @@ def build_task(task: dict, now: float | None = None, running: bool = False,
     root = {"id": f"task:{task['id']}", "kind": "task", "label": short(task["prompt"]["text"], 120),
             "t0": t0, "t1": t1, "tokens": total, "children": children}
     return {"summary": summary, "tree": root, "call_loc": ctx.call_loc, "text_loc": ctx.text_loc,
-            "script_loc": ctx.script_loc, "keys": task_keys}
+            "script_loc": ctx.script_loc, "keys": task_keys, "errs": ctx.errs}
 
 
 def _used_glossary(ctx: _Ctx, nodes: list[dict]) -> dict:
@@ -1847,15 +1849,11 @@ def _project_of(task: dict, mp: Path) -> tuple[str, str]:
     return friendly_project(mp.parent.name), ""
 
 
-def list_tasks(base: Path | None = None, since: float | None = None, project: str | None = None,
-               running_sessions: set | None = None) -> list[dict]:
-    """任务列表 (左栏): 每个任务一行轻量摘要。运行中置顶, 其余按时间倒序。
-    project 过滤按「任务里任一响应生效时的项目」匹配 —— 与 /tokens 逐记录按 cwd 归项目的口径一致。"""
-    base = Path(base or default_base())
+def _iter_built(base: Path, since: float | None, project: str | None, running_sessions: set):
+    """窗口内的每个任务 -> (task, built, project, subpath)。列表与统计共用同一套筛选口径:
+    时间按提问时刻; project 按「任务里任一响应生效时的项目」匹配 —— 与 /tokens 逐记录按 cwd 归项目的口径一致。"""
     now = time.time()
-    running_sessions = running_sessions or set()
     bl = baseline(base, ttl=300)
-    out = []
     for mp in list(main_files(base)):
         try:
             if since is not None and mp.stat().st_mtime < since:
@@ -1869,15 +1867,406 @@ def list_tasks(base: Path | None = None, since: float | None = None, project: st
                 continue
             proj, subpath = _project_of(t, mp)
             running = bool(t.get("tail")) and t["session_id"] in running_sessions
-            s = build_task(t, now=now, running=running, baseline=bl)["summary"]
-            if project and proj != project and project not in s["projects"]:
+            built = build_task(t, now=now, running=running, baseline=bl)
+            if project and proj != project and project not in built["summary"]["projects"]:
                 continue
-            s.update(project=proj, subpath=subpath, branch=t["prompt"].get("branch"))
-            out.append({k: s[k] for k in ("id", "session_id", "project", "projects", "subpath", "branch", "prompt",
-                                           "t0", "t1", "running", "time", "tokens", "partial", "calls", "cats",
-                                           "skills", "flags", "agents", "workflows", "mcp_servers", "continuations")})
+            yield t, built, proj, subpath
+
+
+def list_tasks(base: Path | None = None, since: float | None = None, project: str | None = None,
+               running_sessions: set | None = None) -> list[dict]:
+    """任务列表 (左栏): 每个任务一行轻量摘要。运行中置顶, 其余按时间倒序。"""
+    base = Path(base or default_base())
+    out = []
+    for t, built, proj, subpath in _iter_built(base, since, project, running_sessions or set()):
+        s = built["summary"]
+        s.update(project=proj, subpath=subpath, branch=t["prompt"].get("branch"))
+        out.append({k: s[k] for k in ("id", "session_id", "project", "projects", "subpath", "branch", "prompt",
+                                       "t0", "t1", "running", "time", "tokens", "partial", "calls", "cats",
+                                       "skills", "flags", "agents", "workflows", "mcp_servers", "continuations")})
     out.sort(key=lambda s: (not s["running"], -(s["t0"] or 0)))
     return out
+
+
+# ================================================================ S3: 统计 (排行 / MCP 健康 / 跨任务对照)
+#
+# 完成判据: 排行里的每一个数字都能点开, 列出的明细条数与数字**完全相等**, 每一条都能跳回回放里的那一步。
+# 做法: 统计时顺手建追溯索引 {键: [明细]}; 每个数字 = 某个键下 (可选按标记筛过的) 明细条数。
+# 页面拿到的每一份统计带一个 stamp, 取明细时带上它 -> 用的是算出那些数字的同一份索引。
+
+STATS_TTL = 30.0                                  # 同一窗口 + 项目 30 秒内复用
+STAMP_KEEP = 4                                    # 最近几份统计的索引留着给明细用 (全部时间一份约 10MB)
+STAMP_MAX_AGE = 900.0
+_STATS: dict = {}                                 # (base, since 分钟桶, project, 是否带价) -> stamp
+_STAMPS: dict = {}                                # stamp -> (t, 结果, 索引); dict 的插入序就是新旧序
+_STATS_LOCK = threading.Lock()
+_STAMP_SEQ = [0]
+_ROLE_RX = re.compile(r"^\s*([^\s:：/]{1,24})\s*[:：](?!//)")          # review:auth -> review; 不吃 https://
+FAIL_FLAGS = frozenset(("fail", "bg-fail"))
+COUNT_FLAGS = ("retry", "loop", "slow", "huge")
+
+
+def role_of(label, agent_type=None) -> tuple:
+    """子 agent 的「角色」-> (角色, 来源)。标签冒号前的短前缀 (review:auth -> review; 约定, 所以是推断);
+    没有前缀就用 agent 类型 (meta 里的真值); 都没有 -> (None, None)。
+    workflow-subagent 是所有 workflow 子 agent 共用的类型, 不算角色。"""
+    m = _ROLE_RX.match(str(label or ""))
+    if m:
+        return m.group(1).lower(), "prefix"
+    if agent_type and agent_type != "workflow-subagent":
+        return str(agent_type), "type"
+    return None, None
+
+
+def tool_key(n: dict) -> str:
+    """排行里的「工具」: 内置工具按名字; MCP 按 server 合成一行 (单个工具在 MCP 健康里看)。"""
+    if n.get("cat") == "mcp":
+        return "mcp·" + str((n.get("meta") or {}).get("server") or "?")
+    return str(n.get("name") or "?")
+
+
+def _ref(dim: str, name) -> str:
+    """追溯索引的键 = 维度 + 名字的哈希: 原始名字不进 URL; 重新统计后同一个对象的键不变。"""
+    return f"{dim}:{hashlib.sha1(str(name).encode('utf-8', 'replace')).hexdigest()[:12]}"
+
+
+def _call_dur(n: dict) -> float | None:
+    """调用耗时 = 发出到返回 (后台启动只算启动那一下, 与回放一致); 还在跑 / 没结果 -> None。"""
+    if n.get("t0") is None or n.get("t1") is None or "running" in (n.get("flags") or []):
+        return None
+    return max(0.0, n["t1"] - n["t0"])
+
+
+def _span(n: dict) -> float | None:
+    return max(0.0, n["t1"] - n["t0"]) if (n.get("t0") is not None and n.get("t1") is not None) else None
+
+
+def _median(vals: list) -> float | None:
+    if not vals:
+        return None
+    v = sorted(vals)
+    k = len(v) // 2
+    return v[k] if len(v) % 2 else (v[k - 1] + v[k]) / 2
+
+
+def _bm_add(acc: dict, bm: dict | None) -> None:
+    for m, v in (bm or {}).items():
+        a = acc.setdefault(m, [0, 0, 0, 0, 0])
+        for i in range(5):
+            a[i] += v[i]
+
+
+def _usage_of(n: dict) -> tuple:
+    """结构节点的 token 真值 -> (合计, 按模型); 拿不到 -> (None, None)。"""
+    tk = n.get("tokens")
+    if not tk:
+        return None, None
+    return tk.get("total"), tk.get("by_model")
+
+
+def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
+    """(task, built, project, subpath) 的迭代 -> (统计结果, 追溯索引)。纯内存, 不读盘。
+
+    price: 可选的 by_model -> (美元, 含未知单价) 换算函数, 由 serve 层注入 (本模块不依赖计价)。
+    索引里三种明细: call (一次调用) / occ (一个对象在某个任务里的一次出现) / task (一个任务)。"""
+    def cost(bm):
+        if price is None or not bm:
+            return None, False
+        try:
+            return price(bm)
+        except Exception:
+            return None, False
+
+    idx: dict = defaultdict(list)
+    tasks: dict = {}
+    tools: dict = {}
+    mcp: dict = {}
+    skill_occ: dict = {}                               # 名字 -> {task: 累加器}  (同一任务里的几段合成一次出现)
+    tool_occ: dict = {}                                # 工具键 -> {task: 累加器}
+    phase_occ: dict = defaultdict(list)
+    role_occ: dict = defaultdict(list)
+    role_src: dict = {}
+    ov = {"tasks": 0, "calls": 0, "active": 0.0, "fail": 0, "partial": 0, "running": 0,
+          "flags": {f: 0 for f in COUNT_FLAGS}}
+    ov_tok, ov_bm = 0, {}
+
+    for _t, built, proj, _sub in built_iter:
+        sm = built["summary"]
+        tid = sm["id"]
+        errs = built.get("errs") or {}
+        tasks[tid] = {"prompt": short(sm.get("prompt"), 90), "t0": sm.get("t0"), "project": proj}
+        ov["tasks"] += 1
+        ov["active"] += (sm.get("time") or {}).get("active") or 0
+        ov["partial"] += 1 if sm.get("partial") else 0
+        ov["running"] += 1 if sm.get("running") else 0
+        tk = sm.get("tokens") or {}
+        ov_tok += tk.get("total") or 0
+        _bm_add(ov_bm, tk.get("by_model"))
+        call_refs: dict = {}                             # 本任务: 调用 id -> 明细
+        skill_calls: list = []                           # [(skill 名, 子树调用 id 集合)]  调用明细建完再解析
+        task_fail = 0
+        stack = [(built["tree"], None, ())]              # (节点, 所在 workflow 名, 外层 skill 名)
+        while stack:
+            n, wf, sks = stack.pop()
+            k = n["kind"]
+            kid_wf, kid_sks = wf, sks
+            if k == "call":
+                key = tool_key(n)
+                d = _call_dur(n)
+                fl = [f for f in COUNT_FLAGS if f in (n.get("flags") or [])]
+                failed = bool(FAIL_FLAGS & set(n.get("flags") or []))
+                ref = {"kind": "call", "task": tid, "node": n["id"], "t0": n.get("t0"), "name": n["name"],
+                       "cat": n.get("cat"), "label": short(n.get("label"), 120), "sub": short(n.get("sub"), 120),
+                       "flags": fl, "failed": failed, "dur": d}
+                call_refs[n["id"]] = ref
+                ov["calls"] += 1
+                ov["fail"] += failed
+                task_fail += failed
+                for f in fl:
+                    ov["flags"][f] += 1
+                idx["all"].append(ref)
+                row = tools.get(key)
+                if row is None:
+                    row = tools[key] = {"name": key, "cat": n.get("cat"), "calls": 0, "tasks": set(), "durs": [],
+                                        "time": 0.0, "fail": 0, "result_est": 0, "result_unknown": 0,
+                                        "nested": n.get("cat") in ("agent", "workflow"),
+                                        "ref": _ref("tool", key), "ref_occ": _ref("tool-occ", key),
+                                        **{f: 0 for f in COUNT_FLAGS}}
+                row["calls"] += 1
+                row["tasks"].add(tid)
+                row["fail"] += failed
+                for f in fl:
+                    row[f] += 1
+                if d is not None:
+                    row["durs"].append(d)
+                    row["time"] += d
+                if n.get("result_est") is None:
+                    row["result_unknown"] += 1
+                else:
+                    row["result_est"] += n["result_est"]
+                idx[row["ref"]].append(ref)
+                acc = tool_occ.setdefault(key, {}).get(tid)
+                if acc is None:
+                    acc = tool_occ[key][tid] = {"kind": "occ", "task": tid, "node": n["id"], "t0": n.get("t0"),
+                                                "dur": None, "tokens": None, "calls": 0, "fail": 0}
+                    idx[row["ref_occ"]].append(acc)
+                acc["calls"] += 1
+                acc["fail"] += failed
+                if d is not None:
+                    acc["dur"] = (acc["dur"] or 0.0) + d
+                if n.get("t0") is not None and (acc["t0"] is None or n["t0"] < acc["t0"]):
+                    acc["t0"], acc["node"] = n["t0"], n["id"]       # 跳转落在这个任务里第一次用它的地方
+                if n.get("cat") == "mcp":
+                    srv = str((n.get("meta") or {}).get("server") or "?")
+                    tname = str(n["name"]).split("__", 2)[-1]
+                    m = mcp.get(srv)
+                    if m is None:
+                        m = mcp[srv] = {"server": srv, "calls": 0, "tasks": set(), "durs": [], "fail": 0,
+                                        "tools": {}, "errors": [], "ref": _ref("mcp", srv),
+                                        "ref_occ": row["ref_occ"]}
+                    m["calls"] += 1
+                    m["tasks"].add(tid)
+                    m["fail"] += failed
+                    if d is not None:
+                        m["durs"].append(d)
+                    tt = m["tools"].get(tname)
+                    if tt is None:
+                        tt = m["tools"][tname] = {"tool": tname, "calls": 0, "fail": 0, "durs": [],
+                                                  "ref": _ref("mcptool", f"{srv}\x00{tname}")}
+                    tt["calls"] += 1
+                    tt["fail"] += failed
+                    if d is not None:
+                        tt["durs"].append(d)
+                    idx[m["ref"]].append(ref)
+                    idx[tt["ref"]].append(ref)
+                    if failed:
+                        m["errors"].append({"task": tid, "node": n["id"], "t0": n.get("t0"), "tool": tname,
+                                            "excerpt": short(errs.get(n["id"]), 200)})
+            elif k == "skill":
+                ids = [c["id"] for c in walk(n.get("children") or []) if c["kind"] == "call"]
+                skill_calls.append((n["label"], ids))
+                acc = skill_occ.setdefault(n["label"], {}).get(tid)
+                if acc is None:
+                    acc = skill_occ[n["label"]][tid] = {"kind": "occ", "task": tid, "node": n["id"], "t0": n.get("t0"),
+                                                        "dur": None, "tokens": None, "bm": {}, "untagged": False,
+                                                        "calls": 0, "fail": 0, "_seen": set()}
+                if n["label"] not in sks:                    # 外层没有同名 skill 时才累加时长 / token (防嵌套重复)
+                    tot, bm = _usage_of(n)
+                    if tot is None:                          # 没有归属标记: 它管到哪不知道 -> 时长和 token 都拿不到
+                        acc["untagged"] = True
+                    else:
+                        acc["tokens"] = (acc["tokens"] or 0) + tot
+                        _bm_add(acc["bm"], bm)
+                        sp = _span(n)
+                        if sp is not None:
+                            acc["dur"] = (acc["dur"] or 0.0) + sp
+                if n.get("t0") is not None and (acc["t0"] is None or n["t0"] < acc["t0"]):
+                    acc["t0"], acc["node"] = n["t0"], n["id"]
+                kid_sks = sks + (n["label"],)
+            elif k == "workflow":
+                kid_wf = n.get("label")
+            elif k in ("phase", "agent"):
+                calls = [c for c in walk(n.get("children") or []) if c["kind"] == "call"]
+                tot, bm = _usage_of(n)
+                o = {"kind": "occ", "task": tid, "node": n["id"], "t0": n.get("t0"), "dur": _span(n),
+                     "tokens": tot, "bm": bm, "calls": len(calls),
+                     "fail": sum(1 for c in calls if FAIL_FLAGS & set(c.get("flags") or []))}
+                if k == "phase":
+                    o["sub"] = short(wf, 80) if wf else ""
+                    phase_occ[n["label"]].append(o)
+                else:
+                    role, src = role_of(n.get("label"), (n.get("meta") or {}).get("type"))
+                    if role:
+                        o["sub"] = short(n.get("label"), 100)
+                        role_occ[role].append(o)
+                        role_src.setdefault(role, src)
+            for c in reversed(n.get("children") or []):
+                stack.append((c, kid_wf, kid_sks))
+        for name, ids in skill_calls:                    # skill 里的调用: 同一任务里按调用 id 去重
+            acc = skill_occ[name][tid]
+            for cid in ids:
+                r = call_refs.get(cid)
+                if r is not None and cid not in acc["_seen"]:
+                    acc["_seen"].add(cid)
+                    idx[_ref("skill-call", name)].append(r)
+                    acc["calls"] += 1
+                    acc["fail"] += r["failed"]
+        idx["tasks"].append({"kind": "task", "task": tid, "node": f"task:{tid}", "t0": sm.get("t0"),
+                             "dur": (sm.get("time") or {}).get("active"), "tokens": tk.get("total"),
+                             "calls": len(call_refs), "fail": task_fail,
+                             "flags": (["partial"] if sm.get("partial") else []) + (["running"] if sm.get("running") else [])})
+
+    # ---- 收尾: 排行行 + 分布
+    tool_rows = []
+    for r in tools.values():
+        durs = r.pop("durs")
+        r.update(tasks=len(r["tasks"]), timed=len(durs), p50=_median(durs), p90=p90(durs))
+        tool_rows.append(r)
+    tool_rows.sort(key=lambda r: (-r["time"], -r["calls"]))
+
+    skill_rows = []
+    for name, per in skill_occ.items():
+        occs = []
+        bm_all: dict = {}
+        for acc in per.values():
+            acc.pop("_seen", None)
+            _bm_add(bm_all, acc["bm"])
+            acc["cost"], acc["unpriced"] = cost(acc.pop("bm"))
+            occs.append(acc)
+        ref_occ = _ref("skill-occ", name)
+        idx[ref_occ] = occs
+        c, unp = cost(bm_all)
+        skill_rows.append({"name": name, "tasks": len(occs), "calls": sum(o["calls"] for o in occs),
+                           "fail": sum(o["fail"] for o in occs),
+                           "tokens": sum(o["tokens"] or 0 for o in occs), "cost": c, "unpriced": unp,
+                           "untagged": sum(1 for o in occs if o["untagged"]),
+                           "time": sum(o["dur"] or 0 for o in occs),
+                           "ref_occ": ref_occ, "ref_calls": _ref("skill-call", name)})
+    skill_rows.sort(key=lambda r: (-r["time"], -r["tasks"]))
+
+    mcp_rows = []
+    for m in mcp.values():
+        durs = m.pop("durs")
+        m.update(tasks=len(m["tasks"]), p50=_median(durs), p90=p90(durs))
+        tl = []
+        for tt in m["tools"].values():
+            tt["p50"] = _median(tt.pop("durs"))
+            tl.append(tt)
+        m["tools"] = sorted(tl, key=lambda x: (-x["fail"], -x["calls"]))
+        m["errors"] = sorted(m["errors"], key=lambda e: -(e["t0"] or 0))[:5]
+        mcp_rows.append(m)
+    mcp_rows.sort(key=lambda m: (-m["fail"], -m["calls"]))
+
+    def dist(dim: str, groups: dict, src: dict | None = None) -> list:
+        rows = []
+        for name, occs in groups.items():
+            for o in occs:
+                if "bm" in o:
+                    o["cost"], o["unpriced"] = cost(o.pop("bm"))
+            ref = _ref("cmp-" + dim, name)
+            idx[ref] = occs
+            durs = [o for o in occs if o.get("dur") is not None]
+            toks = [o for o in occs if o.get("tokens") is not None]
+            rows.append({"name": name, "n": len(occs), "tasks": len({o["task"] for o in occs}),
+                         "fail_occ": sum(1 for o in occs if o.get("fail")),
+                         "dur_median": _median([o["dur"] for o in durs]),
+                         "tok_median": _median([o["tokens"] for o in toks]),
+                         "calls_median": _median([o["calls"] for o in occs]),
+                         "slowest": max(durs, key=lambda o: o["dur"]) if durs else None,
+                         "priciest": max(toks, key=lambda o: o["tokens"]) if toks else None,
+                         "src": (src or {}).get(name), "ref": ref, "points": occs})
+        rows.sort(key=lambda r: (-r["tasks"], -r["n"], str(r["name"])))
+        return rows
+
+    compare = {"skill": dist("skill", {k: list(v.values()) for k, v in skill_occ.items()}),
+               "phase": dist("phase", phase_occ),
+               "role": dist("role", role_occ, role_src),
+               "tool": dist("tool", {k: list(v.values()) for k, v in tool_occ.items()})}
+    c, unp = cost(ov_bm)
+    ov.update(tokens=ov_tok, cost=c, unpriced=unp)
+    return {"overview": ov, "tasks": tasks, "tools": tool_rows, "skills": skill_rows, "mcp": mcp_rows,
+            "compare": compare}, dict(idx)
+
+
+def _new_stamp() -> str:
+    _STAMP_SEQ[0] += 1
+    return f"{int(time.time() * 1000):x}{_STAMP_SEQ[0]:03d}"
+
+
+def stats(base: Path | None = None, since: float | None = None, project: str | None = None,
+          running_sessions: set | None = None, price=None, fresh: bool = False) -> dict:
+    """统计子页的数据 (带 stamp)。同一窗口 + 项目 STATS_TTL 秒内复用; fresh=True 跳过缓存重算。"""
+    base = Path(base or default_base())
+    key = (str(base), None if since is None else int(since // 60), project or "", price is not None)
+    now = time.time()
+    with _STATS_LOCK:
+        st = _STATS.get(key)
+        hit = _STAMPS.get(st) if st else None
+        if hit and not fresh and now - hit[0] < STATS_TTL:
+            return hit[1]
+    res, idx = compute_stats(_iter_built(base, since, project, running_sessions or set()), price=price)
+    with _STATS_LOCK:
+        stamp = _new_stamp()
+        res["stamp"] = stamp
+        res["computed_at"] = time.time()
+        _STAMPS[stamp] = (res["computed_at"], res, idx)
+        _STATS[key] = stamp
+        for old in [k for k, v in _STAMPS.items() if res["computed_at"] - v[0] > STAMP_MAX_AGE]:
+            _STAMPS.pop(old, None)
+        while len(_STAMPS) > STAMP_KEEP:
+            _STAMPS.pop(next(iter(_STAMPS)))
+        for k in [k for k, v in _STATS.items() if v not in _STAMPS]:
+            _STATS.pop(k, None)                      # 窗口 -> stamp 的登记跟着清 (「近 7 天」每分钟换一个桶, 不能无限长)
+    return res
+
+
+def _drill_match(x: dict, flag: str) -> bool:
+    if flag == "fail":
+        return bool(x.get("failed")) if x["kind"] == "call" else bool(x.get("fail"))
+    return flag in (x.get("flags") or [])
+
+
+def stats_refs(stamp: str, ref: str, flag: str | None = None, sort: str = "time",
+               offset: int = 0, limit: int = 100) -> dict | None:
+    """某个统计数字背后的明细 (追溯抽屉)。stamp 已过期 -> None (调用方重新统计后再取)。
+    flag: fail / retry / loop / slow / huge / partial / running; sort: time / dur / tokens / calls; 分页。"""
+    with _STATS_LOCK:
+        hit = _STAMPS.get(stamp)
+    if hit is None:
+        return None
+    res, idx = hit[1], hit[2]
+    items = list(idx.get(ref) or [])
+    if flag:
+        items = [x for x in items if _drill_match(x, flag)]
+    if sort in ("dur", "tokens", "calls"):
+        items.sort(key=lambda x: (x.get(sort) is None, -(x.get(sort) or 0), -(x.get("t0") or 0)))
+    else:
+        items.sort(key=lambda x: -(x.get("t0") or 0))
+    offset = max(0, int(offset or 0))
+    limit = max(1, min(500, int(limit or 100)))
+    page = items[offset:offset + limit]
+    return {"stamp": stamp, "total": len(items), "offset": offset, "items": page,
+            "tasks": {x["task"]: res["tasks"].get(x["task"]) for x in page}}
 
 
 def get_task(task_id: str, base: Path | None = None, running_sessions: set | None = None) -> dict | None:

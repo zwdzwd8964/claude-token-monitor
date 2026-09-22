@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>工作流回放</title>
+<title>工作流</title>
 <style>__BASE__
   :root { --machine:#7aa2f7; --model:#bb9af7; --wait:#e0af68; --tree:minmax(300px,46%); }
   html, body { height:100%; }
@@ -36,7 +36,7 @@
   .empty { padding:24px 16px; color:var(--dim); font-size:13px; line-height:1.7; }
 
   /* ---------- 右栏: 回放 ---------- */
-  section.replay { overflow:auto; min-width:0; position:relative; }
+  section.replay { overflow:auto; min-width:0; min-height:0; position:relative; flex:1 1 auto; }
   .pad { padding:16px 20px 60px; }
   .welcome { padding:60px 30px; color:var(--dim); line-height:1.8; max-width:640px; }
   .welcome b { color:var(--fg); }
@@ -149,6 +149,75 @@
   .script .ln.ag { background:#132229; }
   .script .ln.focus { background:#2b3450; } .script .ln.focus .no { color:var(--fg); }
 
+  /* ---------- S3: 回放 / 统计 切换 + 统计子页 ---------- */
+  .right { display:flex; flex-direction:column; min-width:0; min-height:0; }
+  .vtabs { flex:0 0 auto; display:flex; gap:4px; padding:6px 16px 0; border-bottom:1px solid var(--line); background:#12151b; }
+  .vtabs button { border:0; border-bottom:2px solid transparent; border-radius:0; background:transparent; color:var(--dim);
+      padding:6px 14px 7px; font-size:13px; }
+  .vtabs button.on { color:var(--fg); border-bottom-color:var(--accent); }
+  .vtabs button:hover { color:var(--fg); }
+  .sthead { display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; margin-bottom:6px; }
+  .sthead h2 { font-size:16px; margin:0; font-weight:600; }
+  .sthead .sp { flex:1; }
+  .stsec { margin:24px 0 8px; display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .stsec h3 { margin:0; font-size:14px; font-weight:600; }
+  .stsec .muted { font-size:12px; }
+  .tblw { overflow-x:auto; border:1px solid var(--line); border-radius:10px; background:#12151b; }
+  table.st { width:100%; border-collapse:collapse; font-size:12.5px; }
+  table.st th { text-align:right; font-weight:500; color:var(--dim); font-size:11.5px; padding:7px 10px;
+      border-bottom:1px solid var(--line); white-space:nowrap; cursor:pointer; user-select:none; }
+  table.st th.on { color:var(--fg); }
+  table.st th:first-child, table.st td:first-child { text-align:left; }
+  table.st td { text-align:right; padding:5px 10px; border-bottom:1px solid #1a1e26; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  table.st tbody tr:last-child td { border-bottom:0; }
+  table.st tbody tr:hover td { background:#171c26; }
+  .num { cursor:pointer; border-bottom:1px dotted #5a6275; }
+  .num:hover { color:var(--accent); border-bottom-color:var(--accent); }
+  .num.bad { color:var(--bad); }
+  .zero { color:#4b5263; }
+  .pct { color:var(--dim); font-size:11px; margin-left:4px; }
+  .mk { margin-right:8px; font-size:12px; white-space:nowrap; }
+  .mcpc { border:1px solid var(--line); border-radius:10px; background:var(--panel); padding:10px 14px; margin-bottom:10px; }
+  .mcpc .hd { display:flex; gap:12px; align-items:center; flex-wrap:wrap; font-size:12.5px; }
+  .failbar { display:inline-block; width:80px; height:6px; border-radius:3px; background:#20242d; overflow:hidden; vertical-align:1px; margin-left:4px; }
+  .failbar span { display:block; height:100%; background:var(--bad); }
+  .mtools { display:grid; grid-template-columns:minmax(140px,260px) 56px 56px 72px; gap:2px 12px; font-size:12px; margin-top:8px; }
+  .mtools .h { color:var(--dim); font-size:11px; }
+  .mtools > div:not(:nth-child(4n+1)) { text-align:right; font-variant-numeric:tabular-nums; }
+  .errl { margin-top:8px; font-size:12px; }
+  .errl .e { padding:4px 8px; border-left:2px solid var(--bad); background:#1a1216; border-radius:0 6px 6px 0; margin:4px 0;
+      cursor:pointer; word-break:break-all; }
+  .errl .e:hover { background:#241820; }
+  .seg2 { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .seg2 button { border:0; border-radius:0; background:transparent; padding:4px 10px; color:var(--dim); }
+  .seg2 button.on { background:#1d2433; color:var(--fg); }
+  .seg2 button:disabled { opacity:.35; cursor:default; }
+  .cmp { border:1px solid var(--line); border-radius:10px; background:#12151b; padding:2px 12px 6px; overflow-x:auto; }
+  .cmp-row { display:grid; grid-template-columns:minmax(110px,180px) 118px minmax(200px,1fr) 260px; gap:10px; align-items:center;
+      padding:5px 0; border-bottom:1px solid #1a1e26; font-size:12.5px; min-width:760px; }
+  .cmp-row:last-child { border-bottom:0; }
+  .cmp-row.axisr { padding:4px 0 0; border-bottom:0; }
+  .cmp-row .cn { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .cmp-row .cc, .cmp-row .cm { font-size:12px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .strip { position:relative; height:24px; background:#0f1217; border-radius:5px; }
+  .strip .pt { position:absolute; width:8px; height:8px; margin-left:-4px; border-radius:50%; background:var(--accent); opacity:.6; cursor:pointer; }
+  .strip .pt.bad { background:var(--bad); opacity:.9; }
+  .strip .pt:hover { opacity:1; transform:scale(1.6); z-index:2; }
+  .strip .med { position:absolute; top:2px; bottom:2px; width:2px; margin-left:-1px; background:var(--fg); opacity:.55; border-radius:1px; }
+  .cmp-axis { position:relative; height:14px; font-size:10.5px; color:var(--dim); }
+  .cmp-axis span { position:absolute; transform:translateX(-50%); white-space:nowrap; }
+  .go { color:var(--accent); cursor:pointer; }
+  .go:hover { text-decoration:underline; }
+  .dctl { display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
+  .dctl button { font-size:12px; padding:3px 10px; }
+  .dctl button.on { border-color:var(--accent); color:var(--fg); }
+  .dit { padding:7px 10px; border:1px solid var(--line); border-radius:8px; margin-bottom:6px; cursor:pointer; background:#12151b; }
+  .dit:hover { border-color:var(--accent); background:#171c26; }
+  .dit .d1 { display:flex; gap:6px; font-size:11.5px; color:var(--dim); }
+  .dit .d1 .sp { flex:1; }
+  .dit .d2 { font-size:12.5px; margin-top:2px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; word-break:break-all; }
+  .dit .d3 { font-size:11.5px; color:var(--dim); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
   /* L2 明细抽屉 */
   .drawer { position:fixed; right:0; top:0; bottom:0; width:min(640px,94vw); background:#141820; border-left:1px solid var(--line);
       transform:translateX(102%); transition:transform .18s ease; overflow:auto; z-index:30; box-shadow:-10px 0 30px rgba(0,0,0,.45); }
@@ -171,7 +240,7 @@
 </style></head>
 <body>
 <header>
-  <h1>工作流回放 <span>一次提问是怎么被完成的 · 纯本地只读</span></h1>
+  <h1>工作流 <span>回放一次提问是怎么被完成的 · 统计哪些环节最花时间、最容易出错 · 纯本地只读</span></h1>
   <div class="nav">__NAV__</div>
 </header>
 <div class="wf">
@@ -187,6 +256,8 @@
     </div>
     <div id="tasklist"><div class="empty">加载中… 首次打开要把全部 transcript 读一遍, 可能要十来秒。</div></div>
   </aside>
+  <div class="right">
+  <nav class="vtabs"><button data-view="replay" class="on">回放</button><button data-view="stats" title="工具 / skill 排行、MCP 健康、跨任务对照；跟随左边的时间范围和项目">统计</button></nav>
   <section class="replay" id="replay">
     <div class="welcome">
       <p>从左边选一个任务，看它是<b>怎么被完成的</b>：</p>
@@ -194,8 +265,11 @@
          · 下面是过程：调用树和时间轴并排，skill / 子 agent / workflow 的层级都在里面。<br>
          · 点任何一行看明细：完整的输入与输出（已脱敏）。</p>
       <p style="font-size:12px">数字分三级：真值直接写；估算前面带 ≈；推断的会写明「推断」。</p>
+      <p style="font-size:12px">想看「哪些工具 / skill 最花时间、哪个 MCP 老出错、同一个阶段在不同任务里差多少」：点上面的<b>统计</b>。</p>
     </div>
   </section>
+  <section class="replay" id="stats" style="display:none"></section>
+  </div>
 </div>
 <aside class="drawer" id="drawer"><div class="dh"><button class="x" id="dclose">关闭 ✕</button><h3 id="dtitle"></h3><div id="dsub" class="note" style="margin:0"></div></div><div class="db" id="dbody"></div></aside>
 
@@ -263,6 +337,21 @@ let FORCE = new Set();        // 「跳到这一步」时强制展开的节点
 let SMALL = false;            // 当前任务是不是小任务 (render 时算一次)
 let STAGE_ALL = false;        // 流程条: 段数很多时是否全部展开
 let pollT = null, listT = null, reqId = 0;
+// S3: 统计子页
+let VIEW = QS.get("view") === "stats" ? "stats" : "replay";
+let STATS = null, STATS_REQ = 0;
+let ST_SORT = {tools: "time", skills: "time"};
+let ST_MORE = {tools: false, skills: false, cmp: false, mcp: {}};
+let CMP_DIM = "skill", CMP_METRIC = "dur";
+let DRILL = null;             // 追溯抽屉: {ref, flag, sort, title, items, total, tasks}
+const WIN_TXT = {today: "今天", "7d": "近 7 天", "30d": "近 30 天", all: "全部时间"};
+const CMP_DIMS = [["skill", "Skill"], ["phase", "Workflow 阶段"], ["role", "Agent 角色"], ["tool", "工具"]];
+const CMP_NOTE = {
+  skill: "每个任务里用到这个 skill 的部分算一次（被打断分成几段的合在一起）。耗时 = skill 期间的墙钟时间；token = 归属到它的真值。",
+  phase: "每次 workflow 运行里的这个阶段算一次。按阶段标题归类：不同 workflow 里同名的阶段放在一起比。耗时 = 阶段里第一个 agent 开始到最后一个结束。",
+  role: "每个子 agent 算一次。角色 = 标签冒号前的前缀（review:auth → review，按命名约定推断）；没有前缀的按 agent 类型（真值）。",
+  tool: "每个任务里这个工具的全部调用合成一次。耗时 = 这些调用的时长相加（并行的会重叠）；工具调用没有 token 真值。",
+};
 
 // ---------------------------------------------------------------- 格式化
 function fmtTok(n) { if (n == null) return "—"; n = +n; if (n >= 1e9) return (n/1e9).toFixed(2)+"B"; if (n >= 1e6) return (n/1e6).toFixed(n >= 1e8 ? 0 : 1)+"M";
@@ -410,7 +499,7 @@ function dayLabel(t) {
 }
 
 // ---------------------------------------------------------------- 打开任务
-async function openTask(id, keep) {
+async function openTask(id, keep, focus) {    // focus: 打开后跳到这个节点并打开它的明细 (从统计跳过来)
   clearTimeout(pollT);
   if (!keep) { EXP = {}; MODE = "default"; FORCE = new Set(); closeDrawer(); }
   SEL = id; syncUrl();
@@ -424,6 +513,7 @@ async function openTask(id, keep) {
     const st = $("#replay").scrollTop;
     CUR = d; render();
     if (keep) $("#replay").scrollTop = st;
+    if (focus) focusNode(focus);
     if (d.summary.running) pollT = setTimeout(() => openTask(id, true), 5000);   // 运行中: 5s 自动刷新
   } catch (e) { if (SEL === id) refreshFailed(id, keep, "请求失败：" + e); }
 }
@@ -441,6 +531,7 @@ function refreshFailed(id, keep, msg) {  // 自动刷新失败: 不抹掉已有�
 function syncUrl() {
   const u = new URLSearchParams();
   if (SEL) u.set("task", SEL); if (PROJ) u.set("project", PROJ); if (SINCE !== "7d") u.set("since", SINCE);
+  if (VIEW === "stats") u.set("view", "stats");
   history.replaceState(null, "", "/workflow" + (u.toString() ? "?" + u : ""));
 }
 
@@ -752,7 +843,7 @@ function firstWithFlag(root, flag) {
 }
 
 // ---------------------------------------------------------------- L2 明细抽屉
-function closeDrawer() { $("#drawer").classList.remove("open"); DRAWER = null; DRAWER_REQ++; }
+function closeDrawer() { $("#drawer").classList.remove("open"); DRAWER = null; DRILL = null; DRAWER_REQ++; }
 function kv(pairs) { return `<div class="kv">${pairs.filter(p => p && p[1] !== "" && p[1] != null).map(([k, v]) => `<div class="k">${esc(k)}</div><div>${v}</div>`).join("")}</div>`; }
 function sec(title, extra) { return `<div class="sec">${esc(title)}<span class="sp"></span>${extra || ""}</div>`; }
 function copyBtn(id) { return `<button data-copy="${id}" style="font-size:11px;padding:2px 8px">复制</button>`; }
@@ -919,16 +1010,309 @@ async function loadCall(n, drawerId) {
   } catch (e) { if (live()) $("#din-wrap").innerHTML = `<div class="muted">请求失败：${esc(e)}</div>`; }
 }
 
+// ---------------------------------------------------------------- S3: 统计子页
+// 完成判据: 每个带虚线的数字点开 = 列出同样条数的明细; 点一条 = 切到回放、打开任务、跳到那一步。
+function statsKey() { return SINCE + "|" + PROJ; }
+function switchView(v) {
+  VIEW = v === "stats" ? "stats" : "replay";
+  document.querySelectorAll(".vtabs [data-view]").forEach(b => b.classList.toggle("on", b.dataset.view === VIEW));
+  $("#replay").style.display = VIEW === "replay" ? "" : "none";
+  $("#stats").style.display = VIEW === "stats" ? "" : "none";
+  if (DRILL) closeDrawer();
+  syncUrl();
+  if (VIEW === "stats" && (!STATS || STATS._key !== statsKey())) loadStats();
+}
+async function loadStats(silent, fresh) {
+  const my = ++STATS_REQ, key = statsKey();
+  if (!silent) $("#stats").innerHTML = '<div class="welcome">统计中… 要把这个范围里的任务都构建一遍，第一次可能要十来秒。</div>';
+  try {
+    const r = await fetch(`/api/workflow/stats?since=${encodeURIComponent(SINCE)}&project=${encodeURIComponent(PROJ)}${fresh ? "&fresh=1" : ""}`);
+    const d = await r.json();
+    if (my !== STATS_REQ) return;
+    if (d.error) { if (!silent || !STATS) $("#stats").innerHTML = `<div class="welcome">读取失败：${esc(d.error)}</div>`; return; }
+    d._key = key; STATS = d;
+    renderStats();
+  } catch (e) { if (my === STATS_REQ && (!silent || !STATS)) $("#stats").innerHTML = `<div class="welcome">请求失败：${esc(e)}</div>`; }
+}
+function pctTxt(a, b) { if (!b) return ""; const p = 100 * a / b; return (p >= 10 ? p.toFixed(0) : p.toFixed(1)) + "%"; }
+function dn(n, ref, o) {        // 可追溯的数字。计数类带 data-n: 点开列出的条数必须等于它
+  o = o || {};
+  const txt = o.txt != null ? o.txt : (n == null ? "—" : Number(n).toLocaleString());
+  if (!n || !ref) return `<span class="zero">${n === 0 ? "0" : esc(txt)}</span>`;
+  return `<span class="num${o.cls ? " " + o.cls : ""}" data-drill="${esc(ref)}" data-flag="${esc(o.flag || "")}" data-sort="${esc(o.sort || "")}"`
+    + ` data-title="${esc(o.title || "")}"${o.txt == null ? ` data-n="${n}"` : ""} title="${esc(o.tip || "点开列出这些明细")}">${esc(txt)}</span>`;
+}
+function sortRows(rows, key) {
+  return rows.slice().sort((a, b) => key === "name" ? String(a.name).localeCompare(String(b.name))
+    : ((b[key] == null ? -1 : b[key]) - (a[key] == null ? -1 : a[key])) || String(a.name).localeCompare(String(b.name)));
+}
+function thS(tab, key, txt, tip) {
+  const on = ST_SORT[tab] === key;
+  return `<th data-sort-tab="${tab}" data-sort-key="${key}" class="${on ? "on" : ""}" title="${esc(tip || "按这一列排序")}">${esc(txt)}${on ? (key === "name" ? " ↑" : " ↓") : ""}</th>`;
+}
+function moreBtn(k, n, lim) { return n > lim ? `<button data-stmore="${k}" style="margin-top:8px;font-size:12px">${ST_MORE[k] ? "收起" : `显示全部 ${n} 个`}</button>` : ""; }
+function toolTag(name, cat) {
+  return cat === "mcp" ? `<span class="tag mcp">${esc(name)}</span>` : `<span class="tag builtin" title="${esc(TOOL_ZH[name] || "")}">${esc(name)}</span>`;
+}
+
+function renderStats() {
+  const S = STATS; if (!S) return;
+  const ov = S.overview || {};
+  let h = `<div class="pad"><div class="sthead"><h2>统计 · ${esc(WIN_TXT[SINCE] || SINCE)} · ${esc(PROJ || "全部项目")}</h2>`
+    + `<span class="muted" style="font-size:12px">统计于 ${esc(fmtClock(S.computed_at))} · 跟随左边的时间范围和项目（搜索框只筛列表）</span><span class="sp"></span>`
+    + `<button id="streload" title="不用缓存，按最新的 transcript 重新统计">重新统计</button></div>`;
+  if (!ov.tasks) { $("#stats").innerHTML = h + '<div class="welcome" style="padding:30px 0">这个范围里没有任务。</div></div>'; return; }
+  h += '<div class="note" style="margin:0 0 12px">带虚线的数字都能点开：列出的条数就是这个数字；点其中一条，跳到回放里的那一步。</div>';
+  const kpi = (v, k) => `<div class="kpi"><div class="v">${v}</div><div class="k">${k}</div></div>`;
+  h += '<div class="kpis">'
+    + kpi(dn(ov.tasks, "tasks", {title: "全部任务"}), `个任务${ov.running ? ` · ${ov.running} 个运行中` : ""}`)
+    + kpi(dn(ov.calls, "all", {title: "全部调用"}), "次调用")
+    + kpi(dn(ov.active, "tasks", {txt: fmtDur(ov.active) || "0s", sort: "dur", title: "全部任务 · 按活跃时长", tip: "各任务的活跃时长相加（空闲不算）；点开按时长列出任务"}), "活跃时长合计")
+    + kpi(dn(ov.tokens, "tasks", {txt: fmtTok(ov.tokens), sort: "tokens", title: "全部任务 · 按 token", tip: "各任务的 token 真值相加；点开按 token 列出任务"}),
+          `token 真值 · 等价 ${esc(fmtUsd(ov.cost))}${ov.unpriced ? "（含未知单价）" : ""}`)
+    + kpi(dn(ov.fail, "all", {flag: "fail", cls: "bad", title: "失败的调用"}), `次调用失败${ov.calls ? `（${pctTxt(ov.fail, ov.calls)}）` : ""}`)
+    + (ov.partial ? kpi(dn(ov.partial, "tasks", {flag: "partial", title: "数据不全的任务"}), "个任务数据不全（合计是下限）") : "")
+    + '</div>';
+  const fl = ov.flags || {};
+  const chip = (f, txt) => fl[f] ? `<span class="chip" title="${esc(FLAG_TIP[f] || "")}">${esc(txt)} ${dn(fl[f], "all", {flag: f, title: "全部调用 · " + (FLAG_TXT[f] || f)})}</span>` : "";
+  const chips = chip("retry", "↻ 重试·推断") + chip("loop", "⟳ 打转·推断") + chip("huge", "📦 超大结果") + chip("slow", "🐢 偏慢·统计");
+  if (chips) h += `<div class="chips">${chips}</div>`;
+  h += statTools(S) + statSkills(S) + statMcp(S) + statCompare(S);
+  h += '<div class="foot">口径：调用耗时 = 发出到返回（后台启动只算启动那一下，和回放一致）；「偏慢」按这个工具<b style="color:var(--fg)">全部历史</b>的 p90 判（统计推断）；'
+    + '「重试 / 打转」按同一命令、同一参数判（推断）；token 是 API usage 去重后的真值，≥ 表示有的段落没有归属标记（是下限）。所有文字已做尽力而为的脱敏。</div></div>';
+  $("#stats").innerHTML = h;
+}
+
+function statTools(S) {
+  const rows = (S.tools || []).filter(r => r.cat !== "ask"), waits = (S.tools || []).filter(r => r.cat === "ask");
+  let h = '<div class="stsec"><h3>工具排行</h3><span class="muted">默认按耗时合计排，点表头换排序；MCP 按 server 合成一行，单个工具在下面「MCP 健康」里看</span></div>';
+  if (!rows.length && !waits.length) return h + '<div class="note">这个范围里没有调用。</div>';
+  const sorted = sortRows(rows, ST_SORT.tools), LIM = 15, show = ST_MORE.tools ? sorted : sorted.slice(0, LIM);
+  const body = show.map(r => {
+    const t = x => `${r.name} · ${x}`;
+    const marks = [["retry", "↻"], ["loop", "⟳"], ["slow", "🐢"], ["huge", "📦"]].filter(([f]) => r[f])
+      .map(([f, ic]) => `<span class="mk" title="${esc(FLAG_TXT[f])}：${esc(FLAG_TIP[f] || "")}">${ic} ${dn(r[f], r.ref, {flag: f, title: t(FLAG_TXT[f])})}</span>`).join("");
+    return `<tr><td>${toolTag(r.name, r.cat)}${r.nested ? ' <span class="tag" title="前台的 Agent 调用会等子 agent 干完，耗时包含子 agent 在里面干的活（嵌套，不能和别的行相加）；后台启动的（包括 Workflow）只算启动那一下">含子 agent</span>' : ""}</td>`
+      + `<td>${dn(r.calls, r.ref, {title: t("全部调用")})}</td>`
+      + `<td>${dn(r.tasks, r.ref_occ, {title: t("用到它的任务"), tip: "用到它的任务数；点开按任务列出（每个任务里的调用合在一起）"})}</td>`
+      + `<td>${dn(r.time, r.ref, {txt: fmtDur(r.time) || "0s", sort: "dur", title: t("按耗时"), tip: `${r.timed} 次有耗时的调用相加（并行的会重叠）；点开按耗时列出`})}</td>`
+      + `<td class="muted">${esc(fmtDur(r.p50) || "—")} / ${esc(fmtDur(r.p90) || "—")}</td>`
+      + `<td>${dn(r.fail, r.ref, {flag: "fail", cls: "bad", title: t("失败的调用")})}${r.fail ? `<span class="pct">${pctTxt(r.fail, r.calls)}</span>` : ""}</td>`
+      + `<td style="text-align:left">${marks}</td>`
+      + `<td class="muted" title="结果体积估算：返回内容按字符估的 token 数相加，会一直留在上下文里${r.result_unknown ? `；另有 ${r.result_unknown} 次估不出（没有结果 / 含图片等）` : ""}">≈${esc(fmtTok(r.result_est))}${r.result_unknown ? "+" : ""}</td></tr>`;
+  }).join("");
+  h += `<div class="tblw"><table class="st"><thead><tr>${thS("tools", "name", "工具")}${thS("tools", "calls", "调用")}${thS("tools", "tasks", "任务")}`
+    + `${thS("tools", "time", "耗时合计", "各次调用的耗时相加")}${thS("tools", "p50", "中位 / p90", "单次调用耗时的中位数 / 90 分位（按中位排）")}`
+    + `${thS("tools", "fail", "失败")}<th style="text-align:left;cursor:default">其他标记</th>${thS("tools", "result_est", "结果 ≈tok", "返回内容的体积估算")}</tr></thead><tbody>${body}</tbody></table></div>`
+    + moreBtn("tools", sorted.length, LIM);
+  if (waits.length) {
+    h += '<div class="note">⏸ 等你：' + waits.map(r => `${esc(r.name)} ${dn(r.calls, r.ref, {title: `${r.name} · 全部`})} 次，共 ${esc(fmtDur(r.time) || "0s")}（中位 ${esc(fmtDur(r.p50) || "—")}）`).join("；")
+      + '——这是停下来等你回答或批准的时间，不是工具在干活，所以不参加排行。</div>';
+  }
+  return h;
+}
+
+function statSkills(S) {
+  const rows = S.skills || [];
+  let h = '<div class="stsec"><h3>Skill 排行</h3><span class="muted">一个任务里用到它算一次；token 是归属到它的真值</span></div>';
+  if (!rows.length) return h + '<div class="note">这个范围里没有用到 skill。</div>';
+  const sorted = sortRows(rows, ST_SORT.skills), LIM = 12, show = ST_MORE.skills ? sorted : sorted.slice(0, LIM);
+  const UNK = "每次用它之后的行都没有归属标记（Claude Code 未标注），它管到哪不知道，所以时长和 token 都拿不到";
+  const body = show.map(r => {
+    const t = x => `skill ${r.name} · ${x}`, unk = r.untagged >= r.tasks;
+    return `<tr><td><span style="color:#9ece6a">◆ ${esc(r.name)}</span></td>`
+      + `<td>${dn(r.tasks, r.ref_occ, {title: t("用到它的任务")})}</td>`
+      + `<td>${dn(r.calls, r.ref_calls, {title: t("它里面的调用")})}</td>`
+      + (unk ? `<td class="muted" title="${esc(UNK)}">—</td><td class="muted" title="${esc(UNK)}">—</td>`
+         : `<td>${dn(r.tokens, r.ref_occ, {txt: (r.untagged ? "≥ " : "") + fmtTok(r.tokens), sort: "tokens", title: t("按 token"),
+             tip: `token 真值 · 等价 ${fmtUsd(r.cost)}${r.untagged ? `\n有 ${r.untagged} 个任务里它之后的行没有归属标记，那几次拿不到，合计是下限` : ""}`})}</td>`
+         + `<td>${dn(r.time, r.ref_occ, {txt: (r.untagged ? "≥ " : "") + (fmtDur(r.time) || "0s"), sort: "dur", title: t("按耗时"),
+             tip: `skill 期间的墙钟时间相加；点开按耗时列出任务${r.untagged ? `\n有 ${r.untagged} 个任务里没有归属标记，那几次的时长拿不到` : ""}`})}</td>`)
+      + `<td>${dn(r.fail, r.ref_calls, {flag: "fail", cls: "bad", title: t("失败的调用")})}</td></tr>`;
+  }).join("");
+  return h + `<div class="tblw"><table class="st"><thead><tr>${thS("skills", "name", "skill")}${thS("skills", "tasks", "任务")}${thS("skills", "calls", "调用")}`
+    + `${thS("skills", "tokens", "token 真值")}${thS("skills", "time", "耗时合计")}${thS("skills", "fail", "失败")}</tr></thead><tbody>${body}</tbody></table></div>`
+    + moreBtn("skills", sorted.length, LIM);
+}
+
+function statMcp(S) {
+  const rows = S.mcp || [];
+  let h = '<div class="stsec"><h3>MCP 健康</h3><span class="muted">按 server 分开看：调用、失败率、耗时，最近的错误原文（已脱敏）</span></div>';
+  if (!rows.length) return h + '<div class="note">这个范围里没有 MCP 调用。</div>';
+  return h + rows.map(m => {
+    const t = x => `mcp·${m.server} · ${x}`;
+    const open = !!ST_MORE.mcp[m.server], tools = open ? m.tools : m.tools.slice(0, 6);
+    const tl = tools.map(x => `<div>${esc(x.tool)}</div><div>${dn(x.calls, x.ref, {title: t(x.tool + " · 全部调用")})}</div>`
+      + `<div>${dn(x.fail, x.ref, {flag: "fail", cls: "bad", title: t(x.tool + " · 失败的调用")})}</div><div class="muted">${esc(fmtDur(x.p50) || "—")}</div>`).join("");
+    const errs = (m.errors || []).slice(0, 3).map(e => `<div class="e" data-go-task="${esc(e.task)}" data-go-node="${esc(e.node)}" data-go-kind="call" title="点击跳到回放里这一步">`
+      + `<span class="muted">${esc(fmtClock(e.t0))} · ${esc(e.tool)}</span>　${esc(e.excerpt || "（没有返回内容）")}</div>`).join("");
+    return `<div class="mcpc"><div class="hd"><span class="tag mcp">mcp·${esc(m.server)}</span>`
+      + `<span>${dn(m.calls, m.ref, {title: t("全部调用")})} 次调用 · ${dn(m.tasks, m.ref_occ, {title: t("用到它的任务")})} 个任务</span>`
+      + `<span>失败 ${dn(m.fail, m.ref, {flag: "fail", cls: "bad", title: t("失败的调用")})}${m.fail ? `（${pctTxt(m.fail, m.calls)}）` : ""}`
+      + `<span class="failbar"><span style="width:${(100 * (m.calls ? m.fail / m.calls : 0)).toFixed(1)}%"></span></span></span>`
+      + `<span class="muted">中位 ${esc(fmtDur(m.p50) || "—")} · p90 ${esc(fmtDur(m.p90) || "—")}</span></div>`
+      + `<div class="mtools"><div class="h">工具</div><div class="h">调用</div><div class="h">失败</div><div class="h">中位耗时</div>${tl}</div>`
+      + (m.tools.length > 6 ? `<button data-mcpmore="${esc(m.server)}" style="margin-top:6px;font-size:11.5px">${open ? "收起" : `显示全部 ${m.tools.length} 个工具`}</button>` : "")
+      + (errs ? `<div class="errl"><div class="muted" style="font-size:11.5px">最近的错误（点一条跳到回放）</div>${errs}</div>` : "")
+      + '</div>';
+  }).join("");
+}
+
+function metricOf(o) { return CMP_METRIC === "dur" ? o.dur : CMP_METRIC === "tokens" ? o.tokens : o.calls; }
+function fmtMetric(v) { return v == null ? "—" : CMP_METRIC === "dur" ? (fmtDur(v) || "0s") : CMP_METRIC === "tokens" ? fmtTok(v) : String(Math.round(v)); }
+function ptTip(o) {
+  const t = (STATS.tasks || {})[o.task] || {};
+  return `${t.prompt || "（无文字提问）"}\n${fmtClock(o.t0)} · ${fmtDur(o.dur) || "—"}${o.tokens != null ? ` · ${fmtTok(o.tokens)} tok` : ""} · ${o.calls} 次调用`
+    + `${o.fail ? ` · ${o.fail} 次失败` : ""}${o.sub ? "\n" + o.sub : ""}\n点击跳到回放`;
+}
+function cmpName(dim, r) {
+  if (dim === "skill") return `<span style="color:#9ece6a">◆ ${esc(r.name)}</span>`;
+  if (dim === "phase") return `<span style="color:var(--model)">▸ ${esc(r.name)}</span>`;
+  if (dim === "role") return `🤖 ${esc(r.name)}${r.src === "type" ? ' <span class="tag" title="标签没有「角色:」前缀，按 agent 类型（真值）归类">类型</span>' : ""}`;
+  return toolTag(r.name, String(r.name).startsWith("mcp·") ? "mcp" : "builtin");
+}
+function scaleFor(rows) {        // 对数轴 (这一维所有行共用, 行与行之间才可比)
+  let lo = Infinity, hi = -Infinity;
+  for (const r of rows) for (const o of r.points) { const v = metricOf(o); if (v != null && v > 0) { lo = Math.min(lo, v); hi = Math.max(hi, v); } }
+  if (!isFinite(lo)) return null;
+  if (hi / lo < 10) { lo = lo / 3; hi = hi * 3; }
+  const L0 = Math.log10(lo), L1 = Math.log10(hi);
+  const x = v => (Math.log10(Math.max(v, lo)) - L0) / Math.max(1e-9, L1 - L0) * 100;
+  const cand = CMP_METRIC === "dur" ? [1, 10, 60, 600, 3600, 36000] : CMP_METRIC === "tokens" ? [1e3, 1e4, 1e5, 1e6, 1e7, 1e8] : [1, 10, 100, 1000, 10000];
+  return {x, ticks: cand.filter(v => v >= lo && v <= hi)};
+}
+function statCompare(S) {
+  const all = (S.compare || {})[CMP_DIM] || [];
+  const LIM = 12, rows = ST_MORE.cmp ? all : all.slice(0, LIM);
+  const noTok = CMP_DIM === "tool";
+  const dimTxt = (CMP_DIMS.find(d => d[0] === CMP_DIM) || [])[1] || "";
+  let h = '<div class="stsec"><h3>跨任务对照</h3><span class="muted">同一个东西在不同任务里表现如何：每个点是一次，竖线是中位；点一个点跳到回放</span></div>';
+  h += `<div class="tools" style="margin:0 0 8px"><span class="seg2">${CMP_DIMS.map(([k, t]) => `<button data-cmp="${k}" class="${CMP_DIM === k ? "on" : ""}">${t}</button>`).join("")}</span>`
+    + `<span class="seg2">${[["dur", "耗时"], ["tokens", "token"], ["calls", "调用数"]].map(([k, t]) => `<button data-metric="${k}" class="${CMP_METRIC === k ? "on" : ""}"${k === "tokens" && noTok ? ' disabled title="工具调用没有 token 真值"' : ""}>${t}</button>`).join("")}</span></div>`;
+  h += `<div class="note" style="margin:0 0 8px">${esc(CMP_NOTE[CMP_DIM])}</div>`;
+  if (!all.length) return h + '<div class="note">这个范围里没有可对照的对象。</div>';
+  const sc = scaleFor(rows);
+  const tick = v => CMP_METRIC === "dur" ? ({1: "1s", 10: "10s", 60: "1m", 600: "10m", 3600: "1h", 36000: "10h"}[v] || fmtDur(v))
+                  : CMP_METRIC === "tokens" ? (v >= 1e6 ? v / 1e6 + "M" : v / 1e3 + "k") : String(v);
+  let body = sc ? `<div class="cmp-row axisr"><div></div><div></div><div class="cmp-axis">${sc.ticks.map(v => `<span style="left:${sc.x(v).toFixed(1)}%">${esc(tick(v))}</span>`).join("")}</div><div></div></div>` : "";
+  const go = (o, txt) => o ? `<span class="go" data-go-task="${esc(o.task)}" data-go-node="${esc(o.node)}" data-go-kind="occ" title="${esc(ptTip(o))}">${txt}</span>` : "";
+  for (const r of rows) {
+    const med = CMP_METRIC === "dur" ? r.dur_median : CMP_METRIC === "tokens" ? r.tok_median : r.calls_median;
+    let strip = "", miss = 0;
+    if (sc) {
+      r.points.forEach((o, i) => {
+        const v = metricOf(o);
+        if (v == null) { miss++; return; }
+        strip += `<span class="pt${o.fail ? " bad" : ""}" style="left:${sc.x(v).toFixed(2)}%;top:${3 + (i % 3) * 6}px" data-go-task="${esc(o.task)}" data-go-node="${esc(o.node)}" data-go-kind="occ" title="${esc(ptTip(o))}"></span>`;
+      });
+      if (med != null) strip += `<span class="med" style="left:${sc.x(med).toFixed(2)}%" title="中位 ${esc(fmtMetric(med))}"></span>`;
+    }
+    body += `<div class="cmp-row"><div class="cn" title="${esc(r.name)}">${cmpName(CMP_DIM, r)}</div>`
+      + `<div class="cc" title="${r.n} 次，分布在 ${r.tasks} 个任务里${r.fail_occ ? `；其中 ${r.fail_occ} 次里有调用失败` : ""}">${dn(r.n, r.ref, {title: `${dimTxt} ${r.name} · 每一次`})} 次 · ${r.tasks} 任务`
+      + `${r.fail_occ ? ` · <span style="color:var(--bad)">✗</span>${dn(r.fail_occ, r.ref, {flag: "fail", cls: "bad", title: `${dimTxt} ${r.name} · 有失败的`, tip: "其中有调用失败的次数；点开列出"})}` : ""}</div>`
+      + `<div class="strip"${miss ? ` title="另有 ${miss} 次没有这个数值"` : ""}>${strip}</div>`
+      + `<div class="cm">中位 ${esc(fmtMetric(med))}${r.slowest ? " · " + go(r.slowest, "最慢 " + esc(fmtDur(r.slowest.dur) || "0s")) : ""}`
+      + `${!noTok && r.priciest ? " · " + go(r.priciest, "最贵 " + esc(fmtTok(r.priciest.tokens))) : ""}</div></div>`;
+  }
+  return h + `<div class="cmp">${body}</div>` + moreBtn("cmp", all.length, LIM);
+}
+
+// ---- 追溯抽屉: 数字 -> 明细 -> 回放
+function openDrill(ref, flag, sort, title) {
+  DRAWER_REQ++;
+  DRAWER = "drill";
+  DRILL = {ref, flag: flag || "", sort: sort || "time", title: title || "明细", items: [], total: null, tasks: {}};
+  $("#drawer").classList.add("open");
+  $("#dtitle").textContent = DRILL.title;
+  $("#dsub").textContent = "读取中…";
+  $("#dbody").innerHTML = '<div class="muted">读取中…</div>';
+  return loadDrill(false);
+}
+async function loadDrill(more) {
+  const D = DRILL, my = DRAWER_REQ;
+  if (!D || !STATS) return;
+  const q = new URLSearchParams({stamp: STATS.stamp || "", since: SINCE, project: PROJ, ref: D.ref, flag: D.flag, sort: D.sort,
+                                 offset: String(more ? D.items.length : 0), limit: "100"});
+  try {
+    const r = await fetch("/api/workflow/drill?" + q.toString());
+    const d = await r.json();
+    if (my !== DRAWER_REQ || DRILL !== D) return;
+    if (d.error) { $("#dsub").textContent = ""; $("#dbody").innerHTML = `<div class="muted">${esc(d.error)}</div>`; return; }
+    Object.assign(D.tasks, d.tasks || {});
+    D.items = more ? D.items.concat(d.items || []) : (d.items || []);
+    D.total = d.total;
+    if (d.restamped) { D.restamped = true; if (VIEW === "stats") loadStats(true); }   // 那份统计已过期: 数字按最新数据刷新
+    renderDrill();
+  } catch (e) { if (my === DRAWER_REQ && DRILL === D) $("#dbody").innerHTML = `<div class="muted">请求失败：${esc(e)}</div>`; }
+}
+function renderDrill() {
+  const D = DRILL;
+  const kind = (D.items[0] || {}).kind;
+  const sorts = [["time", "按时间"], ["dur", "按耗时"]].concat(D.items.some(x => x.tokens != null) ? [["tokens", "按 token"]] : [])
+    .concat(kind && kind !== "call" ? [["calls", "按调用数"]] : []);
+  $("#dsub").innerHTML = `共 <b style="color:var(--fg)">${Number(D.total).toLocaleString()}</b> 条${D.flag ? `（只看「${esc(FLAG_TXT[D.flag] || D.flag)}」）` : ""}`
+    + (D.restamped ? ' · <span class="warn">那份统计已过期，按最新数据列出（页面数字已同步刷新）</span>' : "");
+  const ctl = `<div class="dctl">${sorts.map(([k, t]) => `<button data-dsort="${k}" class="${D.sort === k ? "on" : ""}">${t}</button>`).join("")}</div>`;
+  const items = D.items.map(x => drillItem(x, D.tasks[x.task])).join("");
+  const more = D.items.length < D.total ? `<button data-dmore="1" style="margin-top:6px">再加载 ${Math.min(100, D.total - D.items.length)} 条（已显示 ${D.items.length} / ${D.total}）</button>` : "";
+  $("#dbody").innerHTML = ctl + (items || '<div class="muted">没有明细。</div>') + more
+    + '<div class="note">这就是那个数字背后的每一条。点一条：切到回放、打开那个任务、跳到那一步并打开它的明细。</div>';
+}
+function drillItem(x, t) {
+  t = t || {};
+  const fl = (x.flags || []).filter(f => ANOM.has(f)).map(f => `<span class="fl ${f}" title="${esc(FLAG_TIP[f] || "")}">${esc(FLAG_TXT[f] || f)}</span>`).join("");
+  let main;
+  if (x.kind === "call") {
+    const tag = x.cat === "mcp" ? `<span class="tag mcp">${esc(String(x.name).split("__").slice(1).join(" · "))}</span>` : `<span class="tag builtin">${esc(x.name)}</span>`;
+    main = `${tag}<span>${esc(x.label)}</span>${x.sub ? `<span class="muted">${esc(x.sub)}</span>` : ""}${x.failed ? '<span class="fl fail">✗ 失败</span>' : ""}${fl}`;
+  } else {
+    const tok = x.tokens != null ? ` · ${x.untagged ? "≥ " : ""}${fmtTok(x.tokens)} tok` : "";
+    main = `${x.sub ? `<span>${esc(x.sub)}</span><span class="muted">·</span>` : ""}<span class="muted">${x.calls} 次调用${tok}</span>`
+      + `${x.fail ? `<span class="fl fail">✗ ${x.fail} 次失败</span>` : ""}${(x.flags || []).includes("partial") ? '<span class="fl info">部分缺失</span>' : ""}${(x.flags || []).includes("running") ? '<span class="fl running">● 运行中</span>' : ""}`;
+  }
+  return `<div class="dit" data-go-task="${esc(x.task)}" data-go-node="${esc(x.node)}" data-go-kind="${esc(x.kind)}">`
+    + `<div class="d1"><span>${esc(fmtClock(x.t0))}</span><span>${esc(t.project || "")}</span><span class="sp"></span><span>${esc(fmtDur(x.dur) || "")}</span></div>`
+    + `<div class="d2">${main}</div><div class="d3" title="${esc(t.prompt || "")}">${esc(t.prompt || "（无文字提问）")}</div></div>`;
+}
+function goTo(task, node, kind) {  // 统计 -> 回放: 打开任务, 跳到那一步并打开明细
+  closeDrawer();
+  if (VIEW !== "replay") switchView("replay");
+  const focus = kind === "task" ? null : node;
+  if (CUR && SEL === task && CUR.summary && CUR.summary.id === task) { if (focus) focusNode(focus); return; }
+  return openTask(task, false, focus);
+}
+function focusNode(id) { if (CUR && findNode(CUR.tree, id)) { reveal(id); openDrawer(id); } }
+
 // ---------------------------------------------------------------- 事件
 document.addEventListener("click", e => {
   const tr = e.target.closest(".trow");
-  if (tr) { openTask(tr.dataset.id); return; }
+  if (tr) { if (VIEW !== "replay") switchView("replay"); openTask(tr.dataset.id); return; }
+  const vt = e.target.closest("[data-view]");
+  if (vt) { switchView(vt.dataset.view); return; }
+  const dr = e.target.closest("[data-drill]");
+  if (dr) { openDrill(dr.dataset.drill, dr.dataset.flag, dr.dataset.sort, dr.dataset.title); return; }
+  const gt = e.target.closest("[data-go-task]");
+  if (gt) { goTo(gt.dataset.goTask, gt.dataset.goNode, gt.dataset.goKind); return; }
+  const ds = e.target.closest("[data-dsort]");
+  if (ds && DRILL) { DRILL.sort = ds.dataset.dsort; loadDrill(false); return; }
+  if (e.target.closest("[data-dmore]") && DRILL) { loadDrill(true); return; }
+  const th = e.target.closest("th[data-sort-key]");
+  if (th) { ST_SORT[th.dataset.sortTab] = th.dataset.sortKey; renderStats(); return; }
+  const cb = e.target.closest("[data-cmp]");
+  if (cb) { CMP_DIM = cb.dataset.cmp; if (CMP_DIM === "tool" && CMP_METRIC === "tokens") CMP_METRIC = "dur"; ST_MORE.cmp = false; renderStats(); return; }
+  const mb = e.target.closest("[data-metric]");
+  if (mb && !mb.disabled) { CMP_METRIC = mb.dataset.metric; renderStats(); return; }
+  const smb = e.target.closest("[data-stmore]");
+  if (smb) { ST_MORE[smb.dataset.stmore] = !ST_MORE[smb.dataset.stmore]; renderStats(); return; }
+  const mm = e.target.closest("[data-mcpmore]");
+  if (mm) { ST_MORE.mcp[mm.dataset.mcpmore] = !ST_MORE.mcp[mm.dataset.mcpmore]; renderStats(); return; }
+  if (e.target.id === "streload") { loadStats(false, true); return; }
   const more = e.target.closest("[data-more]");
   if (more) { const pre = document.getElementById(more.dataset.more); pre.textContent = pre.dataset.full; more.remove(); return; }
   const cp = e.target.closest("[data-copy]");
   if (cp) { const pre = document.getElementById(cp.dataset.copy); if (pre && navigator.clipboard) navigator.clipboard.writeText(pre.dataset.full || pre.textContent); cp.textContent = "已复制"; setTimeout(() => cp.textContent = "复制", 1200); return; }
   if (e.target.id === "dclose") { closeDrawer(); return; }
-  if (e.target.id === "goall") { SINCE = "all"; $("#since").value = "all"; syncUrl(); loadTasks(); return; }
+  if (e.target.id === "goall") { SINCE = "all"; $("#since").value = "all"; syncUrl(); loadTasks(); if (VIEW === "stats") loadStats(); return; }
   if (e.target.id === "clearproj") { PROJ = ""; $("#proj").value = ""; syncUrl(); renderTasks(); return; }
   if (e.target.id === "ptitle") { e.target.classList.toggle("clamp"); return; }
   const jump = e.target.closest("[data-jump]");
@@ -967,8 +1351,8 @@ function toggle(n) {
 }
 document.addEventListener("change", e => {
   if (e.target.id === "evs") { SHOW_EVENTS = e.target.checked; rerenderGrid(); }
-  if (e.target.id === "since") { SINCE = e.target.value; syncUrl(); loadTasks(); }
-  if (e.target.id === "proj") { PROJ = e.target.value; syncUrl(); renderTasks(); }
+  if (e.target.id === "since") { SINCE = e.target.value; syncUrl(); loadTasks(); if (VIEW === "stats") loadStats(); }
+  if (e.target.id === "proj") { PROJ = e.target.value; syncUrl(); renderTasks(); if (VIEW === "stats") loadStats(); }
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
 document.addEventListener("mouseover", e => {    // 依赖徽章: 悬浮时高亮来源行
@@ -977,8 +1361,9 @@ document.addEventListener("mouseover", e => {    // 依赖徽章: 悬浮时高�
   if (dep) { const src = [...document.querySelectorAll("#grid .r")].find(r => r.dataset.id === dep.dataset.src); if (src) src.classList.add("hl"); }
 });
 $("#q").addEventListener("input", e => { QTEXT = e.target.value.trim().toLowerCase(); renderTasks(); });
-$("#reload").addEventListener("click", () => { loadTasks(); if (SEL) openTask(SEL, true); });
+$("#reload").addEventListener("click", () => { loadTasks(); if (SEL) openTask(SEL, true); if (VIEW === "stats") loadStats(false, true); });
 $("#since").value = SINCE;
 loadTasks();
+if (VIEW === "stats") switchView("stats");
 </script>
 </body></html>

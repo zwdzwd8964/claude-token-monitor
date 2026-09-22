@@ -1,6 +1,6 @@
 # `/workflow` · 工作流追踪器 — 一页规格
 
-> **【状态章 · 2026-09-22】S1 ✅ 已验收（0.10.0）· S2 ✅ 已交付（0.11.0），待你验收 → S3。** 详见 CHANGELOG。
+> **【状态章 · 2026-09-22】S1 ✅ 已验收（0.10.0）· S2 ✅ 已验收（0.11.0）· S3 ✅ 已交付（0.12.0），待你验收。** 详见 CHANGELOG。
 >
 > ~~状态：待你确认 → 确认即开工 S1。~~ 来源：2026-09-21 六轮问卷（23 项决定）+ 3 次 transcript 探针（数据事实均已实测）。
 > 刻意只写一页：决策 + 边界 + 判据。实现细节在代码与单测里，不在这里（吸取 SESSIONS_V3「1164 行设计 0 行实现」的教训）。
@@ -60,7 +60,7 @@
 
 - 新模块 **`tokmon/trace.py`**：只读，只 import stdlib + `discovery` + `project`（与 activity 同级的独立支柱，P4）。只产出 token 分项；**$ 在 serve 层用 `pricing` 换算**（I3 定价集中，不复制单价）。
 - 解析：按文件 `(mtime, size)` 缓存；**惰性**——任务列表只扫主会话，点开某个任务才解析它的 subagent / workflow 文件。
-- 接口：`/api/workflow/tasks` · `/api/workflow/task` · `/api/workflow/stats`（S3）。
+- 接口：`/api/workflow/tasks` · `/api/workflow/task` · `/api/workflow/call` · `/api/workflow/text` · `/api/workflow/script` · `/api/workflow/stats` + `/api/workflow/drill`（S3）。
 - **新页面放独立文件 `tokmon/pages/workflow.html`**，不再往已 2000+ 行的 `serve.py` 里内联（侧批 #6）。
 - 分析函数（摘要、耗时三段、归因、异常识别）写成纯函数，单测钉死。
 
@@ -71,6 +71,9 @@
 | **S1 回放主干** | trace 数据层 · 左栏任务列表 · L0 摘要 · 树 + 瀑布 · L2 明细 · 异常高亮 · 穿插内容 · 导航清理 · /tokens 深链 | ① 近 7 天任选一个任务都能完整回放；② **任务 token 真值与 /tokens 对账一致**（抽 3 个任务）；③ 含 workflow 的任务 phase / agent 层级完整；④ 单测覆盖纯函数；⑤ **跑一次多 agent 对抗式 review 并修掉确认项** |
 | **S2 学习层** | 名词悬浮 · Workflow 脚本对照 · 阶段标注（推断）· MCP 数据依赖（推断） | 推断项全部带标签；脚本 phase 与回放 phase 一一对应 |
 | **S3 统计子页** | 工具 / skill 排行 · MCP 健康面板 · 跨任务对照 | 排行数字与回放逐项可追溯 |
+
+S3 问卷（2026-09-22，4 项）：对照对象 = Skill + Workflow 阶段 + Agent 角色 + 工具；表现形式 = 分布点 + 中位 / 最慢 / 最贵；
+数字点开 = 抽屉列出这些调用 → 再跳回放；不做趋势，只看所选时间范围的汇总。
 
 每刀独立可用，**你验收后再进下一刀**。
 

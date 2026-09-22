@@ -2,6 +2,7 @@
 
 RECAP 侧批 #6: serve.py 与前端 JS 此前零覆盖, bug 恰好长在那里。这个测试让页面脚本进测试套件:
 渲染 / 三种展开模式 / 每类节点的明细抽屉 / 跳转 / 流程条 / 依赖徽章 / 脚本对照 / 全文, 任一处抛错或被 try 吞掉都会失败。
+S3: 统计子页的每个可点数字都要能点开 (计数 == 明细条数), 每条明细都要能跳回回放里的那一步。
 没装 node 就跳过 (不影响纯 Python 环境)。
 """
 
@@ -33,7 +34,7 @@ const b = await agent('check', { label: 'verify:all', phase: 'Verify' })
 @pytest.fixture
 def session(tmp_path, monkeypatch):
     for name, val in (("_FILES", {}), ("_TASK_INDEX", {}), ("_AGENT_IDX", {}), ("_SCRIPTS", {}), ("_META", {}),
-                      ("_BUILT", {}), ("_CLAIMED", {})):
+                      ("_BUILT", {}), ("_CLAIMED", {}), ("_STATS", {}), ("_STAMPS", {})):
         monkeypatch.setattr(trace, name, val)
     monkeypatch.setattr(trace, "_BASELINE", {"t": 0.0, "data": None})
     monkeypatch.setattr(parser, "_file_cache", {})
@@ -72,6 +73,8 @@ def session(tmp_path, monkeypatch):
         asst(18, "m8", "r8", tool_use("ask", "AskUserQuestion", {"questions": [{"question": "现在上线吗?"}]}), usage(out=5)),
         result(40, "ask", "上"),
         asst(41, "m9", "r9", {"type": "text", "text": long_text}, usage(out=50)),
+        asst(42, "m10", "r10", tool_use("lg", "mcp__railway__get_logs", {"service_id": PID}), usage(out=5)),
+        result(43, "lg", "Failed to get logs: Unauthorized. Please run `railway login` again.", err=True),
     ])
     for aid, phase, desc, t in (("w1", "Investigate", "investigate:config", 17.5), ("w2", "Verify", "verify:all", 25)):
         write_jsonl(rdir / f"agent-{aid}.jsonl", [
@@ -98,6 +101,20 @@ def _export(base, out: Path) -> dict:
                 data["texts"][n["id"]] = serve._wf_text(base, {"task": [t["id"]], "node": [n["id"]]})
             elif n["kind"] == "workflow":
                 data["scripts"][n["run_id"]] = serve._wf_script(base, {"task": [t["id"]], "run": [n["run_id"]]})
+    st = serve._wf_stats(base, {"since": ["all"]})
+    data["stats"] = st
+    refs = {"tasks", "all"}
+    for r in st["tools"]:
+        refs |= {r["ref"], r["ref_occ"]}
+    for r in st["skills"]:
+        refs |= {r["ref_occ"], r["ref_calls"]}
+    for m in st["mcp"]:
+        refs |= {m["ref"], m["ref_occ"]} | {x["ref"] for x in m["tools"]}
+    for rows in st["compare"].values():
+        refs |= {r["ref"] for r in rows}
+    data["drills"] = {f"{ref}|{flag}": serve._wf_drill(base, {"since": ["all"], "stamp": [st["stamp"]], "ref": [ref],
+                                                               "flag": [flag]})
+                      for ref in refs for flag in ("", "fail", "retry", "loop", "slow", "huge", "partial")}
     out.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     return data
 
@@ -114,5 +131,7 @@ def test_workflow_page_runs_clean(session, tmp_path):
     assert report["errors"] == [], report["errors"]
     assert report["drawers"] >= 10
     seen = report["seen"]
-    for k in ("stage_strip", "band", "dep_badge", "script_view", "glossary", "full_text"):
+    for k in ("stage_strip", "band", "dep_badge", "script_view", "glossary", "full_text",
+              "stats", "dots", "mcp_errors", "drill_jump"):
         assert seen[k], f"页面没有渲染出 {k}"
+    assert report["stat_drills"] >= 15 and report["stat_jumps"] >= 15, report
