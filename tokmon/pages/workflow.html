@@ -149,6 +149,19 @@
   .script .ln.ag { background:#132229; }
   .script .ln.focus { background:#2b3450; } .script .ln.focus .no { color:var(--fg); }
 
+  /* ---------- S5: 风险标记 ---------- */
+  .risk { border:1px solid var(--line); border-radius:10px; background:var(--panel); padding:8px 12px 10px; margin-bottom:12px; }
+  .risk .mh { font-size:11.5px; color:var(--dim); margin-bottom:2px; }
+  .rk { display:flex; gap:8px; align-items:baseline; padding:3px 4px; border-radius:6px; font-size:12.5px; cursor:pointer; }
+  .rk:hover { background:#171c26; }
+  .rk.noref { cursor:default; } .rk.noref:hover { background:transparent; }
+  .rk .lv { flex:0 0 auto; font-size:11px; padding:0 6px; border-radius:5px; border:1px solid #4a3d22; color:var(--warn); }
+  .rk .lv.warn { color:var(--bad); border-color:#4a2530; }
+  .rk .tx { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rk .dt { color:var(--dim); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:46%; }
+  .fl.destructive { color:var(--bad); background:#2a1820; }
+  .fl.big-change { color:#ff9e64; background:#2a1f16; }
+
   /* ---------- S4: 改动清单 ---------- */
   .chg { border:1px solid var(--line); border-radius:10px; background:var(--panel); padding:8px 12px 10px; margin-bottom:12px; }
   .chg .mh { font-size:11.5px; color:var(--dim); display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
@@ -303,14 +316,17 @@
 "use strict";
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const ANOM = new Set(["fail", "bg-fail", "retry", "loop", "slow", "huge"]);
+const ANOM = new Set(["fail", "bg-fail", "retry", "loop", "slow", "huge", "destructive", "big-change"]);
 const STRONG = new Set(["fail", "bg-fail", "huge", "loop"]);   // 强异常: 会从折叠组里单独冒出来; 「慢」按定义命中约 10%, 只做徽章
 const SMALL_ROWS = 60;                                 // 全展开 <= 这么多行的小任务: 默认全部展开
 const BIG_PHASE = 6;                                   // 一个阶段里 agent 多于这个数: 没有强异常的 agent 默认收起
 const FLAG_TXT = {fail:"✗ 失败", "bg-fail":"✗ 后台失败", retry:"↻ 重试·推断", loop:"⟳ 打转·推断", slow:"🐢 偏慢·统计",
+                  destructive:"⚠ 破坏性·规则", "big-change":"📐 大改动",
                   huge:"📦 大结果", persisted:"已另存", running:"● 运行中", "no-result":"… 无结果", missing:"文件缺失",
                   "linked-by-prompt":"按指令回链", ambiguous:"回链不确定", "bg-stopped":"后台被停止", partial:"部分缺失"};
 const FLAG_TIP = {fail:"工具返回 is_error，或命令被中断",
+                  destructive:"规则命中：命令里有会丢东西的操作（rm -rf / git reset --hard / git clean / 强推 / 整棵树还原 / MCP 删除类 / 数据库客户端里的 DROP）。只标出来，不拦你",
+                  "big-change":"这一次调用增删合计 ≥ 1200 行（按实际落盘的补丁算）",
                   "bg-fail":"它在后台跑，结束时发回的完成通知报告失败",
                   retry:"推断：和此前一次失败的调用是同一件事（同命令 / 同参数），又试了一次",
                   loop:"推断：同一件事做了 3 次及以上，而且每次结果都一样（没有可观察的进展）。改了代码再重跑、输出变了的不算",
@@ -515,7 +531,9 @@ function renderTasks() {
     else if (t.agents) extras.push("🤖 " + t.agents + " agent");
     if ((t.skills || []).length) extras.push("◆ " + t.skills.slice(0, 2).join(", "));
     if ((t.mcp_servers || []).length) extras.push("mcp·" + t.mcp_servers.join(","));
-    if (t.chg && t.chg.files) extras.push("✎ " + t.chg.files + " 文件");
+    if (t.chg && (t.chg.files || t.chg.unknown))
+      extras.push(t.chg.files ? "✎ " + t.chg.files + " 文件" : "✎ " + t.chg.unknown + " 次（认不出文件）");
+    if (t.risks_n) extras.push("⚠ " + t.risks_n);
     const hits = fileHits(t);
     html += `<div class="trow ${t.id === SEL ? "on" : ""}" data-id="${esc(t.id)}">
       <div class="t1"><span class="proj" title="${esc(t.project)}">${esc(t.project)}</span>
@@ -809,6 +827,7 @@ function render() {
       <span><i class="sw" style="background:var(--wait)"></i>等你 ${esc(fmtDur(tm.wait))}</span></div>
     ${stageStrip(s.stages, true)}
     ${changesBox(s.changes)}
+    ${risksBox(s.risks)}
     <div class="chips">${catTxt.map(x => `<span class="chip">${esc(x)}</span>`).join("")}${(s.skills || []).map(x => `<span class="chip" style="color:#9ece6a">◆ ${esc(x)}</span>`).join("")}${wfTxt.map(x => `<span class="chip" style="color:var(--model)">${esc(x)}</span>`).join("")}</div>
     <div class="chips">${anomChips || '<span class="chip ok">✓ 没有失败、打转或超大结果</span>'}${slowChip}</div>
     ${(s.moments || []).length ? `<div class="moments"><div class="mh">关键时刻（点击跳到那一步）</div>${s.moments.map(m =>
@@ -1074,7 +1093,7 @@ function verifyLine(L) {
   if (!a.changes) return `<span class="ver ${v.ok ? "ok" : "bad"}" data-chg="${esc(v.node)}" style="cursor:pointer" title="最后一次改动之后跑过验证；点击跳到那一步">`
     + `改完验证过 ${v.ok ? "✓" : "✗ 失败"}</span>${tail}`;
   return `<span class="ver warn" data-chg="${esc(v.node)}" style="cursor:pointer" title="最后一次验证之后又动了文件；点击跳到那次验证">`
-    + `验证之后又改了 ${a.changes} 处 / ${a.files} 个文件</span>${tail}`;
+    + `验证之后又改了 ${a.changes} 次${a.files ? ` / ${a.files} 个文件` : "（认不出改了哪个文件）"}</span>${tail}`;
 }
 function chgCallRows(ids) {
   const byId = {};
@@ -1095,6 +1114,18 @@ function chgTimeline(L) {
     + `<span class="t">${esc(fmtClock(n.t0))}</span><span class="p">${esc(paths[n.id].join("、"))}</span>`
     + `<span class="muted">${esc(n.name)}</span></div>`).join("")}</div>`;
 }
+function risksBox(rs) {
+  if (!rs || !rs.length) return "";
+  const line = r => {
+    const id = ((r.refs || []).find(x => x.kind === "call" && x.id) || {}).id;   // 按任务判的规则没有单独的一步可跳
+    return `<div class="rk${id ? "" : " noref"}"${id ? ` data-risk="${esc(id)}"` : ""} title="${esc(r.why || "")}${r.detail ? "\n" + esc(r.detail) : ""}">`
+      + `<span class="lv${r.level === "warn" ? " warn" : ""}">${r.level === "warn" ? "警示" : "提示"}</span>`
+      + `<span class="tx">${esc(r.label)}</span>${r.detail ? `<span class="dt">${esc(r.detail)}</span>` : ""}</div>`;
+  };
+  return `<div class="risk"><div class="mh">风险（规则判断，推断；只标不拦。悬浮看凭什么这么判；有对应调用的点一下跳到第一处）</div>`
+    + rs.map(line).join("") + `</div>`;
+}
+
 function changesBox(L) {
   if (!L) return "";
   const T = L.totals, LIM = 8;
@@ -1106,9 +1137,10 @@ function changesBox(L) {
   const more = L.files.length > LIM ? `<button id="chgall" style="font-size:11.5px;padding:1px 8px">${CHG_ALL ? "收起" : `显示全部 ${L.files.length} 个文件`}</button>` : "";
   const notes = [];
   if (T.inferred) notes.push(`其中 ${T.inferred} 个文件是从命令里<b style="color:var(--fg)">推断</b>的`);
-  if (T.unknown) notes.push(`另有 <b style="color:var(--fg)">${T.unknown} 处</b>改动认不出改了哪个文件（内联脚本 / git reset / 解压…）`);
+  if (T.unknown && T.files) notes.push(`另有 <b style="color:var(--fg)">${T.unknown} 次</b>改动认不出改了哪个文件（内联脚本 / git reset / 变量路径…）`);
   if (T.outside) notes.push(`${T.outside} 个文件在工作目录以外`);
-  return `<div class="chg"><div class="mh">改动　<b>${T.files} 个文件</b> · <b>${T.changes} 处</b>`
+  return `<div class="chg"><div class="mh">改动　${T.files ? `<b>${T.files} 个文件</b> · <b>${T.changes} 次</b>`
+      : `<b>认不出改了哪些文件</b> · <b>${T.unknown} 次</b>`}`
     + ` · ${T.add ? `<span class="add">+${T.add.toLocaleString()}${T.add_partial ? "?" : ""}</span>` : ""}`
     + `${T.del ? ` <span class="del">−${T.del.toLocaleString()}${T.del_partial ? "?" : ""}</span>` : ""}`
     + ` · ${verifyLine(L)}<span class="sp"></span>`
@@ -1185,13 +1217,15 @@ function renderStats() {
   const chip = (f, txt) => fl[f] ? `<span class="chip" title="${esc(FLAG_TIP[f] || "")}">${esc(txt)} ${dn(fl[f], "all", {flag: f, title: "全部调用 · " + (FLAG_TXT[f] || f)})}</span>` : "";
   const chips = chip("retry", "↻ 重试·推断") + chip("loop", "⟳ 打转·推断") + chip("huge", "📦 超大结果") + chip("slow", "🐢 偏慢·统计");
   if (chips) h += `<div class="chips">${chips}</div>`;
-  h += secNav() + statChanges(S) + statTools(S) + statSkills(S) + statMcp(S) + statCompare(S);
+  h += secNav() + statChanges(S) + statRisks(S) + statTools(S) + statSkills(S) + statMcp(S) + statCompare(S);
   h += '<div class="foot">口径：调用耗时 = 发出到返回（后台启动只算启动那一下，和回放一致）；「偏慢」按这个工具<b style="color:var(--fg)">全部历史</b>的 p90 判（统计推断）；'
     + '「重试 / 打转」按同一命令、同一参数判（推断）；token 是 API usage 去重后的真值，≥ 表示有的段落没有归属标记（是下限）。所有文字已做尽力而为的脱敏。</div></div>';
   $("#stats").innerHTML = h;
 }
 
-const ST_SECS = [["ov", "概览"], ["chg", "改动"], ["tools", "工具"], ["skills", "Skill"], ["mcp", "MCP"], ["cmp", "对照"]];
+const ST_SECS = [["ov", "概览"], ["chg", "改动"], ["risk", "风险"], ["tools", "工具"], ["skills", "Skill"], ["mcp", "MCP"], ["cmp", "对照"]];
+const RULE_ZH = {destructive: "破坏性操作", "error-spike": "连续失败", thrash: "改了又改没通过",
+                 "large-edit": "单次大改动", "large-task": "一个任务动很多文件", outside: "改到工作目录以外"};
 function secNav() {
   return `<div class="secnav">${ST_SECS.map(([k, t]) => `<button data-sec="${k}" class="${ST_SEC === k ? "on" : ""}">${t}</button>`).join("")}</div>`;
 }
@@ -1203,7 +1237,7 @@ function statChanges(S) {
   return h + '<div class="kpis">'
     + kpi(dn(c.tasks, "chg-tasks", {title: "有改动的任务"}), "个任务有改动")
     + kpi(dn(c.changes, "chg-calls", {title: "改了文件的调用"}), "次调用改了文件")
-    + kpi(`<span title="去重后的文件数；文件不是回放里的一步，所以点不开">${Number(c.files).toLocaleString()}</span>`, "个文件被改过")
+    + kpi(`<span title="按（项目，路径）去重后的文件数；文件不是回放里的一步，所以点不开">${Number(c.files).toLocaleString()}</span>`, "个文件被改过")
     + kpi(`<span class="add">+${Number(c.add).toLocaleString()}${c.add_partial ? "?" : ""}</span> <span class="del">−${Number(c.del).toLocaleString()}${c.del_partial ? "?" : ""}</span>`,
           "行（? = 有些改动看不出行数）")
     + '</div><div class="chips">'
@@ -1215,6 +1249,18 @@ function statChanges(S) {
     + `<span class="chip warn">验证后又改了 ${dn(c.changed_after, "chg-after", {title: "最后一次验证之后又改了文件的任务"})}</span>`
     + `<span class="chip warn">全程没验证 ${dn(c.never_verified, "chg-noverify", {title: "整个任务没有一步被判为验证的任务"})}</span>`
     + '</div>';
+}
+function statRisks(S) {
+  const rows = S.risks || [];
+  let h = '<div class="stsec" id="sec-risk"><h3>风险</h3><span class="muted">规则判断（推断）；先一律「提示」，在真实数据上审过精确率的才会升「警示」。只标不拦</span></div>';
+  if (!rows.length) return h + '<div class="note">这个范围里没有命中任何风险规则。</div>';
+  const body = rows.map(r => `<tr><td><span class="lv-${esc(r.level)}">${esc(RULE_ZH[r.rule] || r.rule)}</span>`
+      + ` <span class="src" title="${esc(r.why || "")}">${r.level === "warn" ? "警示" : "提示"}</span></td>`
+      + `<td>${dn(r.tasks, r.ref_tasks, {title: (RULE_ZH[r.rule] || r.rule) + " · 命中的任务"})}</td>`
+      + `<td>${r.calls ? dn(r.calls, r.ref_calls, {title: (RULE_ZH[r.rule] || r.rule) + " · 相关调用"}) : '<span class="zero" title="这条规则是按任务判的，没有对应的单次调用">—</span>'}</td>`
+      + `<td class="muted" style="text-align:left;white-space:normal;line-height:1.5">${esc(r.why || "")}</td></tr>`).join("");
+  return h + `<div class="tblw"><table class="st"><thead><tr><th style="cursor:default">规则</th><th style="cursor:default">任务</th>`
+    + `<th style="cursor:default">相关调用</th><th style="text-align:left;cursor:default">凭什么这么判</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 function statTools(S) {
   const rows = (S.tools || []).filter(r => r.cat !== "ask"), waits = (S.tools || []).filter(r => r.cat === "ask");
@@ -1426,6 +1472,8 @@ document.addEventListener("click", e => {
   if (dr) { openDrill(dr.dataset.drill, dr.dataset.flag, dr.dataset.sort, dr.dataset.title); return; }
   const fr = e.target.closest("tr.f[data-file]");
   if (fr) { const k = fr.dataset.file; CHG_OPEN.has(k) ? CHG_OPEN.delete(k) : CHG_OPEN.add(k); render(); return; }
+  const rk = e.target.closest("[data-risk]");
+  if (rk && CUR) { const id = rk.dataset.risk; if (id) { reveal(id); openDrawer(id); } return; }
   const cg = e.target.closest("[data-chg]");
   if (cg && CUR) { reveal(cg.dataset.chg); openDrawer(cg.dataset.chg); return; }
   if (e.target.id === "chgall") { CHG_ALL = !CHG_ALL; render(); return; }

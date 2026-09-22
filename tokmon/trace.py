@@ -565,7 +565,6 @@ _RE_EDIT = re.compile(
     r"^(sed\s+-i|perl\s+-pi|mv|cp|rm|rmdir|mkdir|touch|chmod|chown|ln|unzip|tar\s+-?x"
     r"|git\s+(add|commit|checkout|switch|merge|rebase|stash|reset|restore|push|pull|tag|cherry-pick|revert|mv|rm|apply|init|clone)"
     r"|new-item|remove-item|move-item|copy-item|set-content|out-file|add-content|rename-item)", re.I)
-_RE_REDIRECT = re.compile(r"(?<![0-9&])>{1,2}\s*(?!&)[^\s|&;>]")          # cmd > file / >> file (不含 2>、>&1)
 _RE_DESC_VERIFY = re.compile(r"\b(test|tests|testing|verify|verification|lint|smoke|typecheck)\b|测试|验证|冒烟|自检", re.I)
 _RE_DESC_VIEW = re.compile(r"^\s*(read|list|show|inspect|view|print|display|find|search|look)\b|查看|读取|列出|显示|搜索", re.I)
 _RE_MCP_RESEARCH = re.compile(r"(^|_)(docs?|documentation|search_docs|fetch_docs)(_|$)", re.I)
@@ -575,34 +574,24 @@ _RE_MCP_EDIT = re.compile(r"^(create|set|update|delete|remove|deploy|connect|dis
                           r"|write|put|post|patch|upload|publish|rename|move|merge|close|open)", re.I)
 
 
-def _bash_core(cmd: str) -> str:
-    """去掉命令开头的 cd xx && / 变量赋值 / timeout N / time / sudo, 露出真正在干的事。"""
-    s = str(cmd or "").strip()
-    for _ in range(8):
-        t = re.sub(r"^cd\s+(\"[^\"]*\"|'[^']*'|\S+)\s*(&&|;)\s*", "", s)
-        t = re.sub(r"^[A-Za-z_][A-Za-z0-9_]*=(\"[^\"]*\"|'[^']*'|\S*)\s+", "", t)
-        t = re.sub(r"^(timeout\s+\d+[smh]?|time|sudo|nohup|env|exec)\s+", "", t)
-        if t == s:
-            break
-        s = t
-    return s
-
-
-def _bash_stage(cmd: str, desc: str = "") -> str:
-    core = _bash_core(cmd)
-    segs = [x.strip() for x in re.split(r"\s*(?:&&|\|\||;|\n)\s*", core) if x.strip()]
-    if not segs:
+def _bash_stage(cmd: str, desc: str = "", ps: bool = False) -> str:
+    """一条命令 -> 阶段 (推断)。每个简单命令单独看 (管道两边、&& 两边都算), cd / export 之类不算数;
+    heredoc 的正文、引号里的东西都不参与 (它们不是 shell 代码)。"""
+    env: dict = {}
+    parts = []
+    for sc in shell_parse(cmd, ps)["cmds"]:
+        head, args = _simple(sc["words"], env)
+        writes = [w for op, w in sc["redirs"] if not _is_null(w, env)]
+        if (not head or head in _NEUTRAL_HEADS) and not writes:
+            continue
+        parts.append((" ".join([head] + [w[0] for w in args]) if head else "", writes, head))
+    if not parts:
         return "运行"
-    heads = []
-    for sg in segs:
-        sg2 = _bash_core(sg)
-        first = sg2.split("|")[0].strip()                    # 管道: 看第一段是在干什么
-        heads.append((sg2, first))
-    if any(_RE_VERIFY.match(f) for _, f in heads):
+    if any(_RE_VERIFY.match(line) for line, _, _ in parts):
         return "验证"                                        # 链里有测试/检查 -> 这一步的目的是验证
-    if any(_RE_EDIT.match(f) or _RE_REDIRECT.search(sg) or re.search(r"\btee\b", sg) for sg, f in heads):
+    if any(_RE_EDIT.match(line) or writes or head == "tee" for line, writes, head in parts):
         return "修改"
-    if all(_RE_VIEW.match(f) for _, f in heads):
+    if all(line and _RE_VIEW.match(line) for line, _, _ in parts):
         return "查看"
     if desc and _RE_DESC_VERIFY.search(desc):
         return "验证"
@@ -625,7 +614,7 @@ def classify_call(name: str, inp: dict | None) -> str:
     if name in _ORCH_TOOLS:
         return "编排"
     if name in ("Bash", "PowerShell"):
-        return _bash_stage(str(inp.get("command") or ""), str(inp.get("description") or ""))
+        return _bash_stage(str(inp.get("command") or ""), str(inp.get("description") or ""), ps=(name == "PowerShell"))
     if name.startswith("mcp__"):
         tool = name.split("__", 2)[-1]
         if _RE_MCP_RESEARCH.search(tool):
@@ -825,8 +814,6 @@ def match_agent_line(desc: str | None, agents: list[dict]) -> int | None:
 #           「改了，但不知道改了哪个」, 绝不瞎猜文件名。
 
 _RE_SED_EXPR = re.compile(r"^[0-9,$~+\s]*[a-z]?[/#|,@!]")           # s/a/b/ · 3,5d · y#a#b#
-_RE_REDIR_TGT = re.compile(r"(?<![0-9&])>>?\s*(\"[^\"]*\"|'[^']*'|[^\s|&;<>]+)")
-_RE_HEREDOC = re.compile(r"<<-?\s*['\"]?\w+")
 _SCRIPT_HEADS = frozenset({"python", "python3", "py", "node", "ruby", "perl", "sh", "bash", "zsh", "pwsh",
                            "powershell", "deno", "bun", "irb", "osascript"})
 _DELETE_HEADS = frozenset({"rm", "rmdir", "del", "erase", "unlink", "remove-item", "ri", "rd"})
@@ -835,10 +822,27 @@ _COPY_HEADS = frozenset({"cp", "copy-item", "copy", "cpi"})
 _TOUCH_HEADS = frozenset({"touch", "new-item", "ni"})
 _PS_WRITE_HEADS = frozenset({"set-content", "out-file", "add-content", "sc", "ac"})
 _WIPE_HEADS = frozenset({"unzip", "tar", "7z", "patch", "rsync", "robocopy", "xcopy"})
-_GIT_WIPES = frozenset({"clean", "stash", "merge", "rebase", "cherry-pick", "revert", "pull", "apply", "am"})
-_GIT_BENIGN = frozenset({"add", "commit", "push", "tag", "fetch", "init", "config", "remote", "branch", "worktree"})
+_GIT_WIPES = frozenset({"clean", "merge", "rebase", "cherry-pick", "revert", "pull", "am"})
+_GIT_BENIGN = frozenset({"add", "commit", "push", "tag", "fetch", "init", "config", "remote", "branch", "worktree",
+                         "status", "log", "diff", "show", "blame", "ls-files", "rev-parse", "describe", "reflog"})
+_GIT_GLOBAL_VALUE = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"})
 _BENIGN_HEADS = frozenset({"chmod", "chown", "mkdir", "md", "icacls", "attrib"})
+_NEUTRAL_HEADS = frozenset({"cd", "pushd", "popd", "export", "set", "unset", "true", ":", "source", "."})
+_WRAPPERS = frozenset({"sudo", "nohup", "time", "exec", "env", "command", "builtin", "nice"})
 _NULL_SINKS = frozenset({"/dev/null", "nul", "$null", "nul:"})
+_WHOLE_TREE = frozenset({".", "..", "./", "../", "~", "*", ":/"})
+_RE_PATHY = re.compile(r"^[\w.~:/\\@+\- ]+$")              # 路径长这样; 带引号 / 括号 / 通配符的一律不认
+_RE_ALNUM = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]")
+_RE_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+_RE_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
+# 带值的 flag: 下一个词是这个 flag 的值, 不是路径 (`New-Item -ItemType Directory` 的 Directory、`touch -d 2020-01-01`)
+_VALUE_FLAGS = {
+    "touch": {"-d", "--date", "-r", "--reference", "-t"},
+    "cp": {"-t", "--target-directory", "-s", "--suffix"}, "mv": {"-t", "--target-directory", "-s", "--suffix"},
+}
+_PS_VALUE_FLAGS = frozenset({"-itemtype", "-type", "-name", "-value", "-erroraction", "-ea", "-filter", "-include",
+                             "-exclude", "-encoding", "-warningaction", "-wa", "-credential", "-stream"})
+_PS_TARGET_FLAGS = ("-path", "-filepath", "-literalpath", "-lp", "-destination")
 
 
 def _lines(s) -> int:
@@ -846,130 +850,440 @@ def _lines(s) -> int:
     return 0 if not s else s.count("\n") + 1
 
 
-def _sh_tokens(seg: str) -> list[str]:
-    return [t.strip("\"'") for t in re.findall(r"\"[^\"]*\"|'[^']*'|\S+", str(seg or ""))]
+def shell_parse(cmd: str, ps: bool = False) -> dict:
+    """一条命令行 -> 一串「简单命令」。只做我们需要的那一小块词法, 但要做**对**:
 
+    - 引号: 单引号原样; 双引号里只有 `\" \\ \$ \`` 是转义 (PowerShell 里转义符是反引号, 反斜杠是普通字符);
+      引号段和紧挨着的裸字符拼成**同一个词** (`"$SP"/a.py` 是一个词, 不是 `$SP` 和 `/a.py` 两个);
+    - `#` 只在词首、引号外才是注释, 注释到行尾 (`rm -rf dist  # remove stale build` 不会多出三个「文件」);
+    - 控制符 `&& || ; | &` 与换行切命令; 引号里的不算;
+    - 重定向 `> >> 2> &>` 记成 (op, 目标词); `>&2` / `2>&1` 是复制文件描述符, 不是文件;
+    - heredoc `<<WORD` / `<<'WORD'` / `<<-WORD`: 正文跳过 (它不是 shell 代码), **终止符之后接着解析**;
+      找不到终止符 -> unterminated (调用方记成「说不清」);
+    - 变量与命令替换 (`$x` `${x}` `$(..)` 反引号) 让这个词成为 dynamic: 值在跑之前不知道, 绝不当成字面路径。
 
-_WHOLE_TREE = frozenset({".", "..", "./", "../", "~", "*"})
+    返回 {"cmds": [{"words": [(文字, dynamic)], "redirs": [(op, 词)], "heredoc": bool}], "unterminated": bool}。"""
+    s = str(cmd or "")
+    n = len(s)
+    cmds: list = []
+    st = {"words": [], "redirs": [], "heredoc": False}
+    buf: list = []
+    flags = {"dyn": False, "in": False, "redir": None, "unterminated": False}
+    pending_docs: list = []                                  # 这一行上等着跳正文的 heredoc: (终止符, 允许前导 tab)
 
+    def end_word():
+        if not flags["in"]:
+            return
+        w = ("".join(buf), flags["dyn"])
+        op = flags["redir"]
+        if op is None:
+            st["words"].append(w)
+        elif op in ("<<", "<<-"):
+            pending_docs.append((w[0], op == "<<-"))
+            st["heredoc"] = True
+        elif op in (">", ">>"):
+            st["redirs"].append((op, w))
+        flags["redir"] = None                                # `<` 输入与 `<<<` here-string 的目标不是写入, 丢掉
+        buf.clear()
+        flags["dyn"] = False
+        flags["in"] = False
 
-def _arg_paths(toks: list[str]) -> tuple[list[str], bool]:
-    """命令参数 -> (看得出是单个路径的那些, 要不要记成「说不清」)。
-    通配符和「整棵树」(. / .. / ~) 展开不出来 -> 不猜文件名, 交给 unknown。"""
-    out, vague = [], False
-    for t in toks:
-        if not t or t.startswith("-"):
+    def end_cmd():
+        end_word()
+        if st["words"] or st["redirs"]:
+            cmds.append({"words": list(st["words"]), "redirs": list(st["redirs"]), "heredoc": st["heredoc"]})
+        st["words"], st["redirs"], st["heredoc"] = [], [], False
+
+    def skip_docs(pos: int) -> int:
+        for word, tabs in pending_docs:
+            while True:
+                if pos >= n:
+                    flags["unterminated"] = True
+                    return n
+                j = s.find("\n", pos)
+                end = n if j < 0 else j
+                line = s[pos:end].rstrip("\r")
+                pos = end + 1
+                if (line.lstrip("\t") if tabs else line).strip() == word:
+                    break
+        pending_docs.clear()
+        return pos
+
+    esc = "`" if ps else "\\"
+    i = 0
+    while i < n:
+        c = s[i]
+        if c == esc and i + 1 < n:                           # 裸转义 (行尾 = 续行)
+            if s[i + 1] == "\n":
+                i += 2
+                continue
+            buf.append(s[i + 1])
+            flags["in"] = True
+            i += 2
             continue
-        if any(c in t for c in "*?[") or t.strip().rstrip("/") in _WHOLE_TREE:
+        if c == "'":
+            j = s.find("'", i + 1)
+            j = n if j < 0 else j
+            buf.append(s[i + 1:j])
+            flags["in"] = True
+            i = j + 1
+            continue
+        if c == '"':
+            i += 1
+            flags["in"] = True
+            while i < n and s[i] != '"':
+                ch = s[i]
+                if ch == esc and i + 1 < n and (ps or s[i + 1] in '"\\$`'):
+                    buf.append(s[i + 1])
+                    i += 2
+                    continue
+                if ch == "$" or (ch == "`" and not ps):
+                    flags["dyn"] = True
+                buf.append(ch)
+                i += 1
+            i += 1
+            continue
+        if c == "$" or (c == "`" and not ps):                # 变量 / 命令替换
+            flags["dyn"] = True
+            flags["in"] = True
+            if s.startswith("$(", i):                        # $( ... ): 整段吞进这个词, 不在里面切命令
+                depth, j = 0, i + 1
+                while j < n:
+                    if s[j] == "(":
+                        depth += 1
+                    elif s[j] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    j += 1
+                buf.append(s[i:j + 1])
+                i = j + 1
+                continue
+            if c == "`":
+                j = s.find("`", i + 1)
+                j = n - 1 if j < 0 else j
+                buf.append(s[i:j + 1])
+                i = j + 1
+                continue
+            buf.append(c)
+            i += 1
+            continue
+        if c == "#" and not flags["in"]:                     # 注释: 词首、引号外 -> 到行尾
+            j = s.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if c in " \t\r":
+            end_word()
+            i += 1
+            continue
+        if c == "\n":
+            end_cmd()
+            i += 1
+            if pending_docs:
+                i = skip_docs(i)
+            continue
+        if s.startswith("&&", i) or s.startswith("||", i):
+            end_cmd()
+            i += 2
+            continue
+        if c in ";|":
+            end_cmd()
+            i += 1
+            continue
+        if c == "&":
+            if s.startswith("&>", i):                        # &> file / &>> file
+                end_word()
+                flags["redir"] = ">>" if s.startswith("&>>", i) else ">"
+                i += 3 if s.startswith("&>>", i) else 2
+                continue
+            end_cmd()
+            i += 1
+            continue
+        if c in "<>":
+            if flags["in"] and "".join(buf).isdigit() and not flags["dyn"]:
+                buf.clear()                                  # 2> / 1>>: 前面那个数字是文件描述符, 不是词
+                flags["in"] = False
+            else:
+                end_word()
+            if c == "<":
+                for op in ("<<<", "<<-", "<<", "<"):
+                    if s.startswith(op, i):
+                        flags["redir"] = op
+                        i += len(op)
+                        break
+                continue
+            op = ">>" if s.startswith(">>", i) else ">"
+            i += len(op)
+            if i < n and s[i] == "&":                        # >&2 / 2>&1: 复制文件描述符
+                j = i + 1
+                while j < n and (s[j].isdigit() or s[j] == "-"):
+                    j += 1
+                i = j
+                continue
+            if i < n and s[i] == "|":                        # >| 强制覆盖
+                i += 1
+            flags["redir"] = op
+            continue
+        buf.append(c)
+        flags["in"] = True
+        i += 1
+    end_cmd()
+    if pending_docs:
+        flags["unterminated"] = True
+    return {"cmds": cmds, "unterminated": flags["unterminated"]}
+
+
+def _simple(words: list, env: dict) -> tuple[str, list]:
+    """一个简单命令 -> (命令名, 参数词)。去掉前缀的 `VAR=值` (字面量的记进 env, 供后面展开)
+    与 sudo / nohup / `timeout N` 之类的包装。"""
+    i = 0
+    while i < len(words):
+        t, dyn = words[i]
+        m = _RE_ASSIGN.match(t)
+        if m:
+            if dyn:
+                env.pop(m.group(1), None)
+            else:
+                env[m.group(1)] = m.group(2)
+            i += 1
+            continue
+        low = t.lower()
+        if low in _WRAPPERS:
+            i += 1
+            continue
+        if low == "timeout":
+            i += 1
+            while i < len(words) and words[i][0].startswith("-"):
+                i += 1
+            if i < len(words) and re.match(r"^\d+(\.\d+)?[smhd]?$", words[i][0]):
+                i += 1
+            continue
+        break
+    if i >= len(words):
+        return "", []
+    head = words[i][0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return (head[:-4] if head.endswith(".exe") else head), words[i + 1:]
+
+
+def _expand(word: tuple, env: dict) -> tuple[str, bool]:
+    """同一条命令里 `SP="C:/x"` 赋过字面量的变量, 后面 `"$SP"/a.py` 就能展开成真路径; 展开不了的仍是 dynamic。"""
+    t, dyn = word
+    if not dyn:
+        return t, False
+    if "`" in t or "$(" in t:
+        return t, True
+    s2 = _RE_VAR.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), t)
+    return s2, ("$" in s2 or "`" in s2)
+
+
+def _is_null(word: tuple, env: dict) -> bool:
+    t, _ = _expand(word, env)
+    return t.lower() in _NULL_SINKS or t.lower().startswith("/dev/")
+
+
+def _as_path(word: tuple, env: dict) -> str | None:
+    """一个词能不能当成**字面路径**: 变量展开不出来的、通配符、整棵树 (. / .. / ~)、长得不像路径的 -> None。
+    None 的意思是「认不准」—— 调用方记成「说不清」, 绝不把它当文件名。"""
+    t, dyn = _expand(word, env)
+    t = t.strip()
+    if dyn or not t:
+        return None
+    if any(c in t for c in "*?[") or t.rstrip("/") in _WHOLE_TREE or t in _WHOLE_TREE:
+        return None
+    if not _RE_PATHY.match(t) or not _RE_ALNUM.search(t):
+        return None
+    if t.lower() in _NULL_SINKS or t.lower().startswith("/dev/"):
+        return None
+    return t
+
+
+def _arg_paths(args: list, env: dict, value_flags=frozenset()) -> tuple[list[str], bool]:
+    """参数词 -> (认得出的字面路径, 有没有认不准的)。flag 跳过; 带值的 flag 连它的值一起跳过。"""
+    out, vague, skip = [], False, False
+    for w in args:
+        t = w[0]
+        if skip:
+            skip = False
+            continue
+        if t.startswith("-") and len(t) > 1:
+            skip = t.lower() in value_flags
+            continue
+        pth = _as_path(w, env)
+        if pth is None:
             vague = True
-            continue
-        out.append(t)
+        else:
+            out.append(pth)
     return out, vague
 
 
-def _ps_target(toks: list[str]) -> list[str]:
-    """PowerShell 写文件类: -Path / -FilePath / -LiteralPath 的值, 没有就取第一个位置参数 (-Value 后面是内容, 不是路径)。"""
-    low = [t.lower() for t in toks]
-    for flag in ("-path", "-filepath", "-literalpath", "-destination"):
+def _sed_paths(head: str, args: list, env: dict) -> list[str]:
+    """`sed -i` / `perl -pi` 的文件参数。按 CLI 本身的语法认: 有 `-e` / `-f` 时表达式跟在它们后面;
+    没有时第一个非 flag 参数就是表达式; 其余才是文件。perl 的 `-pe` / `-pie` 这种 flag 串以 e 结尾, 下一个词是脚本。"""
+    def takes_script(t: str) -> bool:
+        if t in ("-e", "--expression", "-f", "--file"):
+            return True
+        return head == "perl" and t.startswith("-") and not t.startswith("--") and t.endswith("e")
+    has_script_flag = any(takes_script(w[0]) for w in args)
+    out, skip, script_seen = [], False, False
+    for w in args:
+        t = w[0]
+        if skip:
+            skip = False
+            continue
+        if t.startswith("-") and len(t) > 1:
+            skip = takes_script(t)
+            continue
+        if not has_script_flag and not script_seen:
+            script_seen = True                               # 第一个非 flag 参数是表达式
+            continue
+        pth = _as_path(w, env)
+        if pth is not None:
+            out.append(pth)
+    return out
+
+
+def _ps_target(args: list, env: dict) -> list[str]:
+    """PowerShell 写文件类: -Path / -LiteralPath / -FilePath 的值, 没有就取第一个位置参数 (-Value 后面是内容)。"""
+    low = [w[0].lower() for w in args]
+    for flag in _PS_TARGET_FLAGS:
         if flag in low:
             i = low.index(flag)
-            if i + 1 < len(toks):
-                return [toks[i + 1]]
+            pth = _as_path(args[i + 1], env) if i + 1 < len(args) else None
+            return [pth] if pth else []
     skip = False
-    for i, t in enumerate(toks):
+    for w in args:
+        t = w[0]
         if skip:
             skip = False
             continue
         if t.startswith("-"):
-            skip = t.lower() in ("-value", "-encoding", "-itemtype", "-name", "-force")
+            skip = t.lower() in _PS_VALUE_FLAGS
             continue
-        return [t]
+        pth = _as_path(w, env)
+        return [pth] if pth else []
     return []
 
 
-def _bash_changes(cmd: str) -> tuple[list, bool, bool]:
-    """命令 -> (改动条目, 有没有认不出目标的改动, 是不是每一段都看懂了)。全部是推断。"""
-    items, unknown, understood = [], False, True
-    for seg in re.split(r"\s*(?:&&|\|\||;|\n)\s*", _bash_core(str(cmd or ""))):
-        seg = _bash_core(seg.strip())
-        if not seg:
+def _git_sub(args: list) -> tuple[str, list]:
+    """git 的子命令与它的参数 (跳过 -C 路径 / -c k=v 这类全局参数)。"""
+    i = 0
+    while i < len(args):
+        t = args[i][0]
+        if t in _GIT_GLOBAL_VALUE:
+            i += 2
             continue
-        for m in _RE_REDIR_TGT.finditer(seg):                    # cmd > file / >> file
-            tgt = m.group(1).strip("\"'")
-            if tgt and tgt.lower() not in _NULL_SINKS:
-                items.append({"path": tgt, "op": "write"})
-        for part in seg.split("|"):
-            toks = _sh_tokens(part.strip())
-            if not toks:
+        if t.startswith("-"):
+            i += 1
+            continue
+        return t.lower(), args[i + 1:]
+    return "", []
+
+
+def redirect_targets(cmd: str, ps: bool = False) -> list[str]:
+    """命令里写文件的重定向目标 (字面量的)。给测试与排查用; 真正的判断在 _bash_changes 里。"""
+    return [w[0] for sc in shell_parse(cmd, ps)["cmds"] for op, w in sc["redirs"] if op in (">", ">>") and not w[1]]
+
+
+def _bash_changes(cmd: str, ps: bool = False) -> tuple[list, bool, bool]:
+    """命令 -> (改动条目, 有没有认不出目标的改动, 是不是每一段都看懂了)。全部是推断。"""
+    P = shell_parse(str(cmd or ""), ps)
+    items: list = []
+    unknown, understood = P["unterminated"], True
+    env: dict = {}
+    for sc in P["cmds"]:
+        head, args = _simple(sc["words"], env)
+        wrote = False
+        for op, w in sc["redirs"]:                          # cmd > file / >> file
+            if _is_null(w, env):
                 continue
-            head = toks[0].lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            head = head[:-4] if head.endswith(".exe") else head
-            args = toks[1:]
-            if head in ("sed", "perl") and any(re.match(r"^-[A-Za-z]*i", t) for t in args):
-                rest = [t for t in args if not t.startswith("-")]
-                if rest and _RE_SED_EXPR.match(rest[0]):
-                    rest = rest[1:]                              # 第一个非 flag 是替换表达式, 不是文件
-                paths, glob = _arg_paths(rest)
-                items += [{"path": x, "op": "edit"} for x in paths]
-                unknown = unknown or glob or not paths
-            elif head in _DELETE_HEADS:
-                paths, glob = _arg_paths(args)
-                items += [{"path": x, "op": "delete"} for x in paths]
-                unknown = unknown or glob or not paths
-            elif head in _MOVE_HEADS:
-                paths, glob = _arg_paths(args)
-                items += [{"path": x, "op": "move"} for x in paths]
-                unknown = unknown or glob or len(paths) < 2
-            elif head in _COPY_HEADS:
-                paths, glob = _arg_paths(args)
-                items += [{"path": paths[-1], "op": "write"}] if paths else []
-                unknown = unknown or glob or not paths
-            elif head in _TOUCH_HEADS:
-                paths, glob = _arg_paths(args)
-                items += [{"path": x, "op": "write"} for x in paths]
-                unknown = unknown or glob or not paths
-            elif head == "tee":
-                paths, glob = _arg_paths(args)
-                items += [{"path": x, "op": "write"} for x in paths]
-                unknown = unknown or glob or not paths
-            elif head in _PS_WRITE_HEADS:
-                items += [{"path": x, "op": "write"} for x in _ps_target(args)]
-                unknown = unknown or not _ps_target(args)
-            elif head == "git":
-                subs = [t for t in args if not t.startswith("-")]
-                gsub = subs[0].lower() if subs else ""
-                if gsub in ("checkout", "restore", "switch"):
-                    if "--" in args:
-                        paths, glob = _arg_paths(args[args.index("--") + 1:])
-                        items += [{"path": x, "op": "revert"} for x in paths]
-                        unknown = unknown or glob or not paths
-                    else:
-                        unknown = True                            # 切分支 / 整体还原: 工作区变了, 但不知道哪些文件
-                elif gsub == "reset":
-                    unknown = unknown or any(t == "--hard" for t in args)
-                elif gsub in _GIT_WIPES:
-                    unknown = True
-                elif gsub == "rm":
-                    paths, glob = _arg_paths(subs[1:])
-                    items += [{"path": x, "op": "delete"} for x in paths]
-                    unknown = unknown or glob or not paths
-                elif gsub == "mv":
-                    paths, glob = _arg_paths(subs[1:])
-                    items += [{"path": x, "op": "move"} for x in paths]
-                    unknown = unknown or glob or len(paths) < 2
-                elif gsub not in _GIT_BENIGN:
-                    understood = False
-            elif head in _WIPE_HEADS:
-                unknown = True                                    # 解压 / 打补丁 / 同步: 动了一批文件, 清单给不出
-            elif head in _SCRIPT_HEADS:
-                if _RE_HEREDOC.search(seg):
-                    unknown = True                                # 内联脚本: 它自己可能写文件
+            wrote = True
+            pth = _as_path(w, env)
+            if pth is None:
+                unknown = True                               # 写到了一个认不出的地方 (变量 / 怪字符) -> 说不清
+            else:
+                items.append({"path": pth, "op": "write"})
+        if not head or head in _NEUTRAL_HEADS:
+            continue
+        low = [w[0].lower() for w in args]
+        if head in ("sed", "perl") and any(re.match(r"^-[A-Za-z]*i", t) or t == "--in-place" for t in low):
+            paths = _sed_paths(head, args, env)
+            items += [{"path": x, "op": "edit"} for x in paths]
+            unknown = unknown or not paths
+        elif head in _DELETE_HEADS:
+            paths, vague = _arg_paths(args, env, _PS_VALUE_FLAGS if head in ("remove-item", "ri") else frozenset())
+            items += [{"path": x, "op": "delete"} for x in paths]
+            unknown = unknown or vague or not paths
+        elif head in _MOVE_HEADS:
+            paths, vague = _arg_paths(args, env, _VALUE_FLAGS.get(head, _PS_VALUE_FLAGS))
+            items += [{"path": x, "op": "move"} for x in paths]
+            unknown = unknown or vague or len(paths) < 2
+        elif head in _COPY_HEADS:
+            paths, vague = _arg_paths(args, env, _VALUE_FLAGS.get(head, _PS_VALUE_FLAGS))
+            items += [{"path": paths[-1], "op": "write"}] if paths else []
+            unknown = unknown or not paths or (vague and len(paths) < 2)
+        elif head in _TOUCH_HEADS:
+            if head in ("new-item", "ni") and any(t in ("-itemtype", "-type") for t in low) and "directory" in low:
+                continue                                     # New-Item -ItemType Directory = mkdir, 不动文件内容
+            paths, vague = _arg_paths(args, env, _VALUE_FLAGS.get(head, _PS_VALUE_FLAGS))
+            items += [{"path": x, "op": "write"} for x in paths]
+            unknown = unknown or vague or not paths
+        elif head == "tee":
+            paths, vague = _arg_paths(args, env)
+            items += [{"path": x, "op": "write"} for x in paths]
+            unknown = unknown or vague or not paths
+        elif head in _PS_WRITE_HEADS:
+            tgt = _ps_target(args, env)
+            items += [{"path": x, "op": "write"} for x in tgt]
+            unknown = unknown or not tgt
+        elif head == "git":
+            gsub, gargs = _git_sub(args)
+            gl = [w[0] for w in gargs]
+            gflags = {t for t in gl if t.startswith("-")}
+            pos = [w for w in gargs if not w[0].startswith("-")]
+            if gsub in ("checkout", "restore", "switch"):
+                if "--" in gl:
+                    paths, vague = _arg_paths(gargs[gl.index("--") + 1:], env)
+                    items += [{"path": x, "op": "revert"} for x in paths]
+                    unknown = unknown or vague or not paths
+                elif gsub != "restore" and gflags & {"-b", "-B", "-c", "-C", "--create", "--orphan"} and len(pos) <= 1:
+                    pass                                     # 从当前 HEAD 建新分支: 不动任何文件
+                elif gsub == "restore" and pos:
+                    paths, vague = _arg_paths(gargs, env, frozenset({"-s", "--source"}))
+                    items += [{"path": x, "op": "revert"} for x in paths]
+                    unknown = unknown or vague or not paths
                 else:
-                    understood = False
-            elif head in _BENIGN_HEADS:
-                pass                                              # 建目录 / 改权限: 不动文件内容
-            elif not _RE_REDIR_TGT.search(part):
+                    unknown = True                           # 切分支 / 整体还原: 工作区变了, 但不知道哪些文件
+            elif gsub == "reset":
+                unknown = unknown or "--hard" in gflags
+            elif gsub == "stash":
+                if not pos or pos[0][0].lower() not in ("list", "show"):
+                    unknown = True                           # stash / pop / apply 会动工作区; list / show 只读
+            elif gsub == "apply":
+                if not gflags & {"--check", "--stat", "--summary", "--numstat"}:
+                    unknown = True
+            elif gsub in _GIT_WIPES:
+                unknown = True
+            elif gsub == "rm":
+                paths, vague = _arg_paths(gargs, env)
+                items += [{"path": x, "op": "delete"} for x in paths]
+                unknown = unknown or vague or not paths
+            elif gsub == "mv":
+                paths, vague = _arg_paths(gargs, env)
+                items += [{"path": x, "op": "move"} for x in paths]
+                unknown = unknown or vague or len(paths) < 2
+            elif gsub not in _GIT_BENIGN:
                 understood = False
+        elif head in _WIPE_HEADS:
+            unknown = True                                   # 解压 / 打补丁 / 同步: 动了一批文件, 清单给不出
+        elif head in _SCRIPT_HEADS:
+            if sc["heredoc"]:
+                unknown = True                               # 内联脚本: 它自己可能写文件
+            else:
+                understood = False
+        elif head in _BENIGN_HEADS:
+            pass                                             # 建目录 / 改权限: 不动文件内容
+        elif not sc["redirs"] and not _RE_VIEW.match(" ".join([head] + [w[0] for w in args])):
+            understood = False                               # 只读命令 / 只往 /dev/null 写的: 看懂了, 没改文件
     return items, unknown, understood
 
 
@@ -1025,13 +1339,17 @@ def file_changes(name: str, inp: dict | None, stage: str | None = None) -> dict 
         op = {"insert": "write", "delete": "delete"}.get(str(inp.get("edit_mode") or ""), "edit")
         return {"src": "true", "unknown": False, "items": [{"path": str(path), "op": op, "add": None, "del": None}]}
     if name in ("Bash", "PowerShell"):
-        items, unknown, understood = _bash_changes(inp.get("command"))
+        items, unknown, understood = _bash_changes(inp.get("command"), ps=(name == "PowerShell"))
         if stage == "修改" and not items and not understood:
             unknown = True                                   # 看得出在改, 但命令没看懂 -> 如实记一笔
         if not items and not unknown:
             return None
         seen, uniq = set(), []
         for it in items:                                     # 同一条命令里同一个文件只记一次
+            pth = it["path"]
+            if (pth.lower() in _NULL_SINKS or pth.lower().startswith("/dev/")
+                    or not _RE_PATHY.match(pth) or not re.search(r"[A-Za-z0-9一-鿿]", pth)):
+                continue                                     # /dev/*、只有斜杠的、带引号括号的: 都不是文件
             k = (it["path"], it["op"])
             if k not in seen:
                 seen.add(k)
@@ -1040,14 +1358,22 @@ def file_changes(name: str, inp: dict | None, stage: str | None = None) -> dict 
     return None
 
 
-_RE_SCRATCH = re.compile(r"(^|/)(temp|tmp)/claude/|/\.claude/|^/tmp/", re.I)   # Claude 自己的临时脚本目录
+_RE_SCRATCH = re.compile(r"(^|/)(temp|tmp)/claude/[^/]+/[^/]+/scratchpad/", re.I)   # 本次会话的一次性脚本目录
+
+
+_RE_TEMPDIR = re.compile(r"^(/tmp/|/var/tmp/|[a-z]:/users/[^/]+/appdata/local/temp/)", re.I)
+_RE_AUTOMEM = re.compile(r"/\.claude/projects/[^/]+/memory/", re.I)
 
 
 def _norm_path(p: str, roots: list[str]) -> tuple[str, bool]:
-    """显示用的路径 + 在不在任务的工作目录里。绝对路径能落进某个 root 就转成相对的; 落不进 -> 界外 (真值比较, 不猜)。"""
+    """显示用的路径 + 算不算界外。绝对路径能落进某个 root 就转成相对的; 落不进 -> 界外 (真值比较, 不猜)。
+    不算界外、但**路径照写**的两类: 系统临时目录 (mktemp 的一次性文件)、Claude 自己的自动记忆 —— 它们不是谁的项目,
+    实测若算进去会让近 4 成任务都挂「越界」。`~/.claude` 下别的 (设置 / agent / skill) 照算, 改它们会改变 Claude 的行为。"""
     s = str(p or "").replace("\\", "/").strip().strip("\"'")
     while s.startswith("./"):
         s = s[2:]
+    if re.match(r"^/[A-Za-z]/", s) and any(":/" in r for r in roots):
+        s = s[1] + ":" + s[2:]                               # Git Bash 写法 /c/Users/... 就是 C:/Users/...
     low = s.lower().rstrip("/")
     for r in roots:
         if low == r:
@@ -1056,8 +1382,10 @@ def _norm_path(p: str, roots: list[str]) -> tuple[str, bool]:
             return s[len(r) + 1:], False
     absolute = bool(re.match(r"^([A-Za-z]:/|/|\\\\)", s))
     if _RE_SCRATCH.search(s):                                # Claude 自己的临时脚本: 路径又长又没意义, 只留尾巴
-        tail = s.split("/scratchpad/", 1)[-1] if "/scratchpad/" in s else s.rsplit("/", 1)[-1]
+        tail = s.split("/scratchpad/", 1)[-1]
         return "临时脚本/" + tail, False
+    if absolute and (_RE_TEMPDIR.search(s) or _RE_AUTOMEM.search(s)):
+        return s, False                                      # 系统临时目录 / Claude 自动记忆: 路径照写, 不算界外
     return s, absolute                                       # 相对路径在当时的工作目录下, 不算界外
 
 
@@ -1071,7 +1399,6 @@ def build_ledger(changes: list[dict], calls: list[dict], cwds) -> dict | None:
     roots = sorted({str(c).replace("\\", "/").rstrip("/").lower() for c in (cwds or set()) if c}, key=len, reverse=True)
     files: dict = {}
     unknown_calls: list = []
-    n_changes = 0
     for ch in changes:
         if ch.get("unknown"):
             unknown_calls.append({"node": ch["id"], "t": ch.get("t")})
@@ -1085,8 +1412,6 @@ def build_ledger(changes: list[dict], calls: list[dict], cwds) -> dict | None:
                                    "add_partial": False, "del_partial": False,
                                    "approx": False, "outside": outside, "src": set(), "ops": {}, "t0": ch.get("t"),
                                    "t1": ch.get("t"), "calls": []}
-            f["n"] += 1
-            n_changes += 1
             f["src"].add(ch.get("src") or "inferred")
             f["ops"][it["op"]] = f["ops"].get(it["op"], 0) + 1
             if it.get("approx"):                             # replace_all: 替换了几处不知道 -> 行数只是下限
@@ -1115,6 +1440,7 @@ def build_ledger(changes: list[dict], calls: list[dict], cwds) -> dict | None:
         f["src"] = "both" if len(src) > 1 else (list(src)[0] if src else "inferred")
         f["add"] = f["add"] if f.pop("add_known") else None
         f["del"] = f["del"] if f.pop("del_known") else None
+        f["n"] = len(f["calls"])                             # 「N 次」= 改到它的调用数 (展开后列出的正好 N 条)
         rows.append(f)
     rows.sort(key=lambda r: (-r["n"], -(r["t1"] or 0), r["path"]))
     ts = [ch.get("t") for ch in changes if ch.get("t") is not None]
@@ -1137,12 +1463,197 @@ def build_ledger(changes: list[dict], calls: list[dict], cwds) -> dict | None:
         n_after, after_files = len(changes), set(files)
     return {"files": rows, "unknown_calls": unknown_calls, "last_change_t": last_t, "verify": verify,
             "after_verify": {"changes": n_after, "files": len(after_files)},
-            "totals": {"files": len(rows), "changes": n_changes, "unknown": len(unknown_calls),
+            "totals": {"files": len(rows), "unknown": len(unknown_calls),
+                       "changes": len({ch["id"] for ch in changes if ch.get("items") or ch.get("unknown")}),
                        "add": sum(r["add"] or 0 for r in rows), "del": sum(r["del"] or 0 for r in rows),
                        "add_partial": any(r["add"] is None or r["add_partial"] for r in rows),
                        "del_partial": any(r["del"] is None or r["del_partial"] for r in rows),
                        "inferred": sum(1 for r in rows if r["src"] != "true"),
                        "outside": sum(1 for r in rows if r["outside"])}}
+
+
+# ================================================================ S5: 风险标记 (规则 = 推断, 只标不拦)
+#
+# 三类 (问卷定的): 打转类 (同一文件改了又改都没过 / 连续失败) · 大改动与越界 · 破坏性操作。
+# 纪律 (MISSION_CONTROL 硬不变量「误报零容忍」): 每条规则先只做「提示」, 在真实数据上审过精确率才允许升「警示」;
+# 规则原文跟着标记一起下发, 界面上必须能看到「凭什么这么判」。全程只读: 只标, 不拦、不回滚、不自动干预。
+
+THRASH_CYCLES = 3            # 「改同一个文件 -> 验证失败」这样的来回, 到几轮算打转
+SPIKE_FAILS = 3              # 同一条时间线上**严格相邻**地连着失败几次算连续失败 (中间成功即清零; 4 次时近 30 天只有 0.7%)
+LARGE_EDIT_LINES = 1200      # 单次改动的增删行数合计, 超过算大改动 (校准: 约 5% 的任务)
+LARGE_TASK_FILES = 200       # 一个任务动过的文件数, 超过算大改动 (校准: 约 6% 的任务)
+
+_SQL_HEADS = frozenset({"psql", "mysql", "sqlite3", "sqlcmd", "mongo", "mongosh", "redis-cli", "duckdb"})
+_RE_SQL_DESTRUCTIVE = re.compile(r"\b(drop\s+(table|database|schema)|truncate\s+table)\b", re.I)
+_RE_MCP_DESTRUCTIVE = re.compile(r"^(remove|delete|destroy|drop|purge|wipe)_|_(remove|delete|destroy)$", re.I)
+
+
+def _flagset(words: list) -> tuple[str, set]:
+    """参数词 -> (短 flag 字母串, 长 flag 集合)。`-fdn` -> "fdn"。"""
+    toks = [w[0] for w in words]
+    return ("".join(t[1:] for t in toks if t.startswith("-") and not t.startswith("--")),
+            {t.lower() for t in toks if t.startswith("--")})
+
+
+def destructive_kind(name: str, inp: dict | None) -> str | None:
+    """这次调用是不是破坏性操作 -> 人话说明; 不是 -> None。只认**明确**的那几种, 认不准的不标;
+    预演 (`git clean -n` / `--dry-run` / PowerShell `-WhatIf`) 一个字节都不删, 不算。"""
+    inp = inp or {}
+    if name in ("Bash", "PowerShell"):
+        ps = name == "PowerShell"
+        env: dict = {}
+        for sc in shell_parse(str(inp.get("command") or ""), ps)["cmds"]:
+            head, args = _simple(sc["words"], env)
+            if not head:
+                continue
+            short, long = _flagset(args)
+            low = {w[0].lower() for w in args}
+            if head in _SQL_HEADS and _RE_SQL_DESTRUCTIVE.search(" ".join(w[0] for w in args)):
+                return "删库 (DROP / TRUNCATE)"                # 只认真的数据库客户端: 别的命令里出现这几个词不算
+            if head in ("remove-item", "ri") or (ps and head in ("rm", "del", "rd", "rmdir")):
+                if (low & {"-recurse", "-r"}) and "-force" in low and "-whatif" not in low:
+                    return "PowerShell 递归强删"
+                continue
+            if head in ("rm", "del"):                         # 递归 + 强制 才算 (rm a.txt 不算)
+                if ("r" in short.lower() or "--recursive" in long) and ("f" in short or "--force" in long):
+                    return "rm -rf"
+                continue
+            if head == "git":
+                gsub, gargs = _git_sub(args)
+                gshort, glong = _flagset(gargs)
+                dry = "n" in gshort or "--dry-run" in glong
+                if gsub == "reset" and "--hard" in glong:
+                    return "git reset --hard"
+                if gsub == "clean" and ("f" in gshort or "--force" in glong) and not dry:
+                    return "git clean"
+                if gsub == "push" and ("f" in gshort or "--force" in glong) and not dry:
+                    return "强推 (git push --force)"         # --force-with-lease 不在里面, 不算
+                if gsub in ("checkout", "restore"):
+                    pos = [w[0] for w in gargs if not w[0].startswith("-")]
+                    if pos and all(x.rstrip("/") in (".", "*", ":") or x == ":/" for x in pos):
+                        return "整棵树还原 (git checkout/restore .)"
+    elif name.startswith("mcp__"):
+        tool = name.split("__", 2)[-1]
+        if _RE_MCP_DESTRUCTIVE.search(tool):
+            return f"MCP 删除类调用 ({tool})"
+    return None
+
+
+def _spikes(calls: list[dict], need: int = SPIKE_FAILS) -> list[list[str]]:
+    """同一条时间线上连着失败 need 次及以上 -> 每一串的调用 id。跨 agent 不算一串 (各干各的)。"""
+    by_tl: dict = defaultdict(list)
+    for c in calls:
+        if c.get("t0") is not None:
+            by_tl[(c.get("meta") or {}).get("tl") or "main"].append(c)
+    out = []
+    for cs in by_tl.values():
+        run: list = []
+        for c in sorted(cs, key=lambda c: c["t0"]):
+            if FAIL_FLAGS & set(c.get("flags") or []):
+                run.append(c["id"])
+            else:
+                if len(run) >= need:
+                    out.append(run)
+                run = []
+        if len(run) >= need:
+            out.append(run)
+    return out
+
+
+def _thrash(ledger: dict, changes: list[dict], calls: list[dict], roots: list[str],
+            err_text: dict | None = None) -> list[tuple]:
+    """「改了这个文件 -> 验证失败」的来回 >= THRASH_CYCLES 轮 -> (文件, 轮数, 相关调用)。
+
+    - **按时间线分开算**: workflow 里几个 agent 各自在自己的 worktree 改同名文件, 不是一个人在来回;
+    - **失败要冲着这个文件**: 失败的输出里点了这个文件的名字才算它的一轮 (整条时间线的失败不能摊给每个被改的文件——
+      否则只改了文档也会被判「改了 3 轮没过」)。输出里点不出任何文件的失败, 不算给谁 (宁可漏标);
+    - 只算改 / 写 (删、移、还原不是在「修」这个文件); 被工具拦下 (`<tool_use_error>`) 不是验证结果。"""
+    err_text = err_text or {}
+    fails_by_tl: dict = defaultdict(list)
+    for c in calls:
+        if ((c.get("meta") or {}).get("stage") == "验证" and (FAIL_FLAGS & set(c.get("flags") or []))
+                and c.get("t0") is not None):
+            txt = str(err_text.get(c["id"]) or "")
+            if txt.lstrip().startswith("<tool_use_error>"):
+                continue
+            fails_by_tl[(c.get("meta") or {}).get("tl") or "main"].append((c["t0"], txt.replace("\\", "/").lower()))
+    if not fails_by_tl:
+        return []
+    per_file: dict = defaultdict(list)
+    for ch in changes:
+        if ch.get("t") is None:
+            continue
+        for it in ch.get("items") or []:
+            if it.get("op") in ("edit", "write"):
+                per_file[(ch.get("tl") or "main", _norm_path(it["path"], roots)[0])].append((ch["t"], ch["id"]))
+    out = []
+    for (tl, path), evs in per_file.items():
+        name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if not name or "." not in name:
+            continue                                         # 目录 / 没扩展名的: 点名判断不可靠, 不判
+        mine = [(t, "fail", None) for t, txt in fails_by_tl.get(tl, []) if name in txt]
+        seq = sorted([(t, "chg", cid) for t, cid in evs] + mine)
+        cycles, armed, nodes = 0, False, []
+        for _t, kind, cid in seq:
+            if kind == "chg":
+                armed = True
+                nodes.append(cid)
+            elif armed:                                      # 改完之后, 冲着它的验证失败 = 一轮
+                cycles += 1
+                armed = False
+        if cycles >= THRASH_CYCLES:
+            out.append((path, cycles, list(dict.fromkeys(nodes))))
+    return sorted(out, key=lambda x: -x[1])
+
+
+def risk_markers(ledger: dict | None, calls: list[dict], changes: list[dict], cwds,
+                 err_text: dict | None = None) -> list[dict]:
+    """一个任务的风险标记。每条都带: 规则原文 (why) + 证据 (相关调用 / 文件) + 级别 (先一律「提示」)。"""
+    roots = sorted({str(c).replace("\\", "/").rstrip("/").lower() for c in (cwds or set()) if c}, key=len, reverse=True)
+    out: list = []
+
+    dest: dict = defaultdict(list)
+    for c in calls:
+        k = (c.get("meta") or {}).get("destructive")
+        if k:
+            dest[k].append(c["id"])
+    for kind, ids in sorted(dest.items(), key=lambda kv: -len(kv[1])):
+        out.append({"rule": "destructive", "level": "info", "label": f"破坏性操作：{kind}", "n": len(ids),
+                    "why": "命令里出现了会丢东西的操作（rm -rf / git reset --hard / git clean / 强推 / 整棵树还原 / "
+                           "MCP 删除类调用 / DROP 表）。只标出来，不拦你。",
+                    "refs": [{"kind": "call", "id": i} for i in ids]})
+
+    for run in _spikes(calls):
+        out.append({"rule": "error-spike", "level": "info", "label": f"连着失败 {len(run)} 次", "n": len(run),
+                    "why": f"同一条时间线上严格相邻地连续 {SPIKE_FAILS} 次及以上调用失败，中间没有成功过。可能是卡住了。",
+                    "refs": [{"kind": "call", "id": i} for i in run]})
+
+    for path, cycles, nodes in _thrash(ledger or {}, changes, calls, roots, err_text):
+        out.append({"rule": "thrash", "level": "info", "label": f"{path} 改了 {cycles} 轮都没通过", "n": cycles,
+                    "why": f"「改这个文件 → 验证失败、而且失败输出里点了它的名」的来回达到 {THRASH_CYCLES} 轮及以上"
+                           "（推断：验证是按阶段标注判的）。失败里没点名的不算给它；一口气分几次写一个大文件不算。",
+                    "refs": [{"kind": "call", "id": i} for i in nodes]})
+
+    big = [c for c in calls if (c.get("meta") or {}).get("edit_lines", 0) >= LARGE_EDIT_LINES]
+    if big:
+        out.append({"rule": "large-edit", "level": "info", "label": f"单次大改动 {len(big)} 次", "n": len(big),
+                    "why": f"一次调用增删合计 ≥ {LARGE_EDIT_LINES} 行（按实际落盘的补丁算；算不出行数的不参与）。",
+                    "refs": [{"kind": "call", "id": c["id"]} for c in big]})
+    if ledger and ledger["totals"]["files"] >= LARGE_TASK_FILES:
+        out.append({"rule": "large-task", "level": "info", "label": f"这次任务动了 {ledger['totals']['files']} 个文件",
+                    "n": ledger["totals"]["files"],
+                    "why": f"一个任务动过的文件数 ≥ {LARGE_TASK_FILES} 个。这条是按任务判的，没有单独的一步可跳。",
+                    "refs": []})
+    if ledger and ledger["totals"]["outside"]:
+        outs = [f for f in ledger["files"] if f["outside"]]
+        paths = [f["path"] for f in outs][:6]
+        out.append({"rule": "outside", "level": "info", "label": f"改了工作目录以外的 {ledger['totals']['outside']} 个文件",
+                    "n": ledger["totals"]["outside"],
+                    "why": "路径不在这个任务的工作目录下。不算的：Claude 自己的临时脚本、自动记忆、系统临时目录；"
+                           "算的：别的仓库、~/.claude 下的设置 / agent / skill。跨仓库干活会正常出现这一条。",
+                    "detail": "、".join(paths),
+                    "refs": [{"kind": "call", "id": i} for i in dict.fromkeys(c for f in outs for c in f["calls"])]})
+    return out
 
 
 def fmt_dur(s: float) -> str:
@@ -1270,6 +1781,9 @@ def _scan_line(ft: FileTrace, o: dict, off: int) -> None:
                     chg = file_changes(name, inp, row["stage"])
                     if chg:
                         row["chg"] = chg                        # 改动清单 (真值 / 推断, 见 file_changes)
+                    dk = destructive_kind(name, inp)
+                    if dk:
+                        row["destructive"] = dk                 # 破坏性操作 (规则, 见 destructive_kind)
                     if name.startswith("mcp__"):
                         row["in_ids"] = input_ids(inp)           # 数据依赖 (推断): 参数里的 ID -> 字段路径
                     if name in AGENT_TOOLS:
@@ -1320,7 +1834,8 @@ def _scan_line(ft: FileTrace, o: dict, off: int) -> None:
                 emit({"k": "result", "ts": ts, "tid": b.get("tool_use_id"),
                       "err": bool(b.get("is_error")) or interrupted, "interrupted": interrupted,
                       "chars": chars, "est": est, "media": media, "preview": short(txt, PREVIEW_CHARS),
-                      "extra": extra, "off": off, "ids": id_tokens(txt), "patch": patch})
+                      "extra": extra, "off": off, "ids": id_tokens(txt), "patch": patch,
+                      "etext": (txt[:1500] + "\n" + txt[-1500:]) if (b.get("is_error") or interrupted) else None})
             return
         if ft.first_user is None and origin is None and not (isinstance(content, str) and content.startswith("<")):
             full = prompt_text(content)[0]
@@ -1624,6 +2139,7 @@ class _Ctx:
         self.gloss: dict = {"skill": {}, "agent": {}, "mcp": {}}
         self.script_loc: dict = {}           # runId -> (脚本路径或 None, run transcript 目录)
         self.errs: dict = {}                 # 失败调用 id -> 返回开头 (统计页的「最近错误」用; 不进回放树)
+        self.err_text: dict = {}             # 失败调用 id -> 返回的头和尾 (打转规则判断失败是不是冲着某个文件)
         self.changes: list = []              # 按时间登记的改动 (改动清单用)
 
 
@@ -1848,6 +2364,7 @@ def _call_node(r: dict, res: dict | None, ft: FileTrace, ctx: _Ctx, depth: int, 
     elif res.get("err"):
         flags.append("fail")
         ctx.errs[r["id"]] = res.get("preview") or ""
+        ctx.err_text[r["id"]] = res.get("etext") or res.get("preview") or ""
     resp_u = ft.resp.get(r["resp"])
     n_par = max(1, ft.resp_calls.get(r["resp"], 1))
     # 结果体积: 没有结果 -> None (不是 0); 含图片/文档等估不出的块 -> None; Skill 加上注入的正文
@@ -1877,9 +2394,14 @@ def _call_node(r: dict, res: dict | None, ft: FileTrace, ctx: _Ctx, depth: int, 
     if name.startswith("mcp__"):
         parts = name.split("__", 2)
         node["meta"]["server"] = parts[1] if len(parts) > 1 else "?"
+    node["meta"]["tl"] = ft.agent_id or "main"               # 属于哪条时间线 (连续失败按时间线算)
+    if r.get("destructive"):
+        node["meta"]["destructive"] = r["destructive"]
+        flags.append("destructive")
     ctx.call_loc[r["id"]] = (str(ft.path), r.get("off"), (res or {}).get("off"))
     if r.get("chg"):
         chg = dict(r["chg"])
+        ln = sum((it.get("add") or 0) + (it.get("del") or 0) for it in chg["items"])
         pt = (res or {}).get("patch")
         if pt and chg["src"] == "true" and chg["items"]:      # 实际落盘的补丁 > 按请求算的行数
             it = dict(chg["items"][0])
@@ -1889,7 +2411,12 @@ def _call_node(r: dict, res: dict | None, ft: FileTrace, ctx: _Ctx, depth: int, 
             if pt.get("user_modified"):
                 it["user_modified"] = True
             chg["items"] = [it]
-        ctx.changes.append({"id": r["id"], "t": t0, **chg})
+        ln = sum((it.get("add") or 0) + (it.get("del") or 0) for it in chg["items"])
+        if ln:
+            node["meta"]["edit_lines"] = ln
+            if ln >= LARGE_EDIT_LINES:
+                flags.append("big-change")
+        ctx.changes.append({"id": r["id"], "t": t0, "tl": node["meta"]["tl"], **chg})
     # 三段耗时: agent / workflow 调用本身不计 (同步的会把子 agent 的模型时间误算成机器执行),
     # 它们的时间由子 agent 自己的区间承担。
     if t1 is not None and cat not in ("agent", "workflow"):
@@ -2109,6 +2636,8 @@ def build_task(task: dict, now: float | None = None, running: bool = False,
         "glossary": _used_glossary(ctx, nodes),
         "changes": build_ledger(ctx.changes, ctx.calls, ctx.cwds | {task["prompt"].get("cwd")}),
     }
+    summary["risks"] = risk_markers(summary["changes"], ctx.calls, ctx.changes,
+                                    ctx.cwds | {task["prompt"].get("cwd")}, ctx.err_text)
     for c in ctx.calls:
         c["meta"].pop("out_sig", None)                       # 只在判打转时用
     root = {"id": f"task:{task['id']}", "kind": "task", "label": short(task["prompt"]["text"], 120),
@@ -2234,10 +2763,11 @@ def list_tasks(base: Path | None = None, since: float | None = None, project: st
                                        "after_verify": L["after_verify"]["changes"]}
         s["files"] = [] if not L else [[f["path"], f["n"]] for f in L["files"][:LIST_FILES_CAP]]
         s["files_more"] = 0 if not L else max(0, len(L["files"]) - LIST_FILES_CAP)
+        s["risks_n"] = len(s.get("risks") or [])
         out.append({k: s[k] for k in ("id", "session_id", "project", "projects", "subpath", "branch", "prompt",
                                        "t0", "t1", "running", "time", "tokens", "partial", "calls", "cats",
                                        "skills", "flags", "agents", "workflows", "mcp_servers", "continuations",
-                                       "chg", "files", "files_more")})
+                                       "chg", "files", "files_more", "risks_n")})
     out.sort(key=lambda s: (not s["running"], -(s["t0"] or 0)))
     return out
 
@@ -2346,6 +2876,8 @@ def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
     chg = {"tasks": 0, "changes": 0, "add": 0, "del": 0, "inferred": 0, "unknown": 0, "outside": 0,
            "add_partial": False, "del_partial": False, "verified_clean": 0, "changed_after": 0, "never_verified": 0}
     chg_files: set = set()
+    chg_outside: set = set()
+    risk: dict = {}                                   # rule -> {"tasks", "calls", "hits", "level"}
 
     for _t, built, proj, _sub in built_iter:
         sm = built["summary"]
@@ -2492,8 +3024,9 @@ def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
         if L:
             t_ref = {"kind": "task", "task": tid, "node": f"task:{tid}", "t0": sm.get("t0"),
                      "dur": (sm.get("time") or {}).get("active"), "tokens": tk.get("total"),
-                     "calls": L["totals"]["changes"], "fail": 0,
-                     "sub": f"{L['totals']['files']} 个文件 · {L['totals']['changes']} 处改动"}
+                     "calls": sm.get("calls") or 0, "fail": task_fail,
+                     "sub": (f"{L['totals']['files']} 个文件 · {L['totals']['changes']} 次改动" if L["totals"]["files"]
+                             else f"{L['totals']['unknown']} 次改动认不出文件")}
             chg["tasks"] += 1
             idx["chg-tasks"].append(t_ref)
             if not L["verify"]:
@@ -2504,11 +3037,12 @@ def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
                 idx["chg-after"].append(t_ref)
             else:
                 chg["verified_clean"] += 1
-            for k in ("changes", "add", "del", "unknown", "outside"):
+            for k in ("add", "del", "unknown"):
                 chg[k] += L["totals"][k]
             chg["add_partial"] = chg["add_partial"] or L["totals"]["add_partial"]
             chg["del_partial"] = chg["del_partial"] or L["totals"]["del_partial"]
-            chg_files |= {f["path"] for f in L["files"]}
+            chg_files |= {(proj, f["path"]) for f in L["files"]}          # 跨项目的同名文件不合并
+            chg_outside |= {(proj, f["path"]) for f in L["files"] if f["outside"]}
             seen_chg: set = set()
             for f in L["files"]:
                 for cid in f["calls"]:
@@ -2529,6 +3063,25 @@ def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
                         idx["chg-calls"].append(r)
                         idx["chg-inferred"].append(r)      # 认不出文件的也是 Bash 认出来的改动, 一样要能点开
                         chg["inferred"] += 1
+        for rule in {x["rule"] for x in (sm.get("risks") or [])}:
+            marks = [x for x in sm["risks"] if x["rule"] == rule]
+            row = risk.setdefault(rule, {"rule": rule, "tasks": 0, "calls": 0, "hits": 0,
+                                         "level": marks[0]["level"], "why": marks[0]["why"],
+                                         "ref_tasks": _ref("risk-t", rule), "ref_calls": _ref("risk-c", rule)})
+            row["tasks"] += 1
+            row["hits"] += len(marks)
+            idx[row["ref_tasks"]].append({"kind": "task", "task": tid, "node": f"task:{tid}", "t0": sm.get("t0"),
+                                          "dur": (sm.get("time") or {}).get("active"), "tokens": tk.get("total"),
+                                          "calls": sm.get("calls") or 0, "fail": 0,
+                                          "sub": "、".join(short(m["label"], 40) for m in marks[:3])})
+            seen_r: set = set()
+            for m in marks:
+                for rf in m.get("refs") or []:
+                    r2 = call_refs.get(rf.get("id")) if rf.get("kind") == "call" else None
+                    if r2 is not None and rf["id"] not in seen_r:
+                        seen_r.add(rf["id"])
+                        idx[row["ref_calls"]].append(r2)
+                        row["calls"] += 1
         idx["tasks"].append({"kind": "task", "task": tid, "node": f"task:{tid}", "t0": sm.get("t0"),
                              "dur": (sm.get("time") or {}).get("active"), "tokens": tk.get("total"),
                              "calls": len(call_refs), "fail": task_fail,
@@ -2603,9 +3156,11 @@ def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
     c, unp = cost(ov_bm)
     ov.update(tokens=ov_tok, cost=c, unpriced=unp)
     chg["files"] = len(chg_files)
+    chg["outside"] = len(chg_outside)                    # 与「个文件被改过」同一个去重口径
     chg["changes"] = len(idx["chg-calls"])               # 以「几次调用改了文件」为准 (一次调用改多个文件只算一次)
+    risk_rows = sorted(risk.values(), key=lambda r: (-r["tasks"], -r["hits"]))
     return {"overview": ov, "tasks": tasks, "tools": tool_rows, "skills": skill_rows, "mcp": mcp_rows,
-            "compare": compare, "changes": chg}, dict(idx)
+            "compare": compare, "changes": chg, "risks": risk_rows}, dict(idx)
 
 
 def _new_stamp() -> str:

@@ -87,8 +87,17 @@ def test_norm_path_and_outside():
     assert trace._norm_path("C:\\Users\\u\\proj\\tokmon\\trace.py", roots) == ("tokmon/trace.py", False)
     assert trace._norm_path("./a.py", roots) == ("a.py", False)                      # 相对路径: 就在工作目录下
     assert trace._norm_path("C:/Users/u/other/x.py", roots) == ("C:/Users/u/other/x.py", True)
-    scratch = "C:/Users/u/AppData/Local/Temp/claude/s/scratchpad/p.py"
+    scratch = "C:/Users/u/AppData/Local/Temp/claude/c--Users-u-proj/5f0e-sess/scratchpad/p.py"
     assert trace._norm_path(scratch, roots) == ("临时脚本/p.py", False)               # Claude 的临时脚本: 不算界外, 只留尾巴
+    # review: ~/.claude 下的真实文件 (agent / skill / memory) 不是临时脚本 -> 保留真实路径, 算界外, 不会被合并
+    a, b = "C:/Users/u/.claude/agents/foo.md", "C:/Users/u/.claude/skills/foo.md"
+    assert trace._norm_path(a, roots) == (a, True) and trace._norm_path(b, roots) == (b, True)
+    # 系统临时目录与 Claude 自动记忆: 路径照写 (不合并), 但不算界外
+    assert trace._norm_path("/tmp/serve_out.txt", roots) == ("/tmp/serve_out.txt", False)
+    mem = "C:/Users/u/.claude/projects/c--Users-u-proj/memory/MEMORY.md"
+    assert trace._norm_path(mem, roots) == (mem, False)
+    # Git Bash 写法 /c/Users/... 就是 C:/Users/...: 自己工作目录里的文件不能被判成界外
+    assert trace._norm_path("/c/Users/u/proj/tokmon/trace.py", roots) == ("tokmon/trace.py", False)
 
 
 # ------------------------------------------------------------------ 清单组装
@@ -112,8 +121,8 @@ def test_ledger_merges_files_and_keeps_calls():
     assert a["ops"] == {"edit": 1, "revert": 1} and a["calls"] == ["c1", "c2"] and (a["t0"], a["t1"]) == (10, 20)
     assert files["b.md"]["del"] is None                        # 只写了不知道删了多少 -> None, 不是 0
     assert a["add_partial"] is True and a["del_partial"] is True     # 还原那次算不出行数 -> 3 只是下限
-    assert L["totals"] == {"files": 2, "changes": 3, "unknown": 1, "add": 8, "del": 1, "add_partial": True,
-                           "del_partial": True, "inferred": 1, "outside": 0}
+    assert L["totals"] == {"files": 2, "changes": 4, "unknown": 1, "add": 8, "del": 1, "add_partial": True,
+                           "del_partial": True, "inferred": 1, "outside": 0}          # changes = 改了文件的调用数 (含说不清的)
     assert [u["node"] for u in L["unknown_calls"]] == ["c4"]
     assert L["files"][0]["path"] == "a.py"                     # 按改动次数排
     assert trace.build_ledger([], [], set()) is None

@@ -448,6 +448,10 @@ def _wf_scrub_summary(sm):
             L["verify"]["label"] = _wf_red(L["verify"].get("label"))
     for row in sm.get("files") or []:
         row[0] = _wf_red(row[0])
+    for x in sm.get("risks") or []:                  # 风险标记: 标题与证据里可能有路径 / 命令片段
+        x["label"] = _wf_red(x.get("label"))
+        if x.get("detail"):
+            x["detail"] = _wf_red(x["detail"])
     for m in sm.get("moments") or []:
         m["label"] = _wf_red(m.get("label"))
     for kind, d in (sm.get("glossary") or {}).items():
@@ -520,6 +524,8 @@ def _wf_scrub_stats(out: dict) -> dict:
         for e in m.get("errors") or []:
             e["tool"], e["excerpt"] = _wf_red(e.get("tool")), _wf_red(e.get("excerpt"))
     done = set()                                     # 最慢 / 最贵 与 points 里的是同一个对象 (deepcopy 保留共享): 只处理一次
+    for r in out.get("risks") or []:
+        r["why"] = _wf_red(r.get("why"))
     for rows in (out.get("compare") or {}).values():
         for r in rows:
             r["name"] = _wf_red(r["name"])

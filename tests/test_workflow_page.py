@@ -64,6 +64,8 @@ def session(tmp_path, monkeypatch):
         result(9, "t1", "FAIL", err=True),
         asst(10, "m5", "r5", tool_use("ed", "Edit", {"file_path": "a.js", "old_string": "x", "new_string": "y"}), usage(out=5)),
         result(11, "ed", "ok"),
+        asst(11.2, "m5b", "r5b", tool_use("rmx", "Bash", {"command": "rm -rf build"}), usage(out=5)),
+        result(11.5, "rmx", "ok"),
         asst(12, "m6", "r6", tool_use("t2", "Bash", {"command": "npm test"}), usage(out=5)),
         result(14, "t2", "PASS"),
         {"type": "attachment", "timestamp": iso(15), "sessionId": SID,
@@ -104,6 +106,8 @@ def _export(base, out: Path) -> dict:
     st = serve._wf_stats(base, {"since": ["all"]})
     data["stats"] = st
     refs = {"tasks", "all", "chg-tasks", "chg-calls", "chg-inferred", "chg-unknown", "chg-after", "chg-noverify"}
+    for r in st.get("risks") or []:
+        refs |= {r["ref_tasks"], r["ref_calls"]}
     for r in st["tools"]:
         refs |= {r["ref"], r["ref_occ"]}
     for r in st["skills"]:
@@ -132,6 +136,6 @@ def test_workflow_page_runs_clean(session, tmp_path):
     assert report["drawers"] >= 10
     seen = report["seen"]
     for k in ("stage_strip", "band", "dep_badge", "script_view", "glossary", "full_text",
-              "stats", "dots", "mcp_errors", "drill_jump", "changes", "chg_jump"):
+              "stats", "dots", "mcp_errors", "drill_jump", "changes", "chg_jump", "risks", "risk_jump"):
         assert seen[k], f"页面没有渲染出 {k}"
     assert report["stat_drills"] >= 15 and report["stat_jumps"] >= 15, report
