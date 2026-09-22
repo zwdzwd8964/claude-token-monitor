@@ -15,7 +15,7 @@
 
 | | |
 |---|---|
-| 代码 / 测试 | 约 11k 行 · **282 个测试全过**（`python -m pytest -q`；含 Node 跑的页面冒烟测试） |
+| 代码 / 测试 | 约 12k 行 · **318 个测试全过**（`python -m pytest -q`；含 Node 跑的页面冒烟测试） |
 | 工作流回放 | `/workflow`：近 7 天 98 个任务可回放，token 与 /tokens **逐 token 对账 98/98**；S2 学习层：流程条、数据依赖、名词说明、脚本对照（43/43 次 workflow 的阶段都对上了脚本）；S3 统计：工具 / skill 排行、MCP 健康、跨任务对照，**每个数字点开都是同样条数的明细**（真实数据 323/323） |
 | 状态推断可信度 | 回测 **97.0% 准确率 / 1343 个评估点**（`python -m tokmon backtest`） |
 | 数据契约 | `tokmon doctor` 全绿（覆盖 ≈100%、0 跨来源碰撞） |
@@ -115,6 +115,7 @@ python -m tokmon serve
 | [CHANGELOG.md](CHANGELOG.md) | 版本变更 | ✅ 已恢复更新 |
 | [docs/atlas.html](docs/atlas.html) | 系统图谱（离线 Mermaid） | 📜 停在 07-01，不含 billing/steer |
 | [WORKFLOW_TAB_PLAN.md](WORKFLOW_TAB_PLAN.md) | **`/workflow` 工作流追踪器一页规格** | ✅ S1–S3 全部验收（0.10.0 → 0.12.0） |
+| [CHANGE_RISK_PLAN.md](CHANGE_RISK_PLAN.md) | **改动与风险一页规格**（当前优先级：它改了什么 / 有没有乱改 / 在变好吗） | 🟡 S1 改动清单已交付（0.13.0），待你验收 → S2 |
 | [RUNNER_SDK_PLAN.md](RUNNER_SDK_PLAN.md) | steer 改用 Agent SDK | ✅ 已实施 |
 | [SESSIONS_FILTER_PLAN.md](SESSIONS_FILTER_PLAN.md) | `/sessions` 过滤器 V1 | ✅ 已实施 |
 | [REMOTE_CONTROL_PLAN.md](REMOTE_CONTROL_PLAN.md) | 远程 steer + 上手机 | 🟡 S1/S0 已实施，S2/S3 未做 |
@@ -157,5 +158,5 @@ tokmon/
   pages/workflow.html          /workflow 页面 (独立文件, 不再内联进 serve.py)
   inference_doctor / inference_backtest   推断层的体检与回测
   serve                        驾驶舱外壳
-tests/                         282 例: pytest -q (tests/js/workflow_smoke.js: 页面 JS 的 Node 冒烟脚手架)
+tests/                         318 例: pytest -q (tests/js/workflow_smoke.js: 页面 JS 的 Node 冒烟脚手架)
 ```

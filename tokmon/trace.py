@@ -816,6 +816,335 @@ def match_agent_line(desc: str | None, agents: list[dict]) -> int | None:
     return None
 
 
+# ================================================================ S4: 改动清单 (这次任务到底改了什么)
+#
+# 两级来源, 界面上分开标:
+#   真值 —— Edit / Write / NotebookEdit / MultiEdit: 工具参数本身就是改动, 文件与行数都算得准;
+#   推断 —— Bash / PowerShell: 从命令里认 (sed -i / 重定向 / mv / cp / rm / touch / tee / git checkout ...);
+#           认得出这一步是「修改」却认不出改的是哪个文件 (内联脚本、git reset --hard、解压...) -> 如实记成
+#           「改了，但不知道改了哪个」, 绝不瞎猜文件名。
+
+_RE_SED_EXPR = re.compile(r"^[0-9,$~+\s]*[a-z]?[/#|,@!]")           # s/a/b/ · 3,5d · y#a#b#
+_RE_REDIR_TGT = re.compile(r"(?<![0-9&])>>?\s*(\"[^\"]*\"|'[^']*'|[^\s|&;<>]+)")
+_RE_HEREDOC = re.compile(r"<<-?\s*['\"]?\w+")
+_SCRIPT_HEADS = frozenset({"python", "python3", "py", "node", "ruby", "perl", "sh", "bash", "zsh", "pwsh",
+                           "powershell", "deno", "bun", "irb", "osascript"})
+_DELETE_HEADS = frozenset({"rm", "rmdir", "del", "erase", "unlink", "remove-item", "ri", "rd"})
+_MOVE_HEADS = frozenset({"mv", "move-item", "rename-item", "mi", "rni", "ren"})
+_COPY_HEADS = frozenset({"cp", "copy-item", "copy", "cpi"})
+_TOUCH_HEADS = frozenset({"touch", "new-item", "ni"})
+_PS_WRITE_HEADS = frozenset({"set-content", "out-file", "add-content", "sc", "ac"})
+_WIPE_HEADS = frozenset({"unzip", "tar", "7z", "patch", "rsync", "robocopy", "xcopy"})
+_GIT_WIPES = frozenset({"clean", "stash", "merge", "rebase", "cherry-pick", "revert", "pull", "apply", "am"})
+_GIT_BENIGN = frozenset({"add", "commit", "push", "tag", "fetch", "init", "config", "remote", "branch", "worktree"})
+_BENIGN_HEADS = frozenset({"chmod", "chown", "mkdir", "md", "icacls", "attrib"})
+_NULL_SINKS = frozenset({"/dev/null", "nul", "$null", "nul:"})
+
+
+def _lines(s) -> int:
+    s = str(s or "")
+    return 0 if not s else s.count("\n") + 1
+
+
+def _sh_tokens(seg: str) -> list[str]:
+    return [t.strip("\"'") for t in re.findall(r"\"[^\"]*\"|'[^']*'|\S+", str(seg or ""))]
+
+
+_WHOLE_TREE = frozenset({".", "..", "./", "../", "~", "*"})
+
+
+def _arg_paths(toks: list[str]) -> tuple[list[str], bool]:
+    """命令参数 -> (看得出是单个路径的那些, 要不要记成「说不清」)。
+    通配符和「整棵树」(. / .. / ~) 展开不出来 -> 不猜文件名, 交给 unknown。"""
+    out, vague = [], False
+    for t in toks:
+        if not t or t.startswith("-"):
+            continue
+        if any(c in t for c in "*?[") or t.strip().rstrip("/") in _WHOLE_TREE:
+            vague = True
+            continue
+        out.append(t)
+    return out, vague
+
+
+def _ps_target(toks: list[str]) -> list[str]:
+    """PowerShell 写文件类: -Path / -FilePath / -LiteralPath 的值, 没有就取第一个位置参数 (-Value 后面是内容, 不是路径)。"""
+    low = [t.lower() for t in toks]
+    for flag in ("-path", "-filepath", "-literalpath", "-destination"):
+        if flag in low:
+            i = low.index(flag)
+            if i + 1 < len(toks):
+                return [toks[i + 1]]
+    skip = False
+    for i, t in enumerate(toks):
+        if skip:
+            skip = False
+            continue
+        if t.startswith("-"):
+            skip = t.lower() in ("-value", "-encoding", "-itemtype", "-name", "-force")
+            continue
+        return [t]
+    return []
+
+
+def _bash_changes(cmd: str) -> tuple[list, bool, bool]:
+    """命令 -> (改动条目, 有没有认不出目标的改动, 是不是每一段都看懂了)。全部是推断。"""
+    items, unknown, understood = [], False, True
+    for seg in re.split(r"\s*(?:&&|\|\||;|\n)\s*", _bash_core(str(cmd or ""))):
+        seg = _bash_core(seg.strip())
+        if not seg:
+            continue
+        for m in _RE_REDIR_TGT.finditer(seg):                    # cmd > file / >> file
+            tgt = m.group(1).strip("\"'")
+            if tgt and tgt.lower() not in _NULL_SINKS:
+                items.append({"path": tgt, "op": "write"})
+        for part in seg.split("|"):
+            toks = _sh_tokens(part.strip())
+            if not toks:
+                continue
+            head = toks[0].lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            head = head[:-4] if head.endswith(".exe") else head
+            args = toks[1:]
+            if head in ("sed", "perl") and any(re.match(r"^-[A-Za-z]*i", t) for t in args):
+                rest = [t for t in args if not t.startswith("-")]
+                if rest and _RE_SED_EXPR.match(rest[0]):
+                    rest = rest[1:]                              # 第一个非 flag 是替换表达式, 不是文件
+                paths, glob = _arg_paths(rest)
+                items += [{"path": x, "op": "edit"} for x in paths]
+                unknown = unknown or glob or not paths
+            elif head in _DELETE_HEADS:
+                paths, glob = _arg_paths(args)
+                items += [{"path": x, "op": "delete"} for x in paths]
+                unknown = unknown or glob or not paths
+            elif head in _MOVE_HEADS:
+                paths, glob = _arg_paths(args)
+                items += [{"path": x, "op": "move"} for x in paths]
+                unknown = unknown or glob or len(paths) < 2
+            elif head in _COPY_HEADS:
+                paths, glob = _arg_paths(args)
+                items += [{"path": paths[-1], "op": "write"}] if paths else []
+                unknown = unknown or glob or not paths
+            elif head in _TOUCH_HEADS:
+                paths, glob = _arg_paths(args)
+                items += [{"path": x, "op": "write"} for x in paths]
+                unknown = unknown or glob or not paths
+            elif head == "tee":
+                paths, glob = _arg_paths(args)
+                items += [{"path": x, "op": "write"} for x in paths]
+                unknown = unknown or glob or not paths
+            elif head in _PS_WRITE_HEADS:
+                items += [{"path": x, "op": "write"} for x in _ps_target(args)]
+                unknown = unknown or not _ps_target(args)
+            elif head == "git":
+                subs = [t for t in args if not t.startswith("-")]
+                gsub = subs[0].lower() if subs else ""
+                if gsub in ("checkout", "restore", "switch"):
+                    if "--" in args:
+                        paths, glob = _arg_paths(args[args.index("--") + 1:])
+                        items += [{"path": x, "op": "revert"} for x in paths]
+                        unknown = unknown or glob or not paths
+                    else:
+                        unknown = True                            # 切分支 / 整体还原: 工作区变了, 但不知道哪些文件
+                elif gsub == "reset":
+                    unknown = unknown or any(t == "--hard" for t in args)
+                elif gsub in _GIT_WIPES:
+                    unknown = True
+                elif gsub == "rm":
+                    paths, glob = _arg_paths(subs[1:])
+                    items += [{"path": x, "op": "delete"} for x in paths]
+                    unknown = unknown or glob or not paths
+                elif gsub == "mv":
+                    paths, glob = _arg_paths(subs[1:])
+                    items += [{"path": x, "op": "move"} for x in paths]
+                    unknown = unknown or glob or len(paths) < 2
+                elif gsub not in _GIT_BENIGN:
+                    understood = False
+            elif head in _WIPE_HEADS:
+                unknown = True                                    # 解压 / 打补丁 / 同步: 动了一批文件, 清单给不出
+            elif head in _SCRIPT_HEADS:
+                if _RE_HEREDOC.search(seg):
+                    unknown = True                                # 内联脚本: 它自己可能写文件
+                else:
+                    understood = False
+            elif head in _BENIGN_HEADS:
+                pass                                              # 建目录 / 改权限: 不动文件内容
+            elif not _RE_REDIR_TGT.search(part):
+                understood = False
+    return items, unknown, understood
+
+
+def patch_stats(tur: dict) -> dict | None:
+    """Edit / Write 的返回里带着**实际打上去的补丁** (structuredPatch): 数它的 +/- 行 —— 比按请求算更准,
+    Write 覆盖掉多少行也只有这里知道。userModified 说明这个文件在 Claude 读过之后被人改过。"""
+    sp = tur.get("structuredPatch")
+    if not isinstance(sp, list) or not sp:
+        return None
+    add = dele = 0
+    for h in sp:
+        for ln in (h.get("lines") or []) if isinstance(h, dict) else []:
+            t = str(ln)[:1]
+            if t == "+":
+                add += 1
+            elif t == "-":
+                dele += 1
+    return {"path": tur.get("filePath") or tur.get("file_path"), "add": add, "del": dele,
+            "user_modified": bool(tur.get("userModified"))}
+
+
+def file_changes(name: str, inp: dict | None, stage: str | None = None) -> dict | None:
+    """一次调用改了哪些文件 -> {"src": "true"|"inferred", "items": [...], "unknown": bool}; 没改 -> None。
+
+    items 里每条: {"path", "op", "add", "del"}; add / del 是**这次请求的**行数变化:
+    Edit 用新旧文本的行数 (真值), Write 只知道写了多少行 (覆盖前多大**不知道**), 其余为 None。"""
+    inp = inp or {}
+    if name in ("Edit", "MultiEdit"):
+        path = inp.get("file_path")
+        edits = inp.get("edits") if isinstance(inp.get("edits"), list) else [inp]
+        add = dele = 0
+        approx = False
+        for e in edits:
+            if not isinstance(e, dict):
+                continue
+            add += _lines(e.get("new_string"))
+            dele += _lines(e.get("old_string"))
+            approx = approx or bool(e.get("replace_all"))
+        if not path:
+            return None
+        return {"src": "true", "unknown": False,
+                "items": [{"path": str(path), "op": "edit", "add": add, "del": dele, "approx": approx}]}
+    if name == "Write":
+        path = inp.get("file_path")
+        if not path:
+            return None
+        return {"src": "true", "unknown": False,
+                "items": [{"path": str(path), "op": "write", "add": _lines(inp.get("content")), "del": None}]}
+    if name == "NotebookEdit":
+        path = inp.get("notebook_path") or inp.get("file_path")
+        if not path:
+            return None
+        op = {"insert": "write", "delete": "delete"}.get(str(inp.get("edit_mode") or ""), "edit")
+        return {"src": "true", "unknown": False, "items": [{"path": str(path), "op": op, "add": None, "del": None}]}
+    if name in ("Bash", "PowerShell"):
+        items, unknown, understood = _bash_changes(inp.get("command"))
+        if stage == "修改" and not items and not understood:
+            unknown = True                                   # 看得出在改, 但命令没看懂 -> 如实记一笔
+        if not items and not unknown:
+            return None
+        seen, uniq = set(), []
+        for it in items:                                     # 同一条命令里同一个文件只记一次
+            k = (it["path"], it["op"])
+            if k not in seen:
+                seen.add(k)
+                uniq.append({"path": it["path"], "op": it["op"], "add": None, "del": None})
+        return {"src": "inferred", "unknown": unknown, "items": uniq}
+    return None
+
+
+_RE_SCRATCH = re.compile(r"(^|/)(temp|tmp)/claude/|/\.claude/|^/tmp/", re.I)   # Claude 自己的临时脚本目录
+
+
+def _norm_path(p: str, roots: list[str]) -> tuple[str, bool]:
+    """显示用的路径 + 在不在任务的工作目录里。绝对路径能落进某个 root 就转成相对的; 落不进 -> 界外 (真值比较, 不猜)。"""
+    s = str(p or "").replace("\\", "/").strip().strip("\"'")
+    while s.startswith("./"):
+        s = s[2:]
+    low = s.lower().rstrip("/")
+    for r in roots:
+        if low == r:
+            return ".", False
+        if low.startswith(r + "/"):
+            return s[len(r) + 1:], False
+    absolute = bool(re.match(r"^([A-Za-z]:/|/|\\\\)", s))
+    if _RE_SCRATCH.search(s):                                # Claude 自己的临时脚本: 路径又长又没意义, 只留尾巴
+        tail = s.split("/scratchpad/", 1)[-1] if "/scratchpad/" in s else s.rsplit("/", 1)[-1]
+        return "临时脚本/" + tail, False
+    return s, absolute                                       # 相对路径在当时的工作目录下, 不算界外
+
+
+def build_ledger(changes: list[dict], calls: list[dict], cwds) -> dict | None:
+    """任务里的所有改动 -> 改动清单。changes 由 _call_node 按时间顺序登记。
+
+    每个文件: 改了几次 / 增删多少行 / 来源(真值·推断) / 第一次与最后一次 / 是哪几次调用 (逐条可跳回放)。
+    「改完验证了没」= 最后一次改动之后有没有「验证」阶段的调用 (阶段是推断; 你在页面外手动跑的测试看不见)。"""
+    if not changes:
+        return None
+    roots = sorted({str(c).replace("\\", "/").rstrip("/").lower() for c in (cwds or set()) if c}, key=len, reverse=True)
+    files: dict = {}
+    unknown_calls: list = []
+    n_changes = 0
+    for ch in changes:
+        if ch.get("unknown"):
+            unknown_calls.append({"node": ch["id"], "t": ch.get("t")})
+        for it in ch.get("items") or []:
+            path, outside = _norm_path(it["path"], roots)
+            if not path:
+                continue
+            f = files.get(path)
+            if f is None:
+                f = files[path] = {"path": path, "n": 0, "add": 0, "del": 0, "add_known": False, "del_known": False,
+                                   "add_partial": False, "del_partial": False,
+                                   "approx": False, "outside": outside, "src": set(), "ops": {}, "t0": ch.get("t"),
+                                   "t1": ch.get("t"), "calls": []}
+            f["n"] += 1
+            n_changes += 1
+            f["src"].add(ch.get("src") or "inferred")
+            f["ops"][it["op"]] = f["ops"].get(it["op"], 0) + 1
+            if it.get("approx"):                             # replace_all: 替换了几处不知道 -> 行数只是下限
+                f["approx"] = True
+                f["add_partial"] = f["del_partial"] = True
+            if it.get("add") is None:                        # 这次改动算不出行数 (命令 / notebook): 合计只是下限
+                f["add_partial"] = True
+            else:
+                f["add"] += it["add"]
+                f["add_known"] = True
+            if it.get("del") is None:
+                f["del_partial"] = True
+            else:
+                f["del"] += it["del"]
+                f["del_known"] = True
+            if ch.get("t") is not None:
+                f["t0"] = min(f["t0"] or ch["t"], ch["t"])
+                f["t1"] = max(f["t1"] or ch["t"], ch["t"])
+            if ch["id"] not in f["calls"]:
+                f["calls"].append(ch["id"])
+    if not files and not unknown_calls:
+        return None
+    rows = []
+    for f in files.values():
+        src = f.pop("src")
+        f["src"] = "both" if len(src) > 1 else (list(src)[0] if src else "inferred")
+        f["add"] = f["add"] if f.pop("add_known") else None
+        f["del"] = f["del"] if f.pop("del_known") else None
+        rows.append(f)
+    rows.sort(key=lambda r: (-r["n"], -(r["t1"] or 0), r["path"]))
+    ts = [ch.get("t") for ch in changes if ch.get("t") is not None]
+    last_t = max(ts) if ts else None
+    # 「验证」= 阶段标注为验证的调用 (推断)。给两个数: 最后一次验证是什么、它之后又改了多少 ——
+    # 比一句「没验证」准确: 跑完测试又补了个文档, 和改完根本没跑过测试, 不是一回事。
+    vers = [c for c in calls if (c.get("meta") or {}).get("stage") == "验证" and c.get("t0") is not None]
+    verify = None
+    after_files: set = set()
+    n_after = 0
+    if vers:
+        c = max(vers, key=lambda c: c["t0"])
+        verify = {"node": c["id"], "t": c["t0"], "ok": not ({"fail", "bg-fail"} & set(c.get("flags") or [])),
+                  "label": short(c.get("label"), 80)}
+        for ch in changes:
+            if ch.get("t") is not None and ch["t"] > c["t0"]:
+                n_after += 1
+                after_files |= {_norm_path(it["path"], roots)[0] for it in ch.get("items") or []}
+    else:
+        n_after, after_files = len(changes), set(files)
+    return {"files": rows, "unknown_calls": unknown_calls, "last_change_t": last_t, "verify": verify,
+            "after_verify": {"changes": n_after, "files": len(after_files)},
+            "totals": {"files": len(rows), "changes": n_changes, "unknown": len(unknown_calls),
+                       "add": sum(r["add"] or 0 for r in rows), "del": sum(r["del"] or 0 for r in rows),
+                       "add_partial": any(r["add"] is None or r["add_partial"] for r in rows),
+                       "del_partial": any(r["del"] is None or r["del_partial"] for r in rows),
+                       "inferred": sum(1 for r in rows if r["src"] != "true"),
+                       "outside": sum(1 for r in rows if r["outside"])}}
+
+
 def fmt_dur(s: float) -> str:
     s = max(0, int(round(s)))
     if s < 60:
@@ -938,6 +1267,9 @@ def _scan_line(ft: FileTrace, o: dict, off: int) -> None:
                            "key": norm_key(name, inp), "resp": key, "skill": skill, "in_chars": in_chars,
                            "off": off, "bg": bool(inp.get("run_in_background")),
                            "wait": is_deliberate_wait(name, inp), "stage": classify_call(name, inp)}
+                    chg = file_changes(name, inp, row["stage"])
+                    if chg:
+                        row["chg"] = chg                        # 改动清单 (真值 / 推断, 见 file_changes)
                     if name.startswith("mcp__"):
                         row["in_ids"] = input_ids(inp)           # 数据依赖 (推断): 参数里的 ID -> 字段路径
                     if name in AGENT_TOOLS:
@@ -984,10 +1316,11 @@ def _scan_line(ft: FileTrace, o: dict, off: int) -> None:
                         if v not in (None, "", False):
                             extra[k2] = short(v, 200) if k2 == "summary" else v
                     interrupted = bool(tur.get("interrupted"))
+                patch = patch_stats(tur) if isinstance(tur, dict) else None
                 emit({"k": "result", "ts": ts, "tid": b.get("tool_use_id"),
                       "err": bool(b.get("is_error")) or interrupted, "interrupted": interrupted,
                       "chars": chars, "est": est, "media": media, "preview": short(txt, PREVIEW_CHARS),
-                      "extra": extra, "off": off, "ids": id_tokens(txt)})
+                      "extra": extra, "off": off, "ids": id_tokens(txt), "patch": patch})
             return
         if ft.first_user is None and origin is None and not (isinstance(content, str) and content.startswith("<")):
             full = prompt_text(content)[0]
@@ -1291,6 +1624,7 @@ class _Ctx:
         self.gloss: dict = {"skill": {}, "agent": {}, "mcp": {}}
         self.script_loc: dict = {}           # runId -> (脚本路径或 None, run transcript 目录)
         self.errs: dict = {}                 # 失败调用 id -> 返回开头 (统计页的「最近错误」用; 不进回放树)
+        self.changes: list = []              # 按时间登记的改动 (改动清单用)
 
 
 _CLAIMED: dict = {}                               # 会话目录 -> (t, 被明确引用的 agentId 集合)
@@ -1544,6 +1878,18 @@ def _call_node(r: dict, res: dict | None, ft: FileTrace, ctx: _Ctx, depth: int, 
         parts = name.split("__", 2)
         node["meta"]["server"] = parts[1] if len(parts) > 1 else "?"
     ctx.call_loc[r["id"]] = (str(ft.path), r.get("off"), (res or {}).get("off"))
+    if r.get("chg"):
+        chg = dict(r["chg"])
+        pt = (res or {}).get("patch")
+        if pt and chg["src"] == "true" and chg["items"]:      # 实际落盘的补丁 > 按请求算的行数
+            it = dict(chg["items"][0])
+            it.update(add=pt["add"], **{"del": pt["del"]})
+            it.pop("approx", None)
+            it["patched"] = True
+            if pt.get("user_modified"):
+                it["user_modified"] = True
+            chg["items"] = [it]
+        ctx.changes.append({"id": r["id"], "t": t0, **chg})
     # 三段耗时: agent / workflow 调用本身不计 (同步的会把子 agent 的模型时间误算成机器执行),
     # 它们的时间由子 agent 自己的区间承担。
     if t1 is not None and cat not in ("agent", "workflow"):
@@ -1761,6 +2107,7 @@ def build_task(task: dict, now: float | None = None, running: bool = False,
         "projects": sorted(projects),
         "stages": main_stages,
         "glossary": _used_glossary(ctx, nodes),
+        "changes": build_ledger(ctx.changes, ctx.calls, ctx.cwds | {task["prompt"].get("cwd")}),
     }
     for c in ctx.calls:
         c["meta"].pop("out_sig", None)                       # 只在判打转时用
@@ -1837,6 +2184,7 @@ def main_files(base: Path) -> list[Path]:
     return out
 
 
+LIST_FILES_CAP = 400                              # 列表行里最多带这么多个文件名 (按改动次数排); 多的在 files_more 里如实说
 _TASK_INDEX: dict[str, Path] = {}                 # task id -> 主会话文件
 _BASELINE = {"t": 0.0, "data": None}
 _BUILT: dict = {}                                 # task id -> (time, built)  明细面板短缓存
@@ -1881,9 +2229,15 @@ def list_tasks(base: Path | None = None, since: float | None = None, project: st
     for t, built, proj, subpath in _iter_built(base, since, project, running_sessions or set()):
         s = built["summary"]
         s.update(project=proj, subpath=subpath, branch=t["prompt"].get("branch"))
+        L = s.get("changes")                                   # 左栏要能按文件反查: 带上文件名与次数 (压缩成两元组)
+        s["chg"] = None if not L else {**L["totals"], "verified": bool(L["verify"]),
+                                       "after_verify": L["after_verify"]["changes"]}
+        s["files"] = [] if not L else [[f["path"], f["n"]] for f in L["files"][:LIST_FILES_CAP]]
+        s["files_more"] = 0 if not L else max(0, len(L["files"]) - LIST_FILES_CAP)
         out.append({k: s[k] for k in ("id", "session_id", "project", "projects", "subpath", "branch", "prompt",
                                        "t0", "t1", "running", "time", "tokens", "partial", "calls", "cats",
-                                       "skills", "flags", "agents", "workflows", "mcp_servers", "continuations")})
+                                       "skills", "flags", "agents", "workflows", "mcp_servers", "continuations",
+                                       "chg", "files", "files_more")})
     out.sort(key=lambda s: (not s["running"], -(s["t0"] or 0)))
     return out
 
@@ -1989,6 +2343,9 @@ def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
     ov = {"tasks": 0, "calls": 0, "active": 0.0, "fail": 0, "partial": 0, "running": 0,
           "flags": {f: 0 for f in COUNT_FLAGS}}
     ov_tok, ov_bm = 0, {}
+    chg = {"tasks": 0, "changes": 0, "add": 0, "del": 0, "inferred": 0, "unknown": 0, "outside": 0,
+           "add_partial": False, "del_partial": False, "verified_clean": 0, "changed_after": 0, "never_verified": 0}
+    chg_files: set = set()
 
     for _t, built, proj, _sub in built_iter:
         sm = built["summary"]
@@ -2131,6 +2488,47 @@ def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
                     idx[_ref("skill-call", name)].append(r)
                     acc["calls"] += 1
                     acc["fail"] += r["failed"]
+        L = sm.get("changes")                            # 改动清单: 每个数字同样挂进追溯索引
+        if L:
+            t_ref = {"kind": "task", "task": tid, "node": f"task:{tid}", "t0": sm.get("t0"),
+                     "dur": (sm.get("time") or {}).get("active"), "tokens": tk.get("total"),
+                     "calls": L["totals"]["changes"], "fail": 0,
+                     "sub": f"{L['totals']['files']} 个文件 · {L['totals']['changes']} 处改动"}
+            chg["tasks"] += 1
+            idx["chg-tasks"].append(t_ref)
+            if not L["verify"]:
+                chg["never_verified"] += 1
+                idx["chg-noverify"].append(t_ref)
+            elif L["after_verify"]["changes"]:
+                chg["changed_after"] += 1
+                idx["chg-after"].append(t_ref)
+            else:
+                chg["verified_clean"] += 1
+            for k in ("changes", "add", "del", "unknown", "outside"):
+                chg[k] += L["totals"][k]
+            chg["add_partial"] = chg["add_partial"] or L["totals"]["add_partial"]
+            chg["del_partial"] = chg["del_partial"] or L["totals"]["del_partial"]
+            chg_files |= {f["path"] for f in L["files"]}
+            seen_chg: set = set()
+            for f in L["files"]:
+                for cid in f["calls"]:
+                    r = call_refs.get(cid)
+                    if r is None or cid in seen_chg:
+                        continue
+                    seen_chg.add(cid)
+                    idx["chg-calls"].append(r)
+                    if r["name"] in ("Bash", "PowerShell"):
+                        chg["inferred"] += 1
+                        idx["chg-inferred"].append(r)
+            for u in L["unknown_calls"]:
+                r = call_refs.get(u["node"])
+                if r is not None:
+                    idx["chg-unknown"].append(r)
+                    if u["node"] not in seen_chg:
+                        seen_chg.add(u["node"])
+                        idx["chg-calls"].append(r)
+                        idx["chg-inferred"].append(r)      # 认不出文件的也是 Bash 认出来的改动, 一样要能点开
+                        chg["inferred"] += 1
         idx["tasks"].append({"kind": "task", "task": tid, "node": f"task:{tid}", "t0": sm.get("t0"),
                              "dur": (sm.get("time") or {}).get("active"), "tokens": tk.get("total"),
                              "calls": len(call_refs), "fail": task_fail,
@@ -2204,8 +2602,10 @@ def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
                "tool": dist("tool", {k: list(v.values()) for k, v in tool_occ.items()})}
     c, unp = cost(ov_bm)
     ov.update(tokens=ov_tok, cost=c, unpriced=unp)
+    chg["files"] = len(chg_files)
+    chg["changes"] = len(idx["chg-calls"])               # 以「几次调用改了文件」为准 (一次调用改多个文件只算一次)
     return {"overview": ov, "tasks": tasks, "tools": tool_rows, "skills": skill_rows, "mcp": mcp_rows,
-            "compare": compare}, dict(idx)
+            "compare": compare, "changes": chg}, dict(idx)
 
 
 def _new_stamp() -> str:

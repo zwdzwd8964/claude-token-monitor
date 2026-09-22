@@ -440,6 +440,14 @@ def _wf_scrub_summary(sm):
     for f in ("prompt", "prompt_full"):
         if f in sm:
             sm[f] = _wf_red(sm[f])
+    L = sm.get("changes")                            # 改动清单: 路径也过一遍脱敏 (路径里可能带 token)
+    if L:
+        for row in L.get("files") or []:
+            row["path"] = _wf_red(row["path"])
+        if L.get("verify"):
+            L["verify"]["label"] = _wf_red(L["verify"].get("label"))
+    for row in sm.get("files") or []:
+        row[0] = _wf_red(row[0])
     for m in sm.get("moments") or []:
         m["label"] = _wf_red(m.get("label"))
     for kind, d in (sm.get("glossary") or {}).items():

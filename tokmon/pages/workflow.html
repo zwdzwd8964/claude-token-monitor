@@ -149,6 +149,32 @@
   .script .ln.ag { background:#132229; }
   .script .ln.focus { background:#2b3450; } .script .ln.focus .no { color:var(--fg); }
 
+  /* ---------- S4: 改动清单 ---------- */
+  .chg { border:1px solid var(--line); border-radius:10px; background:var(--panel); padding:8px 12px 10px; margin-bottom:12px; }
+  .chg .mh { font-size:11.5px; color:var(--dim); display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+  .chg .mh b { color:var(--fg); font-weight:600; }
+  .chg .mh .sp { flex:1; }
+  .chg table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:6px; table-layout:fixed; }
+  .chg td { padding:3px 6px; border-bottom:1px solid #1a1e26; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .chg tr:last-child td { border-bottom:0; }
+  .chg tr.f { cursor:pointer; }
+  .chg tr.f:hover td { background:#171c26; }
+  .chg td.n, .chg td.l { text-align:right; font-variant-numeric:tabular-nums; color:var(--dim); width:96px; }
+  .chg td.o { color:var(--dim); font-size:11.5px; width:150px; }
+  .chg .add { color:var(--good); } .chg .del { color:var(--bad); }
+  .chg .src { font-size:11px; padding:0 5px; border-radius:5px; border:1px solid var(--line); color:var(--dim); margin-left:6px; }
+  .chg .out { color:var(--warn); font-size:11px; margin-left:4px; }
+  .ver.ok { color:var(--good); } .ver.bad { color:var(--bad); } .ver.warn { color:var(--warn); }
+  .chgline { padding:2px 8px 2px 24px; font-size:12px; color:var(--dim); cursor:pointer; display:flex; gap:8px; }
+  .chgline:hover { background:#171c26; color:var(--fg); }
+  .chgline .t { font-variant-numeric:tabular-nums; flex:0 0 78px; }
+  .chgline .p { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .secnav { position:sticky; top:0; z-index:4; background:#12151b; border-bottom:1px solid var(--line);
+      display:flex; gap:2px; margin:-16px -20px 12px; padding:6px 20px 0; overflow-x:auto; }
+  .secnav button { border:0; border-bottom:2px solid transparent; border-radius:0; background:transparent;
+      color:var(--dim); font-size:12.5px; padding:5px 10px 6px; white-space:nowrap; }
+  .secnav button.on { color:var(--fg); border-bottom-color:var(--accent); }
+
   /* ---------- S3: 回放 / 统计 切换 + 统计子页 ---------- */
   .right { display:flex; flex-direction:column; min-width:0; min-height:0; }
   .vtabs { flex:0 0 auto; display:flex; gap:4px; padding:6px 16px 0; border-bottom:1px solid var(--line); background:#12151b; }
@@ -344,6 +370,11 @@ let ST_SORT = {tools: "time", skills: "time"};
 let ST_MORE = {tools: false, skills: false, cmp: false, mcp: {}};
 let CMP_DIM = "skill", CMP_METRIC = "dur";
 let DRILL = null;             // 追溯抽屉: {ref, flag, sort, title, items, total, tasks}
+// S4: 改动清单
+let CHG_ALL = false, CHG_TL = false, CHG_OPEN = new Set(), ST_SEC = "ov";
+const OP_ZH = {edit: "改", write: "写", delete: "删", move: "移", revert: "还原"};
+const OP_TIP = {edit: "Edit / sed -i 之类的就地修改", write: "Write / 重定向 / cp / touch：整体写入或新建",
+                delete: "rm / Remove-Item：删除", move: "mv / 改名", revert: "git checkout / restore：还原成仓库里的版本"};
 const WIN_TXT = {today: "今天", "7d": "近 7 天", "30d": "近 30 天", all: "全部时间"};
 const CMP_DIMS = [["skill", "Skill"], ["phase", "Workflow 阶段"], ["role", "Agent 角色"], ["tool", "工具"]];
 const CMP_NOTE = {
@@ -446,11 +477,17 @@ async function loadTasks(silent) {
   }
 }
 
+function fileHits(t) {        // 搜索词命中的文件 (按文件反查: 哪次任务改过它)
+  if (!QTEXT) return [];
+  const ws = QTEXT.split(/\s+/);
+  return (t.files || []).filter(f => ws.some(w => f[0].toLowerCase().includes(w)));
+}
 function taskMatches(t) {
   if (PROJ && t.project !== PROJ && !(t.projects || []).includes(PROJ)) return false;
   if (!QTEXT) return true;
   const hay = [t.prompt, t.project, (t.skills || []).join(" "), (t.mcp_servers || []).join(" "),
-               (t.workflows || []).map(w => w.label).join(" ")].join(" ").toLowerCase();
+               (t.workflows || []).map(w => w.label).join(" "),
+               (t.files || []).map(f => f[0]).join(" ")].join(" ").toLowerCase();
   return QTEXT.split(/\s+/).every(w => hay.includes(w));
 }
 
@@ -478,6 +515,8 @@ function renderTasks() {
     else if (t.agents) extras.push("🤖 " + t.agents + " agent");
     if ((t.skills || []).length) extras.push("◆ " + t.skills.slice(0, 2).join(", "));
     if ((t.mcp_servers || []).length) extras.push("mcp·" + t.mcp_servers.join(","));
+    if (t.chg && t.chg.files) extras.push("✎ " + t.chg.files + " 文件");
+    const hits = fileHits(t);
     html += `<div class="trow ${t.id === SEL ? "on" : ""}" data-id="${esc(t.id)}">
       <div class="t1"><span class="proj" title="${esc(t.project)}">${esc(t.project)}</span>
         ${t.running ? '<span class="live"><span class="dot"></span>运行中</span>' : ""}<span class="ago">${esc(fmtAgo(t.t0))}</span></div>
@@ -486,6 +525,7 @@ function renderTasks() {
         <span>${t.calls} 调用</span>${extras.map(x => `<span>${esc(x)}</span>`).join("")}
         ${bad ? `<span style="color:var(--bad)">✗${bad}</span>` : ""}${rep ? `<span style="color:var(--warn)">↻${rep}</span>` : ""}
         ${slow ? `<span style="color:#ff9e64">🐢${slow}</span>` : ""}${huge ? `<span style="color:#7dcfff">📦${huge}</span>` : ""}</div>
+      ${hits.length ? `<div class="t3" style="color:var(--accent)">✎ ${hits.slice(0, 2).map(f => `${esc(f[0])} × ${f[1]}`).join("、")}${hits.length > 2 ? ` 等 ${hits.length} 个文件` : ""}${t.files_more ? "（文件多，只带了改得最多的前 400 个）" : ""}</div>` : ""}
     </div>`;
   }
   $("#tasklist").innerHTML = html;
@@ -501,7 +541,7 @@ function dayLabel(t) {
 // ---------------------------------------------------------------- 打开任务
 async function openTask(id, keep, focus) {    // focus: 打开后跳到这个节点并打开它的明细 (从统计跳过来)
   clearTimeout(pollT);
-  if (!keep) { EXP = {}; MODE = "default"; FORCE = new Set(); closeDrawer(); }
+  if (!keep) { EXP = {}; MODE = "default"; FORCE = new Set(); CHG_ALL = false; CHG_TL = false; CHG_OPEN = new Set(); closeDrawer(); }
   SEL = id; syncUrl();
   document.querySelectorAll(".trow").forEach(el => el.classList.toggle("on", el.dataset.id === id));
   if (!keep) $("#replay").innerHTML = '<div class="welcome">加载中…</div>';
@@ -768,6 +808,7 @@ function render() {
       <span><i class="sw" style="background:var(--model)"></i>模型生成 ${esc(fmtDur(tm.model))}</span>
       <span><i class="sw" style="background:var(--wait)"></i>等你 ${esc(fmtDur(tm.wait))}</span></div>
     ${stageStrip(s.stages, true)}
+    ${changesBox(s.changes)}
     <div class="chips">${catTxt.map(x => `<span class="chip">${esc(x)}</span>`).join("")}${(s.skills || []).map(x => `<span class="chip" style="color:#9ece6a">◆ ${esc(x)}</span>`).join("")}${wfTxt.map(x => `<span class="chip" style="color:var(--model)">${esc(x)}</span>`).join("")}</div>
     <div class="chips">${anomChips || '<span class="chip ok">✓ 没有失败、打转或超大结果</span>'}${slowChip}</div>
     ${(s.moments || []).length ? `<div class="moments"><div class="mh">关键时刻（点击跳到那一步）</div>${s.moments.map(m =>
@@ -1010,6 +1051,73 @@ async function loadCall(n, drawerId) {
   } catch (e) { if (live()) $("#din-wrap").innerHTML = `<div class="muted">请求失败：${esc(e)}</div>`; }
 }
 
+// ---------------------------------------------------------------- S4: 改动清单
+function eachNode(root, fn) { const v = n => { fn(n); (n.children || []).forEach(v); }; v(root); }
+function chgLines(f) {        // ? = 这个文件还有算不出行数的改动 (命令改的 / Write 覆盖前多大不知道), 数字是下限
+  const a = f.add == null ? "" : `<span class="add">+${(+f.add).toLocaleString()}${f.add_partial ? "?" : ""}</span>`;
+  const d = f.del == null ? "" : `<span class="del">−${(+f.del).toLocaleString()}${f.del_partial ? "?" : ""}</span>`;
+  return [a, d].filter(Boolean).join(" ") || `<span title="这些改动看不出行数（命令改的 / Write 覆盖前多大不知道）">—</span>`;
+}
+function chgOps(f) {
+  return Object.entries(f.ops || {}).sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `<span title="${esc(OP_TIP[k] || k)}">${esc(OP_ZH[k] || k)}${v > 1 ? "×" + v : ""}</span>`).join(" ");
+}
+function srcTag(src) {
+  if (src === "true") return `<span class="src" title="Edit / Write / NotebookEdit：工具参数就是改动本身">真值</span>`;
+  if (src === "inferred") return `<span class="src" title="从 Bash / PowerShell 命令里认出来的，可能漏、可能误判">推断</span>`;
+  return `<span class="src" title="既有 Edit / Write 的真值，也有从命令里认出来的推断">真值+推断</span>`;
+}
+function verifyLine(L) {
+  const v = L.verify, a = L.after_verify || {};
+  if (!v) return `<span class="ver warn" title="整个任务里没有一步被判为「验证」阶段（推断）；你在这个页面之外手动跑的测试看不见">没跑过验证</span>`;
+  const tail = ` <span class="muted">（${esc(fmtClock(v.t))} ${esc(v.label)}）</span>`;
+  if (!a.changes) return `<span class="ver ${v.ok ? "ok" : "bad"}" data-chg="${esc(v.node)}" style="cursor:pointer" title="最后一次改动之后跑过验证；点击跳到那一步">`
+    + `改完验证过 ${v.ok ? "✓" : "✗ 失败"}</span>${tail}`;
+  return `<span class="ver warn" data-chg="${esc(v.node)}" style="cursor:pointer" title="最后一次验证之后又动了文件；点击跳到那次验证">`
+    + `验证之后又改了 ${a.changes} 处 / ${a.files} 个文件</span>${tail}`;
+}
+function chgCallRows(ids) {
+  const byId = {};
+  eachNode(CUR.tree, n => { if (n.kind === "call") byId[n.id] = n; });
+  return (ids || []).map(id => byId[id]).filter(Boolean).sort((a, b) => (a.t0 || 0) - (b.t0 || 0))
+    .map(n => `<div class="chgline" data-chg="${esc(n.id)}"><span class="t">${esc(fmtClock(n.t0))}</span>`
+      + `<span class="p">${esc(n.name)} · ${esc(n.label)}</span>`
+      + `${(n.flags || []).includes("fail") ? '<span class="fl fail">✗</span>' : ""}</div>`).join("");
+}
+function chgTimeline(L) {
+  const paths = {};
+  (L.files || []).forEach(f => (f.calls || []).forEach(id => (paths[id] = paths[id] || []).push(f.path)));
+  (L.unknown_calls || []).forEach(u => (paths[u.node] = paths[u.node] || []).push("（认不出改了哪个文件）"));
+  const rows = [];
+  eachNode(CUR.tree, n => { if (paths[n.id]) rows.push(n); });
+  rows.sort((a, b) => (a.t0 || 0) - (b.t0 || 0));
+  return `<div style="margin-top:6px">${rows.map(n => `<div class="chgline" data-chg="${esc(n.id)}">`
+    + `<span class="t">${esc(fmtClock(n.t0))}</span><span class="p">${esc(paths[n.id].join("、"))}</span>`
+    + `<span class="muted">${esc(n.name)}</span></div>`).join("")}</div>`;
+}
+function changesBox(L) {
+  if (!L) return "";
+  const T = L.totals, LIM = 8;
+  const files = CHG_ALL ? L.files : L.files.slice(0, LIM);
+  const rows = files.map(f => `<tr class="f" data-file="${esc(f.path)}"><td title="${esc(f.path)}">${esc(f.path)}`
+      + `${f.outside ? '<span class="out" title="改到了这个任务的工作目录以外">界外</span>' : ""}${srcTag(f.src)}</td>`
+      + `<td class="o">${chgOps(f)}</td><td class="l">${chgLines(f)}</td><td class="n">${f.n} 次</td></tr>`
+      + (CHG_OPEN.has(f.path) ? `<tr><td colspan="4" style="padding:0 0 4px">${chgCallRows(f.calls)}</td></tr>` : "")).join("");
+  const more = L.files.length > LIM ? `<button id="chgall" style="font-size:11.5px;padding:1px 8px">${CHG_ALL ? "收起" : `显示全部 ${L.files.length} 个文件`}</button>` : "";
+  const notes = [];
+  if (T.inferred) notes.push(`其中 ${T.inferred} 个文件是从命令里<b style="color:var(--fg)">推断</b>的`);
+  if (T.unknown) notes.push(`另有 <b style="color:var(--fg)">${T.unknown} 处</b>改动认不出改了哪个文件（内联脚本 / git reset / 解压…）`);
+  if (T.outside) notes.push(`${T.outside} 个文件在工作目录以外`);
+  return `<div class="chg"><div class="mh">改动　<b>${T.files} 个文件</b> · <b>${T.changes} 处</b>`
+    + ` · ${T.add ? `<span class="add">+${T.add.toLocaleString()}${T.add_partial ? "?" : ""}</span>` : ""}`
+    + `${T.del ? ` <span class="del">−${T.del.toLocaleString()}${T.del_partial ? "?" : ""}</span>` : ""}`
+    + ` · ${verifyLine(L)}<span class="sp"></span>`
+    + `<button id="chgtl" style="font-size:11.5px;padding:1px 8px">${CHG_TL ? "收起时间线" : "改动时间线"}</button>${more}</div>`
+    + (CHG_TL ? chgTimeline(L) : `<table>${rows}</table>`)
+    + (notes.length ? `<div class="note" style="margin-top:6px">${notes.join("；")}。行数按 Edit 的新旧文本算（真值）；Write 只知道写了多少行，覆盖前多大不知道；命令改的不给行数。</div>` : "")
+    + `</div>`;
+}
+
 // ---------------------------------------------------------------- S3: 统计子页
 // 完成判据: 每个带虚线的数字点开 = 列出同样条数的明细; 点一条 = 切到回放、打开任务、跳到那一步。
 function statsKey() { return SINCE + "|" + PROJ; }
@@ -1062,7 +1170,7 @@ function renderStats() {
     + `<span class="muted" style="font-size:12px">统计于 ${esc(fmtClock(S.computed_at))} · 跟随左边的时间范围和项目（搜索框只筛列表）</span><span class="sp"></span>`
     + `<button id="streload" title="不用缓存，按最新的 transcript 重新统计">重新统计</button></div>`;
   if (!ov.tasks) { $("#stats").innerHTML = h + '<div class="welcome" style="padding:30px 0">这个范围里没有任务。</div></div>'; return; }
-  h += '<div class="note" style="margin:0 0 12px">带虚线的数字都能点开：列出的条数就是这个数字；点其中一条，跳到回放里的那一步。</div>';
+  h += '<div class="note" style="margin:0 0 12px" id="sec-ov">带虚线的数字都能点开：列出的条数就是这个数字；点其中一条，跳到回放里的那一步。</div>';
   const kpi = (v, k) => `<div class="kpi"><div class="v">${v}</div><div class="k">${k}</div></div>`;
   h += '<div class="kpis">'
     + kpi(dn(ov.tasks, "tasks", {title: "全部任务"}), `个任务${ov.running ? ` · ${ov.running} 个运行中` : ""}`)
@@ -1077,15 +1185,40 @@ function renderStats() {
   const chip = (f, txt) => fl[f] ? `<span class="chip" title="${esc(FLAG_TIP[f] || "")}">${esc(txt)} ${dn(fl[f], "all", {flag: f, title: "全部调用 · " + (FLAG_TXT[f] || f)})}</span>` : "";
   const chips = chip("retry", "↻ 重试·推断") + chip("loop", "⟳ 打转·推断") + chip("huge", "📦 超大结果") + chip("slow", "🐢 偏慢·统计");
   if (chips) h += `<div class="chips">${chips}</div>`;
-  h += statTools(S) + statSkills(S) + statMcp(S) + statCompare(S);
+  h += secNav() + statChanges(S) + statTools(S) + statSkills(S) + statMcp(S) + statCompare(S);
   h += '<div class="foot">口径：调用耗时 = 发出到返回（后台启动只算启动那一下，和回放一致）；「偏慢」按这个工具<b style="color:var(--fg)">全部历史</b>的 p90 判（统计推断）；'
     + '「重试 / 打转」按同一命令、同一参数判（推断）；token 是 API usage 去重后的真值，≥ 表示有的段落没有归属标记（是下限）。所有文字已做尽力而为的脱敏。</div></div>';
   $("#stats").innerHTML = h;
 }
 
+const ST_SECS = [["ov", "概览"], ["chg", "改动"], ["tools", "工具"], ["skills", "Skill"], ["mcp", "MCP"], ["cmp", "对照"]];
+function secNav() {
+  return `<div class="secnav">${ST_SECS.map(([k, t]) => `<button data-sec="${k}" class="${ST_SEC === k ? "on" : ""}">${t}</button>`).join("")}</div>`;
+}
+function statChanges(S) {
+  const c = S.changes || {};
+  let h = '<div class="stsec" id="sec-chg"><h3>改动</h3><span class="muted">这些任务动了哪些文件；行数按 Edit 的新旧文本算（真值），命令改的算推断</span></div>';
+  if (!c.tasks) return h + '<div class="note">这个范围里没有改动。</div>';
+  const kpi = (v, k) => `<div class="kpi"><div class="v">${v}</div><div class="k">${k}</div></div>`;
+  return h + '<div class="kpis">'
+    + kpi(dn(c.tasks, "chg-tasks", {title: "有改动的任务"}), "个任务有改动")
+    + kpi(dn(c.changes, "chg-calls", {title: "改了文件的调用"}), "次调用改了文件")
+    + kpi(`<span title="去重后的文件数；文件不是回放里的一步，所以点不开">${Number(c.files).toLocaleString()}</span>`, "个文件被改过")
+    + kpi(`<span class="add">+${Number(c.add).toLocaleString()}${c.add_partial ? "?" : ""}</span> <span class="del">−${Number(c.del).toLocaleString()}${c.del_partial ? "?" : ""}</span>`,
+          "行（? = 有些改动看不出行数）")
+    + '</div><div class="chips">'
+    + `<span class="chip" title="从 Bash / PowerShell 命令里认出来的改动">推断的改动 ${dn(c.inferred, "chg-inferred", {title: "从命令里认出来的改动"})}</span>`
+    + `<span class="chip" title="看得出在改，但命令里认不出是哪个文件（内联脚本 / git reset --hard / 解压…）">认不出文件 ${dn(c.unknown, "chg-unknown", {title: "认不出改了哪个文件的改动"})}</span>`
+    + `<span class="chip" title="改到了任务工作目录以外的文件；Claude 自己的临时脚本目录不算">界外文件 ${Number(c.outside).toLocaleString()}</span>`
+    + '</div><div class="chips">'
+    + `<span class="chip ok" title="最后一次验证之后没再动文件">改完验证过 ${Number(c.verified_clean).toLocaleString()}</span>`
+    + `<span class="chip warn">验证后又改了 ${dn(c.changed_after, "chg-after", {title: "最后一次验证之后又改了文件的任务"})}</span>`
+    + `<span class="chip warn">全程没验证 ${dn(c.never_verified, "chg-noverify", {title: "整个任务没有一步被判为验证的任务"})}</span>`
+    + '</div>';
+}
 function statTools(S) {
   const rows = (S.tools || []).filter(r => r.cat !== "ask"), waits = (S.tools || []).filter(r => r.cat === "ask");
-  let h = '<div class="stsec"><h3>工具排行</h3><span class="muted">默认按耗时合计排，点表头换排序；MCP 按 server 合成一行，单个工具在下面「MCP 健康」里看</span></div>';
+  let h = '<div class="stsec" id="sec-tools"><h3>工具排行</h3><span class="muted">默认按耗时合计排，点表头换排序；MCP 按 server 合成一行，单个工具在下面「MCP 健康」里看</span></div>';
   if (!rows.length && !waits.length) return h + '<div class="note">这个范围里没有调用。</div>';
   const sorted = sortRows(rows, ST_SORT.tools), LIM = 15, show = ST_MORE.tools ? sorted : sorted.slice(0, LIM);
   const body = show.map(r => {
@@ -1114,7 +1247,7 @@ function statTools(S) {
 
 function statSkills(S) {
   const rows = S.skills || [];
-  let h = '<div class="stsec"><h3>Skill 排行</h3><span class="muted">一个任务里用到它算一次；token 是归属到它的真值</span></div>';
+  let h = '<div class="stsec" id="sec-skills"><h3>Skill 排行</h3><span class="muted">一个任务里用到它算一次；token 是归属到它的真值</span></div>';
   if (!rows.length) return h + '<div class="note">这个范围里没有用到 skill。</div>';
   const sorted = sortRows(rows, ST_SORT.skills), LIM = 12, show = ST_MORE.skills ? sorted : sorted.slice(0, LIM);
   const UNK = "每次用它之后的行都没有归属标记（Claude Code 未标注），它管到哪不知道，所以时长和 token 都拿不到";
@@ -1137,7 +1270,7 @@ function statSkills(S) {
 
 function statMcp(S) {
   const rows = S.mcp || [];
-  let h = '<div class="stsec"><h3>MCP 健康</h3><span class="muted">按 server 分开看：调用、失败率、耗时，最近的错误原文（已脱敏）</span></div>';
+  let h = '<div class="stsec" id="sec-mcp"><h3>MCP 健康</h3><span class="muted">按 server 分开看：调用、失败率、耗时，最近的错误原文（已脱敏）</span></div>';
   if (!rows.length) return h + '<div class="note">这个范围里没有 MCP 调用。</div>';
   return h + rows.map(m => {
     const t = x => `mcp·${m.server} · ${x}`;
@@ -1186,7 +1319,7 @@ function statCompare(S) {
   const LIM = 12, rows = ST_MORE.cmp ? all : all.slice(0, LIM);
   const noTok = CMP_DIM === "tool";
   const dimTxt = (CMP_DIMS.find(d => d[0] === CMP_DIM) || [])[1] || "";
-  let h = '<div class="stsec"><h3>跨任务对照</h3><span class="muted">同一个东西在不同任务里表现如何：每个点是一次，竖线是中位；点一个点跳到回放</span></div>';
+  let h = '<div class="stsec" id="sec-cmp"><h3>跨任务对照</h3><span class="muted">同一个东西在不同任务里表现如何：每个点是一次，竖线是中位；点一个点跳到回放</span></div>';
   h += `<div class="tools" style="margin:0 0 8px"><span class="seg2">${CMP_DIMS.map(([k, t]) => `<button data-cmp="${k}" class="${CMP_DIM === k ? "on" : ""}">${t}</button>`).join("")}</span>`
     + `<span class="seg2">${[["dur", "耗时"], ["tokens", "token"], ["calls", "调用数"]].map(([k, t]) => `<button data-metric="${k}" class="${CMP_METRIC === k ? "on" : ""}"${k === "tokens" && noTok ? ' disabled title="工具调用没有 token 真值"' : ""}>${t}</button>`).join("")}</span></div>`;
   h += `<div class="note" style="margin:0 0 8px">${esc(CMP_NOTE[CMP_DIM])}</div>`;
@@ -1291,6 +1424,15 @@ document.addEventListener("click", e => {
   if (vt) { switchView(vt.dataset.view); return; }
   const dr = e.target.closest("[data-drill]");
   if (dr) { openDrill(dr.dataset.drill, dr.dataset.flag, dr.dataset.sort, dr.dataset.title); return; }
+  const fr = e.target.closest("tr.f[data-file]");
+  if (fr) { const k = fr.dataset.file; CHG_OPEN.has(k) ? CHG_OPEN.delete(k) : CHG_OPEN.add(k); render(); return; }
+  const cg = e.target.closest("[data-chg]");
+  if (cg && CUR) { reveal(cg.dataset.chg); openDrawer(cg.dataset.chg); return; }
+  if (e.target.id === "chgall") { CHG_ALL = !CHG_ALL; render(); return; }
+  if (e.target.id === "chgtl") { CHG_TL = !CHG_TL; render(); return; }
+  const sec = e.target.closest("[data-sec]");
+  if (sec) { ST_SEC = sec.dataset.sec; const el = document.getElementById("sec-" + ST_SEC), box = $("#stats");
+             if (el && box) box.scrollTop = Math.max(0, el.offsetTop - 70); renderStats(); return; }
   const gt = e.target.closest("[data-go-task]");
   if (gt) { goTo(gt.dataset.goTask, gt.dataset.goNode, gt.dataset.goKind); return; }
   const ds = e.target.closest("[data-dsort]");

@@ -56,26 +56,30 @@ vm.runInContext(js, ctx);
 const errors = [];
 let drawers = 0;
 const seen = { stage_strip: false, band: false, dep_badge: false, script_view: false, glossary: false, full_text: false,
-               stats: false, dots: false, mcp_errors: false, drill_jump: false };
+               stats: false, dots: false, mcp_errors: false, drill_jump: false, changes: false, chg_jump: false };
 let statDrills = 0, statJumps = 0;
 function run(label, fn) {
-  try { fn(); } catch (e) { errors.push(`${label}: ${e && e.stack ? e.stack.split("\n").slice(0, 2).join(" | ") : e}`); }
+  try { fn(); } catch (e) {
+    const at = (e && e.stack ? e.stack.split("\n").filter(l => /\bat /.test(l))[0] : "") || "";
+    errors.push(`${label}: ${(e && e.message) || e} @ ${at.trim()}`);
+  }
 }
 // 页面只在异常时写「请求失败：」(fetch 抛错, 或 try 块里的 JS 错误被 catch 住)。工具输出里本来就可能有 TypeError 字样,
 // 所以不拿错误名去扫 DOM; 同步异常由 run() 抓, 异步里漏掉的由 unhandledRejection 抓。
-const BAD = /请求失败：/;
+const BAD = /class="muted">请求失败：/;        // 只认页面自己写的那段标记 (工具输出里本来就可能出现这四个字)
 process.on("unhandledRejection", e => errors.push("unhandledRejection: " + (e && e.stack ? String(e.stack).split(/\r?\n/)[0] : e)));
 function scanDom(label) {
   for (const [id, e] of Object.entries(els)) {
     const h = String(e.innerHTML || "") + String(e.textContent || "");
     const m = h.match(BAD);
-    if (m) errors.push(`${label}: #${id} 里出现「${m[0]}」`);
+    if (m) errors.push(`${label}: #${id} 里出现「${m[0]}」 ${h.slice(Math.max(0, m.index - 40), m.index + 90)}`);
   }
 }
 const tick = () => new Promise(r => setImmediate(r));
 
 const attrs = (html, rx) => [...String(html).matchAll(rx)].map(m => m.slice(1));
 async function jumpCheck(label, task, node, kind) {
+  if (!(DATA.tasks || []).some(t => t.summary && t.summary.id === task)) return;   // 这个任务没导出 (脚手架只带了几个)
   ctx.__G = [task, node, kind];
   run("goTo " + label, () => vm.runInContext("goTo(__G[0], __G[1], __G[2])", ctx));
   for (let i = 0; i < 4; i++) await tick();
@@ -139,6 +143,20 @@ async function statsSmoke() {
     if (replay.includes("流程（推断")) seen.stage_strip = true;
     if (replay.includes('class="r band"')) seen.band = true;
     if (replay.includes('class="fl dep"')) seen.dep_badge = true;
+    if (replay.includes('class="chg"')) {                       // S4 改动块: 展开 / 时间线 / 点一条跳到那一步
+      seen.changes = true;
+      run("changes " + name, () => vm.runInContext(
+        "(() => { CHG_ALL = true; CHG_TL = true; render(); CHG_TL = false; render();"
+        + " const f = ((CUR.summary.changes || {}).files || [])[0]; if (f) { CHG_OPEN = new Set([f.path]); render(); } })()", ctx));
+      const ids = attrs(String(el("replay").innerHTML), /data-chg="([^"]*)"/g).map(x => x[0]);
+      if (ids.length) {
+        ctx.__C = ids[0];
+        run("chg jump " + name, () => vm.runInContext("reveal(__C); openDrawer(__C)", ctx));
+        if (vm.runInContext("DRAWER", ctx) === ids[0]) seen.chg_jump = true;
+        else errors.push(`改动块跳转没打开明细: ${ids[0]}`);
+      }
+      run("changes reset " + name, () => vm.runInContext("CHG_ALL = false; CHG_OPEN = new Set(); render()", ctx));
+    }
     for (const mode of ["all", "none", "default"]) run(`mode ${mode} ${name}`, () => vm.runInContext(`MODE='${mode}'; EXP={}; rerenderGrid()`, ctx));
     run("events " + name, () => vm.runInContext("SHOW_EVENTS=true; rerenderGrid(); SHOW_EVENTS=false", ctx));
     run("stage all " + name, () => vm.runInContext("STAGE_ALL=true; render(); STAGE_ALL=false; render()", ctx));

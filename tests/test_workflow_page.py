@@ -103,7 +103,7 @@ def _export(base, out: Path) -> dict:
                 data["scripts"][n["run_id"]] = serve._wf_script(base, {"task": [t["id"]], "run": [n["run_id"]]})
     st = serve._wf_stats(base, {"since": ["all"]})
     data["stats"] = st
-    refs = {"tasks", "all"}
+    refs = {"tasks", "all", "chg-tasks", "chg-calls", "chg-inferred", "chg-unknown", "chg-after", "chg-noverify"}
     for r in st["tools"]:
         refs |= {r["ref"], r["ref_occ"]}
     for r in st["skills"]:
@@ -132,6 +132,6 @@ def test_workflow_page_runs_clean(session, tmp_path):
     assert report["drawers"] >= 10
     seen = report["seen"]
     for k in ("stage_strip", "band", "dep_badge", "script_view", "glossary", "full_text",
-              "stats", "dots", "mcp_errors", "drill_jump"):
+              "stats", "dots", "mcp_errors", "drill_jump", "changes", "chg_jump"):
         assert seen[k], f"页面没有渲染出 {k}"
     assert report["stat_drills"] >= 15 and report["stat_jumps"] >= 15, report
