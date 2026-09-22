@@ -114,7 +114,7 @@ python -m tokmon serve
 | [EVOLUTION.md](EVOLUTION.md) | 逐代进化史 + 证据分级（2026-07-01） | 📜 历史快照 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本变更 | ✅ 已恢复更新 |
 | [docs/atlas.html](docs/atlas.html) | 系统图谱（离线 Mermaid） | 📜 停在 07-01，不含 billing/steer |
-| [WORKFLOW_TAB_PLAN.md](WORKFLOW_TAB_PLAN.md) | **`/workflow` 工作流追踪器一页规格**（当前优先级） | 🟡 S1 ✅ · S2 ✅ · S3 已交付（0.12.0），待你验收 |
+| [WORKFLOW_TAB_PLAN.md](WORKFLOW_TAB_PLAN.md) | **`/workflow` 工作流追踪器一页规格** | ✅ S1–S3 全部验收（0.10.0 → 0.12.0） |
 | [RUNNER_SDK_PLAN.md](RUNNER_SDK_PLAN.md) | steer 改用 Agent SDK | ✅ 已实施 |
 | [SESSIONS_FILTER_PLAN.md](SESSIONS_FILTER_PLAN.md) | `/sessions` 过滤器 V1 | ✅ 已实施 |
 | [REMOTE_CONTROL_PLAN.md](REMOTE_CONTROL_PLAN.md) | 远程 steer + 上手机 | 🟡 S1/S0 已实施，S2/S3 未做 |

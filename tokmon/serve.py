@@ -862,7 +862,7 @@ def run_serve(base: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     print(f"Claude Mission Control 已启动 ({scope}):  {url}")
     print(f"  · 对话/Session 状态  {url}sessions")
     print(f"  · Token 看板         {url}tokens")
-    print(f"  · 工作流回放          {url}workflow  (一次提问怎么被完成的: 调用树 + 时间轴)")
+    print(f"  · 工作流              {url}workflow  (回放: 一次提问怎么被完成的 · 统计: 排行 / MCP 健康 / 跨任务对照)")
     _chans = [c for c, ok in (("Telegram", notifier.cfg.telegram_configured()),
                               ("Pushover", notifier.cfg.pushover_configured())) if ok]
     if _chans:
