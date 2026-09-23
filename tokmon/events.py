@@ -31,6 +31,11 @@ _DEFAULT_SEVERITY = {
     "TOKEN_BUDGET_WARNING": "warning",
     "PROCESS_CRASHED": "critical",
     "COMMAND_ISSUED": "info",
+    # 改动与风险 (§4 质量/风险类): 规则在真实数据上审过精确率之前一律 info (误报零容忍) —— notify 不推 info
+    "DESTRUCTIVE_OP": "info",
+    "ERROR_SPIKE": "info",
+    "REPEATED_FILE_EDIT": "info",
+    "LARGE_DIFF": "info",
 }
 EVENT_TYPES = set(_DEFAULT_SEVERITY)
 
@@ -39,6 +44,7 @@ _ALLOWED_PAYLOAD = {
     "tool_name", "state_from", "state_to", "age_s", "idle_step",
     "unresolved", "state_label", "kind", "model", "branch",
     "scope", "pct",                    # 预算告警: 预算口径 + 百分比 (非敏感)
+    "rule", "count",                   # 风险事件: 规则名 + 计数 (不带路径 / 命令 / 文件名)
 }   # 故意不含 last_text/title/current_step 等对话内容 —— 事件/通知绝不带会话正文 (§6)
 
 

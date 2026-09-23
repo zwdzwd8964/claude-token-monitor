@@ -105,9 +105,10 @@ agentic coding 工具最大的痛点不是不够聪明，而是：
 | **成本** | `TOKEN_BUDGET_WARNING` | Warning(70%)→Critical(90/95%) | 接近/越过预算阈值 |
 | | `BURN_RATE_SPIKE` | Warning | 每分钟 token burn 异常飙升 |
 | | `DAILY_BUDGET_EXCEEDED` | Warning | 某项目/今日累计越线 |
-| **质量/风险** | `ERROR_SPIKE` | Critical | 连续多次失败 |
-| | `REPEATED_FILE_EDIT` | Warning | 反复编辑同一文件 |
-| | `LARGE_DIFF` | Info→Warning | 单轮生成大量 diff |
+| **质量/风险** | `DESTRUCTIVE_OP` | Info（**当前**） | rm -rf / git reset --hard / 强推 / 整棵树还原 / MCP 删除类 / DROP（只标不拦）· ✅ 0.15.0 |
+| | `ERROR_SPIKE` | Critical（**当前 Info**） | 连续多次失败（同一时间线严格相邻 ≥ 3）· ✅ 0.15.0 |
+| | `REPEATED_FILE_EDIT` | Warning（**当前 Info**） | 反复编辑同一文件（改 → 验证失败且失败点了它的名 ≥ 3 轮）· ✅ 0.15.0 |
+| | `LARGE_DIFF` | Info→Warning（**当前 Info**） | 单次调用增删 ≥ 1200 行 / 一个任务动 ≥ 200 个文件 · ✅ 0.15.0 |
 | | `SENSITIVE_FILE_TOUCH` | Warning | 改 package / config / env / 密钥类文件 |
 | | `SENSITIVE_DIR_TOUCH` | Warning→Critical | 触碰敏感目录 |
 | **进程** | `PROCESS_CRASHED` | Critical | 被监控进程消失/崩溃 |
@@ -292,6 +293,9 @@ agentic coding 工具最大的痛点不是不够聪明，而是：
 
 - **backlog · 风险事件（"乱改"象限——四象限里最弱的一格）**
   - `REPEATED_FILE_EDIT` / `LARGE_DIFF` / `SENSITIVE_FILE_TOUCH` / `ERROR_SPIKE`——事件流之上的质量 / 风险源。
+    **✅ 0.15.0（改动与风险 S3）落地了其中三类 + `DESTRUCTIVE_OP`**，规则与 `/workflow` 回放同一套（`trace.session_brief`）；
+    精确率审完之前**一律 info**（notify 不推 info → 通知仍关），payload 只有规则名 / 计数 / 种类，不带路径与命令（§6）。
+    `SENSITIVE_FILE_TOUCH` 仍在 backlog（见 [CHANGE_RISK_PLAN.md](CHANGE_RISK_PLAN.md) §6）。
     推进（events）、卡住（activity）、烧钱（tokmon）都有了，**"它在干危险 / 蠢事吗"是唯一还空着的一格**。可走填充路线，也可作为语义层的入口。
 
 ---

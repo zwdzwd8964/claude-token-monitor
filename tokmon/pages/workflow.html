@@ -199,6 +199,26 @@
   .sthead h2 { font-size:16px; margin:0; font-weight:600; }
   .sthead .sp { flex:1; }
   .stsec { margin:24px 0 8px; display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .trg { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:10px; }
+  .trc { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:9px 12px 7px; }
+  .trc .gh { font-size:11px; color:var(--dim); letter-spacing:.5px; margin-bottom:2px; }
+  .trc .mn { font-size:12px; color:var(--dim); cursor:help; }
+  .trc .mv { font-size:18px; font-weight:600; font-variant-numeric:tabular-nums; margin-right:8px; }
+  .trc .dl { font-size:11.5px; white-space:nowrap; }
+  .dl.good { color:var(--good); } .dl.bad { color:var(--bad); } .dl.neu, .dl.flat, .dl.na { color:var(--dim); }
+  .trc svg { display:block; width:100%; height:42px; margin-top:4px; overflow:visible; }
+  .trc .ax { display:flex; font-size:10.5px; color:var(--dim); } .trc .ax span:last-child { margin-left:auto; }
+  svg .ln { fill:none; stroke:var(--accent); stroke-width:1.6; vector-effect:non-scaling-stroke; }
+  svg .dt { fill:var(--accent); } svg .dt.sp { fill:#12151b; stroke:var(--dim); stroke-width:1.2; vector-effect:non-scaling-stroke; }
+  svg .pv { stroke:#5a6275; stroke-dasharray:3 3; stroke-width:1; vector-effect:non-scaling-stroke; }
+  svg .tp { fill:transparent; cursor:pointer; } svg .tp:hover { fill:rgba(122,162,247,.12); }
+  .mb { display:inline-block; vertical-align:middle; width:84px; height:18px; }
+  .mb rect.b { fill:#3d59a1; } .mb rect.f { fill:var(--bad); }
+  .cz { display:flex; gap:8px; align-items:baseline; padding:3px 0; font-size:12px; border-top:1px solid #1a1e26; }
+  .cz:first-of-type { border-top:0; }
+  .cz .czn { min-width:52px; text-align:right; white-space:nowrap; color:var(--bad); }
+  .cz .czt { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace,Consolas,monospace; font-size:11.5px; }
+  .cz .muted { white-space:nowrap; font-size:11px; }
   .stsec h3 { margin:0; font-size:14px; font-weight:600; }
   .stsec .muted { font-size:12px; }
   .tblw { overflow-x:auto; border:1px solid var(--line); border-radius:10px; background:#12151b; }
@@ -330,7 +350,7 @@ const FLAG_TIP = {fail:"工具返回 is_error，或命令被中断",
                   "bg-fail":"它在后台跑，结束时发回的完成通知报告失败",
                   retry:"推断：和此前一次失败的调用是同一件事（同命令 / 同参数），又试了一次",
                   loop:"推断：同一件事做了 3 次及以上，而且每次结果都一样（没有可观察的进展）。改了代码再重跑、输出变了的不算",
-                  slow:"统计推断：耗时超过这个工具全部历史调用的 p90（按定义约 1/10 的调用会超过）。样本 ≥ 20 次、耗时 ≥ 1 秒才判；后台启动与 sleep / 轮询 / Monitor 这类故意的等待不算",
+                  slow:"统计推断：耗时超过同一类命令全部历史的 p95（按定义约 1/20 的调用会超过）。Bash / PowerShell 按命令族各算各的（uv run pytest、git status、npm run build…），别的工具按工具名。样本 ≥ 20 次、耗时 ≥ 1 秒才判；后台启动与 sleep / 轮询 / Monitor 这类故意的等待不算",
                   huge:"返回内容 ≥ 4 万字符（约 1 万 token），会一直留在上下文里，让后面每一轮都更贵",
                   persisted:"输出太大，Claude Code 把全文另存到文件，上下文里只放了约 2KB 的预览——不是「撑大上下文」",
                   running:"还在跑", "no-result":"没等到结果（被打断 / 会话结束 / 之后的步骤已经越过它）",
@@ -919,7 +939,7 @@ function codeBlock(id, text, cls) {
 let DRAWER = null, DRAWER_REQ = 0;          // 抽屉当前展示的节点 + 请求序号: 晚到的旧响应一律丢弃
 function drawerLive(my, drawerId, task) { return my === DRAWER_REQ && DRAWER === drawerId && SEL === task; }
 function flagNotes(flags, meta) {
-  return [...new Set(flags)].map(f => `<div class="note"><b>${esc(FLAG_TXT[f] || f)}</b>　${esc(FLAG_TIP[f] || "")}${f === "slow" && meta && meta.p90 ? `（历史 p90 ${esc(fmtDur(meta.p90))}）` : ""}</div>`).join("");
+  return [...new Set(flags)].map(f => `<div class="note"><b>${esc(FLAG_TXT[f] || f)}</b>　${esc(FLAG_TIP[f] || "")}${f === "slow" && meta && meta.slow_at ? `（同类命令「${esc(meta.fam || "")}」历史 p95 ${esc(fmtDur(meta.slow_at))}）` : ""}</div>`).join("");
 }
 function openDrawer(id) {
   const raw = findNode(CUR.tree, id);
@@ -1217,17 +1237,117 @@ function renderStats() {
   const chip = (f, txt) => fl[f] ? `<span class="chip" title="${esc(FLAG_TIP[f] || "")}">${esc(txt)} ${dn(fl[f], "all", {flag: f, title: "全部调用 · " + (FLAG_TXT[f] || f)})}</span>` : "";
   const chips = chip("retry", "↻ 重试·推断") + chip("loop", "⟳ 打转·推断") + chip("huge", "📦 超大结果") + chip("slow", "🐢 偏慢·统计");
   if (chips) h += `<div class="chips">${chips}</div>`;
-  h += secNav() + statChanges(S) + statRisks(S) + statTools(S) + statSkills(S) + statMcp(S) + statCompare(S);
-  h += '<div class="foot">口径：调用耗时 = 发出到返回（后台启动只算启动那一下，和回放一致）；「偏慢」按这个工具<b style="color:var(--fg)">全部历史</b>的 p90 判（统计推断）；'
+  h += secNav() + statTrends(S) + statChanges(S) + statRisks(S) + statTools(S) + statSkills(S) + statMcp(S) + statCompare(S);
+  h += '<div class="foot">口径：调用耗时 = 发出到返回（后台启动只算启动那一下，和回放一致）；「偏慢」按同一类命令<b style="color:var(--fg)">全部历史</b>的 p95 判（统计推断，Bash 按命令族各算各的）；'
     + '「重试 / 打转」按同一命令、同一参数判（推断）；token 是 API usage 去重后的真值，≥ 表示有的段落没有归属标记（是下限）。所有文字已做尽力而为的脱敏。</div></div>';
   $("#stats").innerHTML = h;
 }
 
-const ST_SECS = [["ov", "概览"], ["chg", "改动"], ["risk", "风险"], ["tools", "工具"], ["skills", "Skill"], ["mcp", "MCP"], ["cmp", "对照"]];
+const ST_SECS = [["ov", "概览"], ["trend", "趋势"], ["chg", "改动"], ["risk", "风险"], ["tools", "工具"], ["skills", "Skill"], ["mcp", "MCP"], ["cmp", "对照"]];
 const RULE_ZH = {destructive: "破坏性操作", "error-spike": "连续失败", thrash: "改了又改没通过",
                  "large-edit": "单次大改动", "large-task": "一个任务动很多文件", outside: "改到工作目录以外"};
 function secNav() {
   return `<div class="secnav">${ST_SECS.map(([k, t]) => `<button data-sec="${k}" class="${ST_SEC === k ? "on" : ""}">${t}</button>`).join("")}</div>`;
+}
+// ---- 改动与风险 S3: 趋势 (vs 上一周期 + 小趋势线)。粒度跟着时间范围走; 样本太少的桶画空心、不连线、不参加比较
+const TR_UNIT = {hour: "按小时", day: "按天", week: "按周"};
+// [指标, 名字, 格式, 方向 (-1 = 越低越好 / 0 = 不评好坏), 口径]
+const TR_GROUPS = [
+  ["质量", [["fail_rate", "调用失败率", "rate", -1, "失败的调用 ÷ 全部调用（真值）"],
+            ["rep_per100", "重试 / 打转（每 100 次调用）", "per100", -1, "同一命令、同一参数又来一遍，按每 100 次调用算（推断）"]]],
+  ["风险", [["risk_share", "命中风险规则的任务", "rate", -1, "至少命中一条风险规则的任务 ÷ 全部任务（规则判断，推断）"],
+            ["unverified_share", "改了没验证完的任务", "rate", -1, "有改动的任务里：全程没验证，或最后一次验证之后又改了（验证按阶段标注判，推断）"]]],
+  ["效率", [["tok_median", "每个任务的 token（中位）", "tok", 0, "每个任务 token 真值的中位数。任务大小不一，涨跌不评好坏"],
+            ["active_median", "每个任务的活跃时长（中位）", "dur", 0, "每个任务活跃时长（空闲不算）的中位数。任务大小不一，涨跌不评好坏"],
+            ["slow_rate", "偏慢的调用", "rate", -1, "比同一类命令全部历史 p95 还慢的调用 ÷ 全部调用（统计推断）"]]],
+  ["外部依赖", [["mcp_fail_rate", "MCP 失败率", "rate", -1, "MCP 调用里失败的 ÷ 全部 MCP 调用（真值）"]]],
+];
+const TR_SAMPLE = {fail_rate: "调用", rep_per100: "调用", slow_rate: "调用", mcp_fail_rate: "MCP 调用",
+                   risk_share: "任务", unverified_share: "有改动的任务", tok_median: "任务", active_median: "任务"};
+function trFmt(v, kind) {
+  if (v == null) return "—";
+  if (kind === "rate") { const p = 100 * v; return (p > 0 && p < 10 ? p.toFixed(1) : p.toFixed(0)) + "%"; }
+  if (kind === "per100") return v.toFixed(1);
+  if (kind === "tok") return fmtTok(v);
+  return fmtDur(v) || "0s";
+}
+function trDelta(T, key, kind, dir) {
+  const P = T.prev;
+  if (!P) return {txt: "全部时间没有上一周期", cls: "na", tip: ""};
+  const a = T.cur.m[key], b = P.m[key];
+  const why = `本期样本：${T.cur.sparse[key] ? "不够" : "够"}；上一周期：${P.sparse[key] ? "不够" : "够"}（按${TR_SAMPLE[key]}数算，门槛见页脚）`;
+  if (a == null || b == null || T.cur.sparse[key] || P.sparse[key])
+    return {txt: "样本太少，不比", cls: "na", tip: `上一周期 ${trFmt(b, kind)}（${P.tasks} 个任务）\n${why}`};
+  let d, txt;
+  if (kind === "rate") { d = 100 * (a - b); txt = Math.abs(d) < 0.5 ? "" : `${Math.abs(d).toFixed(1)} 个百分点`; }
+  else if (kind === "per100") { d = a - b; txt = Math.abs(d) < 0.1 ? "" : Math.abs(d).toFixed(1); }
+  else { d = b ? 100 * (a - b) / b : 0; txt = Math.abs(d) < 5 ? "" : `${Math.abs(d).toFixed(0)}%`; }
+  const tip = `上一周期 ${trFmt(b, kind)}（${P.tasks} 个任务 / ${Number(P.calls).toLocaleString()} 次调用）→ 本期 ${trFmt(a, kind)}`;
+  if (!txt) return {txt: "较上一周期 持平", cls: "flat", tip};
+  const cls = dir === 0 ? "neu" : ((d < 0) === (dir < 0) ? "good" : "bad");
+  return {txt: `较上一周期 ${d > 0 ? "↑" : "↓"} ${txt}`, cls, tip};
+}
+function trSpark(T, key, kind, name) {
+  const B = T.buckets || [], W = 240, H = 40, PD = 4;
+  const vals = B.map(b => b.m[key]);
+  const have = vals.filter(v => v != null);
+  if (!have.length) return '<div class="note" style="margin:6px 0 2px">这个范围里没有这项数据。</div>';
+  let lo = Math.min(...have), hi = Math.max(...have);
+  if (kind === "rate" || kind === "per100") lo = 0;
+  if (hi - lo < 1e-9) hi = lo + (hi || 1);
+  const x = i => B.length === 1 ? W / 2 : PD + i * (W - 2 * PD) / (B.length - 1);
+  const y = v => H - PD - (v - lo) / (hi - lo) * (H - 2 * PD);
+  let path = "", pen = false, dots = "", hits = "";
+  const cw = B.length > 1 ? (W - 2 * PD) / (B.length - 1) : W;
+  B.forEach((b, i) => {
+    const v = vals[i], sp = !!b.sparse[key];
+    if (v == null || sp) pen = false;
+    else { path += (pen ? "L" : "M") + x(i).toFixed(1) + "," + y(v).toFixed(1); pen = true; }
+    if (v != null) dots += `<circle class="dt${sp ? " sp" : ""}" cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${sp ? 2.2 : 2}"></circle>`;
+    if (b.tasks) {
+      const tip = `${b.label} · ${name} ${trFmt(v, kind)}${sp ? "（样本太少，不连线）" : ""}\n${b.tasks} 个任务 / ${Number(b.calls).toLocaleString()} 次调用\n点击列出这 ${b.tasks} 个任务`;
+      hits += `<rect class="tp" data-drill="${esc(b.ref)}" data-flag="" data-sort="time" data-title="${esc(b.label + " 的任务")}" data-n="${b.tasks}"`
+        + ` x="${(x(i) - cw / 2).toFixed(1)}" y="0" width="${cw.toFixed(1)}" height="${H}"><title>${esc(tip)}</title></rect>`;
+    }
+  });
+  const pv = T.prev && T.prev.m[key] != null && !T.prev.sparse[key] && T.prev.m[key] >= lo && T.prev.m[key] <= hi
+    ? `<line class="pv" x1="0" x2="${W}" y1="${y(T.prev.m[key]).toFixed(1)}" y2="${y(T.prev.m[key]).toFixed(1)}"></line>` : "";
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${pv}<path class="ln" d="${path}"></path>${dots}${hits}</svg>`
+    + `<div class="ax"><span>${esc(B[0].label)}</span><span>${esc(B[B.length - 1].label)}</span></div>`;
+}
+function statTrends(S) {
+  const T = S.trends;
+  let h = '<div class="stsec" id="sec-trend"><h3>趋势</h3>';
+  if (!T || !(T.buckets || []).length) return h + '</div><div class="note">这个范围里没有可以画趋势的任务。</div>';
+  const pw = T.prev_window;
+  h += `<span class="muted">${esc(TR_UNIT[T.unit] || "")}一个点 · 本期 ${T.cur.tasks} 个任务 / ${Number(T.cur.calls).toLocaleString()} 次调用`
+    + (T.prev ? ` · 上一周期 ${esc(fmtClock(pw[0]))} – ${esc(fmtClock(pw[1]))}（${T.prev.tasks} 个任务，虚线）` : " · 全部时间没有上一周期")
+    + ' · 空心点 = 那一段样本太少（不连线）；点一段列出那一段的任务</span></div>';
+  const cards = TR_GROUPS.map(([g, ms]) => ms.map(([key, name, kind, dir, how]) => {
+    const dl = trDelta(T, key, kind, dir);
+    const cur = T.cur.sparse[key] && T.cur.m[key] != null ? `<span title="本期样本太少，这个数只作参考">${esc(trFmt(T.cur.m[key], kind))}?</span>` : esc(trFmt(T.cur.m[key], kind));
+    return `<div class="trc"><div class="gh">${esc(g)}</div><div class="mn" title="${esc(how)}">${esc(name)}</div>`
+      + `<div><span class="mv">${cur}</span><span class="dl ${dl.cls}" title="${esc(dl.tip)}">${esc(dl.txt)}</span></div>`
+      + trSpark(T, key, kind, name) + '</div>';
+  }).join("")).join("");
+  return h + `<div class="trg">${cards}</div>`;
+}
+function miniBars(arr, what) {     // 排行行尾: 每一段的量 (MCP 是 [调用, 失败])
+  const B = (STATS.trends || {}).buckets || [];
+  if (!arr || !arr.length || arr.length !== B.length) return '<span class="zero">—</span>';
+  const n = arr.length, W = 84, H = 18, bw = W / n;
+  const v = arr.map(a => Array.isArray(a) ? a[0] : a), f = arr.map(a => Array.isArray(a) ? a[1] : 0);
+  const mx = Math.max(1, ...v);
+  let bars = "";
+  v.forEach((c, i) => {
+    if (!c) return;
+    const hh = Math.max(1, c / mx * H), fh = f[i] ? Math.max(1, f[i] / mx * H) : 0, w = Math.max(0.6, bw - (bw > 3 ? 1 : 0.2));
+    bars += `<rect class="b" x="${(i * bw).toFixed(2)}" y="${(H - hh).toFixed(2)}" width="${w.toFixed(2)}" height="${hh.toFixed(2)}"></rect>`;
+    if (fh) bars += `<rect class="f" x="${(i * bw).toFixed(2)}" y="${(H - fh).toFixed(2)}" width="${w.toFixed(2)}" height="${fh.toFixed(2)}"></rect>`;
+  });
+  const lines = B.map((b, i) => v[i] ? `${b.label}  ${v[i]}${f[i] ? `（失败 ${f[i]}）` : ""}` : "").filter(Boolean);
+  const tip = `${TR_UNIT[STATS.trends.unit] || ""} · ${what}\n` + (lines.length > 16 ? lines.slice(-16).join("\n") + `\n…前面还有 ${lines.length - 16} 段` : lines.join("\n"));
+  return `<svg class="mb" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><title>${esc(tip)}</title>${bars}</svg>`;
 }
 function statChanges(S) {
   const c = S.changes || {};
@@ -1258,9 +1378,10 @@ function statRisks(S) {
       + ` <span class="src" title="${esc(r.why || "")}">${r.level === "warn" ? "警示" : "提示"}</span></td>`
       + `<td>${dn(r.tasks, r.ref_tasks, {title: (RULE_ZH[r.rule] || r.rule) + " · 命中的任务"})}</td>`
       + `<td>${r.calls ? dn(r.calls, r.ref_calls, {title: (RULE_ZH[r.rule] || r.rule) + " · 相关调用"}) : '<span class="zero" title="这条规则是按任务判的，没有对应的单次调用">—</span>'}</td>`
+      + `<td>${miniBars(r.spark, "命中的任务数")}</td>`
       + `<td class="muted" style="text-align:left;white-space:normal;line-height:1.5">${esc(r.why || "")}</td></tr>`).join("");
   return h + `<div class="tblw"><table class="st"><thead><tr><th style="cursor:default">规则</th><th style="cursor:default">任务</th>`
-    + `<th style="cursor:default">相关调用</th><th style="text-align:left;cursor:default">凭什么这么判</th></tr></thead><tbody>${body}</tbody></table></div>`;
+    + `<th style="cursor:default">相关调用</th><th style="cursor:default" title="每一段命中的任务数">趋势</th><th style="text-align:left;cursor:default">凭什么这么判</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 function statTools(S) {
   const rows = (S.tools || []).filter(r => r.cat !== "ask"), waits = (S.tools || []).filter(r => r.cat === "ask");
@@ -1277,12 +1398,12 @@ function statTools(S) {
       + `<td>${dn(r.time, r.ref, {txt: fmtDur(r.time) || "0s", sort: "dur", title: t("按耗时"), tip: `${r.timed} 次有耗时的调用相加（并行的会重叠）；点开按耗时列出`})}</td>`
       + `<td class="muted">${esc(fmtDur(r.p50) || "—")} / ${esc(fmtDur(r.p90) || "—")}</td>`
       + `<td>${dn(r.fail, r.ref, {flag: "fail", cls: "bad", title: t("失败的调用")})}${r.fail ? `<span class="pct">${pctTxt(r.fail, r.calls)}</span>` : ""}</td>`
-      + `<td style="text-align:left">${marks}</td>`
+      + `<td style="text-align:left">${marks}</td><td>${miniBars(r.spark, "调用次数")}</td>`
       + `<td class="muted" title="结果体积估算：返回内容按字符估的 token 数相加，会一直留在上下文里${r.result_unknown ? `；另有 ${r.result_unknown} 次估不出（没有结果 / 含图片等）` : ""}">≈${esc(fmtTok(r.result_est))}${r.result_unknown ? "+" : ""}</td></tr>`;
   }).join("");
   h += `<div class="tblw"><table class="st"><thead><tr>${thS("tools", "name", "工具")}${thS("tools", "calls", "调用")}${thS("tools", "tasks", "任务")}`
     + `${thS("tools", "time", "耗时合计", "各次调用的耗时相加")}${thS("tools", "p50", "中位 / p90", "单次调用耗时的中位数 / 90 分位（按中位排）")}`
-    + `${thS("tools", "fail", "失败")}<th style="text-align:left;cursor:default">其他标记</th>${thS("tools", "result_est", "结果 ≈tok", "返回内容的体积估算")}</tr></thead><tbody>${body}</tbody></table></div>`
+    + `${thS("tools", "fail", "失败")}<th style="text-align:left;cursor:default">其他标记</th><th style="cursor:default" title="每一段的调用次数">趋势</th>${thS("tools", "result_est", "结果 ≈tok", "返回内容的体积估算")}</tr></thead><tbody>${body}</tbody></table></div>`
     + moreBtn("tools", sorted.length, LIM);
   if (waits.length) {
     h += '<div class="note">⏸ 等你：' + waits.map(r => `${esc(r.name)} ${dn(r.calls, r.ref, {title: `${r.name} · 全部`})} 次，共 ${esc(fmtDur(r.time) || "0s")}（中位 ${esc(fmtDur(r.p50) || "—")}）`).join("；")
@@ -1307,32 +1428,36 @@ function statSkills(S) {
              tip: `token 真值 · 等价 ${fmtUsd(r.cost)}${r.untagged ? `\n有 ${r.untagged} 个任务里它之后的行没有归属标记，那几次拿不到，合计是下限` : ""}`})}</td>`
          + `<td>${dn(r.time, r.ref_occ, {txt: (r.untagged ? "≥ " : "") + (fmtDur(r.time) || "0s"), sort: "dur", title: t("按耗时"),
              tip: `skill 期间的墙钟时间相加；点开按耗时列出任务${r.untagged ? `\n有 ${r.untagged} 个任务里没有归属标记，那几次的时长拿不到` : ""}`})}</td>`)
-      + `<td>${dn(r.fail, r.ref_calls, {flag: "fail", cls: "bad", title: t("失败的调用")})}</td></tr>`;
+      + `<td>${dn(r.fail, r.ref_calls, {flag: "fail", cls: "bad", title: t("失败的调用")})}</td><td>${miniBars(r.spark, "用到它的任务数")}</td></tr>`;
   }).join("");
   return h + `<div class="tblw"><table class="st"><thead><tr>${thS("skills", "name", "skill")}${thS("skills", "tasks", "任务")}${thS("skills", "calls", "调用")}`
-    + `${thS("skills", "tokens", "token 真值")}${thS("skills", "time", "耗时合计")}${thS("skills", "fail", "失败")}</tr></thead><tbody>${body}</tbody></table></div>`
+    + `${thS("skills", "tokens", "token 真值")}${thS("skills", "time", "耗时合计")}${thS("skills", "fail", "失败")}<th style="cursor:default" title="每一段用到它的任务数">趋势</th></tr></thead><tbody>${body}</tbody></table></div>`
     + moreBtn("skills", sorted.length, LIM);
 }
 
 function statMcp(S) {
   const rows = S.mcp || [];
-  let h = '<div class="stsec" id="sec-mcp"><h3>MCP 健康</h3><span class="muted">按 server 分开看：调用、失败率、耗时，最近的错误原文（已脱敏）</span></div>';
+  let h = '<div class="stsec" id="sec-mcp"><h3>MCP 健康</h3><span class="muted">按 server 分开看：调用、失败率、耗时，失败按原因归类（原文已脱敏）</span></div>';
   if (!rows.length) return h + '<div class="note">这个范围里没有 MCP 调用。</div>';
   return h + rows.map(m => {
     const t = x => `mcp·${m.server} · ${x}`;
     const open = !!ST_MORE.mcp[m.server], tools = open ? m.tools : m.tools.slice(0, 6);
     const tl = tools.map(x => `<div>${esc(x.tool)}</div><div>${dn(x.calls, x.ref, {title: t(x.tool + " · 全部调用")})}</div>`
       + `<div>${dn(x.fail, x.ref, {flag: "fail", cls: "bad", title: t(x.tool + " · 失败的调用")})}</div><div class="muted">${esc(fmtDur(x.p50) || "—")}</div>`).join("");
-    const errs = (m.errors || []).slice(0, 3).map(e => `<div class="e" data-go-task="${esc(e.task)}" data-go-node="${esc(e.node)}" data-go-kind="call" title="点击跳到回放里这一步">`
-      + `<span class="muted">${esc(fmtClock(e.t0))} · ${esc(e.tool)}</span>　${esc(e.excerpt || "（没有返回内容）")}</div>`).join("");
+    const cz = m.causes || [], czOpen = !!ST_MORE.mcp[m.server + "#cz"], czShow = czOpen ? cz : cz.slice(0, 4);
+    const causes = czShow.map(c => `<div class="cz"><span class="czn">${dn(c.n, c.ref, {cls: "bad", title: t("失败 · " + c.cause), tip: "这一类失败的次数；点开列出每一次"})} 次</span>`
+      + `<span class="czt" title="${esc("归类：" + c.cause + (c.example ? "\n最近一次原文：" + c.example : ""))}">${esc(c.cause)}</span>`
+      + `<span class="muted">${esc((c.tools || []).join("、"))} · 最近 ${esc(fmtClock(c.last))}</span></div>`).join("");
     return `<div class="mcpc"><div class="hd"><span class="tag mcp">mcp·${esc(m.server)}</span>`
       + `<span>${dn(m.calls, m.ref, {title: t("全部调用")})} 次调用 · ${dn(m.tasks, m.ref_occ, {title: t("用到它的任务")})} 个任务</span>`
       + `<span>失败 ${dn(m.fail, m.ref, {flag: "fail", cls: "bad", title: t("失败的调用")})}${m.fail ? `（${pctTxt(m.fail, m.calls)}）` : ""}`
       + `<span class="failbar"><span style="width:${(100 * (m.calls ? m.fail / m.calls : 0)).toFixed(1)}%"></span></span></span>`
-      + `<span class="muted">中位 ${esc(fmtDur(m.p50) || "—")} · p90 ${esc(fmtDur(m.p90) || "—")}</span></div>`
+      + `<span class="muted">中位 ${esc(fmtDur(m.p50) || "—")} · p90 ${esc(fmtDur(m.p90) || "—")}</span>`
+      + `<span class="muted" style="margin-left:auto">${miniBars(m.spark, "调用次数（红 = 失败）")}</span></div>`
       + `<div class="mtools"><div class="h">工具</div><div class="h">调用</div><div class="h">失败</div><div class="h">中位耗时</div>${tl}</div>`
       + (m.tools.length > 6 ? `<button data-mcpmore="${esc(m.server)}" style="margin-top:6px;font-size:11.5px">${open ? "收起" : `显示全部 ${m.tools.length} 个工具`}</button>` : "")
-      + (errs ? `<div class="errl"><div class="muted" style="font-size:11.5px">最近的错误（点一条跳到回放）</div>${errs}</div>` : "")
+      + (causes ? `<div class="errl"><div class="muted" style="font-size:11.5px">失败原因（同一种错归一类：网址 / 路径 / 编号 / 数字换成占位；${cz.length} 类合计 = 失败 ${m.fail} 次；点次数列出每一次）</div>${causes}`
+         + (cz.length > 4 ? `<button data-mcpmore="${esc(m.server + "#cz")}" style="margin-top:4px;font-size:11.5px">${czOpen ? "收起" : `显示全部 ${cz.length} 类`}</button>` : "") + '</div>' : "")
       + '</div>';
   }).join("");
 }

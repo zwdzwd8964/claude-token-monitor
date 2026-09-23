@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import base64
+import bisect
 import hashlib
 import json
 import re
@@ -38,7 +39,7 @@ import struct
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .discovery import default_base, friendly_project
@@ -51,6 +52,7 @@ AGENT_TOOLS = frozenset({"Agent", "Task"})
 HUGE_RESULT_CHARS = 40_000          # 约 1 万 token: 一次返回就把上下文撑大一截
 SLOW_MIN_SAMPLES = 20               # 样本不足不判「慢」(不瞎猜)
 SLOW_MIN_SECONDS = 1.0              # 再慢也得 >= 1s 才值得标
+SLOW_PCTL = 0.95                    # 「偏慢」= 超过同一类命令历史的 p95 (p90 时按命令族也有 8.5% 的调用被标, 太吵)
 LOOP_MIN_REPEATS = 3                # 同一动作、同一输出 >= 3 次 -> 原地打转 (推断)
 IDLE_GAP = 900.0                    # 两条活动行相隔超过 15 分钟 -> 中间算空闲, 不算模型生成
 IMAGE_TOKEN_CAP = 1600              # 单张图片的 token 上限 (≈ w*h/750, 大图会被缩放)
@@ -244,6 +246,13 @@ def flag_repeats(calls: list[dict]) -> None:
             c["flags"].append("loop")
         if c.get("failed"):
             failed.add(k)
+
+
+def _pct_at(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    v = sorted(values)
+    return v[min(len(v) - 1, int(len(v) * q))]
 
 
 def p90(values: list[float]) -> float | None:
@@ -600,6 +609,41 @@ def _bash_stage(cmd: str, desc: str = "", ps: bool = False) -> str:
     return "运行"
 
 
+_FAM_SUB_HEADS = frozenset({"git", "npm", "pnpm", "yarn", "cargo", "go", "docker", "kubectl", "uv", "pip", "pip3", "gh",
+                            "railway", "npx", "make", "dotnet", "poetry", "bun", "deno", "terraform", "helm", "fnm",
+                            "pipenv", "bunx"})
+
+
+def cmd_family(name: str, inp: dict | None) -> str:
+    """「偏慢」拿什么比: Bash / PowerShell 按**命令族**各自建基线 (pytest、npm test、git status 各是各),
+    别的工具按工具名。整个 Bash 共用一个基线时, 拿 pytest 和 ls 比, 近 7 天标了 1,497 次「偏慢」, 基本是噪音。"""
+    if name not in ("Bash", "PowerShell"):
+        return name
+    env: dict = {}
+    for sc in shell_parse(str((inp or {}).get("command") or ""), name == "PowerShell")["cmds"]:
+        head, args = _simple(sc["words"], env)
+        if not head or head in _NEUTRAL_HEADS:
+            continue
+        toks = [w[0] for w in args]
+        pos = [t for t in toks if not t.startswith("-")]
+        if head in _FAM_SUB_HEADS:
+            sub = pos[0].lower() if pos else ""
+            if sub in ("run", "exec", "dlx", "x") and len(pos) > 1:
+                sub = f"{sub} {pos[1].lower()}"                # uv run pytest / npm run build / fnm exec node: 启动器看它启动的是什么
+            fam = f"{head} {sub}".strip()
+        elif head in ("python", "python3", "py", "node"):
+            if "-m" in toks and toks.index("-m") + 1 < len(toks):
+                fam = f"{head} -m {toks[toks.index('-m') + 1]}"
+            elif pos:
+                fam = f"{head} {pos[0].replace(chr(92), '/').rsplit('/', 1)[-1]}"   # 脚本按文件名; 一次性脚本样本不够就不判
+            else:
+                fam = head
+        else:
+            fam = head
+        return f"{name}:{fam}"
+    return name
+
+
 def classify_call(name: str, inp: dict | None) -> str:
     """一次调用 -> 阶段 (**推断**, 规则见 STAGES)。判断不了的一律归「运行」, 不硬猜。"""
     inp = inp or {}
@@ -851,7 +895,7 @@ def _lines(s) -> int:
 
 
 def shell_parse(cmd: str, ps: bool = False) -> dict:
-    """一条命令行 -> 一串「简单命令」。只做我们需要的那一小块词法, 但要做**对**:
+    r"""一条命令行 -> 一串「简单命令」。只做我们需要的那一小块词法, 但要做**对**:
 
     - 引号: 单引号原样; 双引号里只有 `\" \\ \$ \`` 是转义 (PowerShell 里转义符是反引号, 反斜杠是普通字符);
       引号段和紧挨着的裸字符拼成**同一个词** (`"$SP"/a.py` 是一个词, 不是 `$SP` 和 `/a.py` 两个);
@@ -1777,7 +1821,8 @@ def _scan_line(ft: FileTrace, o: dict, off: int) -> None:
                     row = {"k": "call", "ts": ts, "id": b.get("id"), "name": name, "label": label, "sub": sub,
                            "key": norm_key(name, inp), "resp": key, "skill": skill, "in_chars": in_chars,
                            "off": off, "bg": bool(inp.get("run_in_background")),
-                           "wait": is_deliberate_wait(name, inp), "stage": classify_call(name, inp)}
+                           "wait": is_deliberate_wait(name, inp), "stage": classify_call(name, inp),
+                           "fam": cmd_family(name, inp)}
                     chg = file_changes(name, inp, row["stage"])
                     if chg:
                         row["chg"] = chg                        # 改动清单 (真值 / 推断, 见 file_changes)
@@ -2395,6 +2440,7 @@ def _call_node(r: dict, res: dict | None, ft: FileTrace, ctx: _Ctx, depth: int, 
         parts = name.split("__", 2)
         node["meta"]["server"] = parts[1] if len(parts) > 1 else "?"
     node["meta"]["tl"] = ft.agent_id or "main"               # 属于哪条时间线 (连续失败按时间线算)
+    node["meta"]["fam"] = r.get("fam") or name               # 「偏慢」的比较对象 (命令族)
     if r.get("destructive"):
         node["meta"]["destructive"] = r["destructive"]
         flags.append("destructive")
@@ -2590,13 +2636,14 @@ def build_task(task: dict, now: float | None = None, running: bool = False,
                 c["flags"].append("bg-stopped")
     if baseline:                                             # 慢 (统计推断): 历史基线, 故意等待不算, 样本不足不判
         for c in ctx.calls:
-            b = baseline.get(c["name"])
+            b = baseline.get(c["meta"].get("fam") or c["name"])
             d = (c["t1"] - c["t0"]) if (c.get("t1") is not None and c.get("t0") is not None) else None
-            if (b and b["n"] >= SLOW_MIN_SAMPLES and b["p90"] is not None and d is not None
+            if (b and b["n"] >= SLOW_MIN_SAMPLES and b.get("slow_at") is not None and d is not None
                     and c["name"] not in HUMAN_WAIT_TOOLS and not c["meta"]["async"] and not c["meta"]["wait"]
-                    and "running" not in c["flags"] and d > b["p90"] and d >= SLOW_MIN_SECONDS):
+                    and "running" not in c["flags"] and d > b["slow_at"] and d >= SLOW_MIN_SECONDS):
                 c["flags"].append("slow")
-                c["meta"]["p90"] = round(b["p90"], 2)
+                c["meta"]["slow_at"] = round(b["slow_at"], 2)
+                c["meta"]["p90_n"] = b["n"]
     split = split_time(ctx.intervals)
     nodes = list(walk(children))
     t0 = task["prompt"]["ts"]
@@ -2726,7 +2773,8 @@ def _project_of(task: dict, mp: Path) -> tuple[str, str]:
     return friendly_project(mp.parent.name), ""
 
 
-def _iter_built(base: Path, since: float | None, project: str | None, running_sessions: set):
+def _iter_built(base: Path, since: float | None, project: str | None, running_sessions: set,
+                until: float | None = None):
     """窗口内的每个任务 -> (task, built, project, subpath)。列表与统计共用同一套筛选口径:
     时间按提问时刻; project 按「任务里任一响应生效时的项目」匹配 —— 与 /tokens 逐记录按 cwd 归项目的口径一致。"""
     now = time.time()
@@ -2741,6 +2789,8 @@ def _iter_built(base: Path, since: float | None, project: str | None, running_se
         for t in tasks:
             _TASK_INDEX[t["id"]] = mp
             if since is not None and (t["prompt"]["ts"] or 0) < since:
+                continue
+            if until is not None and (t["prompt"]["ts"] or 0) >= until:
                 continue
             proj, subpath = _project_of(t, mp)
             running = bool(t.get("tail")) and t["session_id"] in running_sessions
@@ -2770,6 +2820,152 @@ def list_tasks(base: Path | None = None, since: float | None = None, project: st
                                        "chg", "files", "files_more", "risks_n")})
     out.sort(key=lambda s: (not s["running"], -(s["t0"] or 0)))
     return out
+
+
+# ================================================================ S6: 趋势 (「vs 上一周期」+ 小趋势线)
+#
+# 口径 (问卷定的): 不加独立图表区; 关键数字旁写「vs 上一周期」, 排行行尾一条迷你趋势线。
+# 粒度跟着时间范围: 今天按小时 / 近 7 天按天 / 近 30 天与全部按周。桶按**任务的提问时刻**归。
+# 上一周期 = 紧挨着的、同样长的上一段窗口。样本太少的桶照样给数, 但标 sparse —— 页面不把它连进趋势线。
+# 自洽: 当前窗口的每个趋势数都能由同一份统计的汇总数算出来 (测试里逐项对)。
+
+TREND_MIN_TASKS = 3          # 按任务算的指标: 一个桶里少于这么多任务 -> 样本不足
+TREND_MIN_CALLS = 30         # 按调用算的比率: 少于这么多次调用 -> 样本不足
+TREND_MIN_MCP = 5            # MCP 失败率: 少于这么多次 MCP 调用 -> 样本不足
+TREND_METRICS = ("fail_rate", "rep_per100", "risk_share", "unverified_share", "tok_median", "active_median",
+                 "mcp_fail_rate", "slow_rate")
+
+
+def _trend_row(built: dict, proj: str) -> dict:
+    """一个任务 -> 算趋势要的几个数 (纯内存, 走一遍树)。"""
+    sm = built["summary"]
+    L = sm.get("changes")
+    r = {"task": sm["id"], "t0": sm.get("t0"), "calls": 0, "fails": 0, "rep": 0, "slow": 0, "mcp_calls": 0,
+         "mcp_fails": 0, "tokens": (sm.get("tokens") or {}).get("total"), "active": (sm.get("time") or {}).get("active"),
+         "risk": bool(sm.get("risks")), "rules": sorted({x["rule"] for x in sm.get("risks") or []}),
+         "chg": bool(L), "unverified": bool(L) and (not L["verify"] or bool(L["after_verify"]["changes"])),
+         "tools": defaultdict(int), "mcp": {}, "skills": sorted({n["label"] for n in walk([built["tree"]])
+                                                                 if n["kind"] == "skill"}), "project": proj}
+    for n in walk([built["tree"]]):
+        if n["kind"] != "call":
+            continue
+        fl = set(n.get("flags") or [])
+        failed = bool(FAIL_FLAGS & fl)
+        r["calls"] += 1
+        r["fails"] += failed
+        r["rep"] += ("retry" in fl) + ("loop" in fl)
+        r["slow"] += "slow" in fl
+        r["tools"][tool_key(n)] += 1
+        if n.get("cat") == "mcp":
+            srv = str((n.get("meta") or {}).get("server") or "?")
+            a = r["mcp"].setdefault(srv, [0, 0])
+            a[0] += 1
+            a[1] += failed
+            r["mcp_calls"] += 1
+            r["mcp_fails"] += failed
+    return r
+
+
+def _window_metrics(rows: list[dict]) -> dict:
+    """一组任务 -> 八个趋势指标 + 各自的样本量。拿不到 / 样本不足的给 None 并在 sparse 里标出来。"""
+    calls = sum(r["calls"] for r in rows)
+    mcp = sum(r["mcp_calls"] for r in rows)
+    chg = [r for r in rows if r["chg"]]
+    toks = [r["tokens"] for r in rows if r["tokens"] is not None]
+    acts = [r["active"] for r in rows if r["active"] is not None]
+    n = len(rows)
+    m = {
+        "fail_rate": (sum(r["fails"] for r in rows) / calls) if calls else None,
+        "rep_per100": (100.0 * sum(r["rep"] for r in rows) / calls) if calls else None,
+        "slow_rate": (sum(r["slow"] for r in rows) / calls) if calls else None,
+        "mcp_fail_rate": (sum(r["mcp_fails"] for r in rows) / mcp) if mcp else None,
+        "risk_share": (sum(1 for r in rows if r["risk"]) / n) if n else None,
+        "unverified_share": (sum(1 for r in chg if r["unverified"]) / len(chg)) if chg else None,
+        "tok_median": _median(toks), "active_median": _median(acts),
+    }
+    sparse = {
+        "fail_rate": calls < TREND_MIN_CALLS, "rep_per100": calls < TREND_MIN_CALLS, "slow_rate": calls < TREND_MIN_CALLS,
+        "mcp_fail_rate": mcp < TREND_MIN_MCP, "risk_share": n < TREND_MIN_TASKS,
+        "unverified_share": len(chg) < TREND_MIN_TASKS, "tok_median": len(toks) < TREND_MIN_TASKS,
+        "active_median": len(acts) < TREND_MIN_TASKS,
+    }
+    return {"m": m, "sparse": sparse, "tasks": n, "calls": calls, "mcp_calls": mcp, "chg_tasks": len(chg)}
+
+
+def _bucket_starts(since: float | None, now: float, first: float | None) -> tuple[str, list[float]]:
+    """时间桶的起点 (本地时间对齐)。今天按小时 / 10 天以内按天 / 更长与「全部」按周 (周一起)。"""
+    lo = since if since is not None else (first if first is not None else now - 7 * 86400)
+    span = now - lo
+    unit = "hour" if (since is not None and span <= 36 * 3600) else ("day" if (since is not None and span <= 10 * 86400)
+                                                                      else "week")
+    d = datetime.fromtimestamp(lo)
+    if unit == "hour":
+        d = d.replace(minute=0, second=0, microsecond=0)
+        step = timedelta(hours=1)
+    else:
+        d = d.replace(hour=0, minute=0, second=0, microsecond=0)
+        if unit == "week":
+            d -= timedelta(days=d.weekday())
+        step = timedelta(days=1 if unit == "day" else 7)
+    out = []
+    while d.timestamp() <= now and len(out) < 400:
+        out.append(d.timestamp())
+        d += step
+    return unit, out
+
+
+def _bucket_label(unit: str, t: float) -> str:
+    d = datetime.fromtimestamp(t)
+    return d.strftime("%H:00") if unit == "hour" else (d.strftime("%m/%d") if unit == "day" else d.strftime("%m/%d 周"))
+
+
+def build_trends(rows: list[dict], since: float | None, now: float, prev_rows: list[dict] | None,
+                 idx: dict) -> dict:
+    """当前窗口的任务行 (+ 上一周期的任务行) -> 趋势。每个桶的任务挂进追溯索引 (点趋势线上的点 = 列出那个桶的任务)。"""
+    first = min((r["t0"] for r in rows if r["t0"]), default=None)
+    unit, starts = _bucket_starts(since, now, first)
+    nb = len(starts)
+    groups: list = [[] for _ in range(nb)]
+    for r in rows:
+        if r["t0"] is None or not nb:
+            continue
+        i = max(0, bisect.bisect_right(starts, r["t0"]) - 1)
+        r["_b"] = i
+        groups[i].append(r)
+    buckets = []
+    task_refs = idx.get("tasks", [])
+    for i, g in enumerate(groups):
+        wm = _window_metrics(g)
+        ref = _ref("bucket", f"{since}:{starts[i]}")
+        ids = {r["task"] for r in g}
+        idx[ref] = [x for x in task_refs if x["task"] in ids]
+        buckets.append({"t": starts[i], "label": _bucket_label(unit, starts[i]), "tasks": wm["tasks"],
+                        "calls": wm["calls"], "m": wm["m"], "sparse": wm["sparse"], "ref": ref})
+    cur = _window_metrics(rows)
+    prev = None
+    if prev_rows is not None:
+        pw = _window_metrics(prev_rows)
+        prev = {"m": pw["m"], "sparse": pw["sparse"], "tasks": pw["tasks"], "calls": pw["calls"]}
+    # 排行行尾的小趋势线: 工具 = 每桶调用数; MCP = 每桶失败率 (带样本量); skill / 风险规则 = 每桶用到它的任务数
+    spark = {"tool": defaultdict(lambda: [0] * nb), "skill": defaultdict(lambda: [0] * nb),
+             "rule": defaultdict(lambda: [0] * nb), "mcp": defaultdict(lambda: [[0, 0] for _ in range(nb)])}
+    for r in rows:
+        i = r.get("_b")
+        if i is None:
+            continue
+        for k, v in r["tools"].items():
+            spark["tool"][k][i] += v
+        for k in r["skills"]:
+            spark["skill"][k][i] += 1
+        for k in r["rules"]:
+            spark["rule"][k][i] += 1
+        for srv, (c, f) in r["mcp"].items():
+            spark["mcp"][srv][i][0] += c
+            spark["mcp"][srv][i][1] += f
+    return {"unit": unit, "buckets": buckets, "cur": {"m": cur["m"], "sparse": cur["sparse"], "tasks": cur["tasks"],
+                                                        "calls": cur["calls"]},
+            "prev": prev, "prev_window": prev_window(since, now),
+            "spark": {k: dict(v) for k, v in spark.items()}}
 
 
 # ================================================================ S3: 统计 (排行 / MCP 健康 / 跨任务对照)
@@ -2848,7 +3044,21 @@ def _usage_of(n: dict) -> tuple:
     return tk.get("total"), tk.get("by_model")
 
 
-def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
+def error_cause(text) -> str:
+    """失败原文 -> 归类用的「原因」: 取第一行非空文字, 把 URL / 路径 / ID / 数字 / 引号里的具体值换成占位, 截到 90 字。
+    同一种错 (比如 `Unauthorized. Please run railway login again.`) 就会落到同一类里。"""
+    first = next((ln.strip() for ln in str(text or "").splitlines() if ln.strip()), "")
+    s2 = re.sub(r"^(error|错误)\s*[:：]\s*", "", first, flags=re.I)
+    s2 = re.sub(r"https?://\S+", "<url>", s2)
+    s2 = re.sub(r"[A-Za-z]:[\\/][^\s'\"`]+|(?<![\w<])/[\w./-]{3,}", "<path>", s2)
+    s2 = re.sub(r"\b[0-9a-f]{8}-[0-9a-f-]{27,}\b", "<id>", s2, flags=re.I)
+    s2 = re.sub(r"\b[0-9a-f]{12,}\b", "<id>", s2, flags=re.I)
+    s2 = re.sub(r"\d+(\.\d+)?", "N", s2)
+    s2 = re.sub(r"(['\"])[^'\"]{1,60}\1", r"\1…\1", s2)
+    return short(s2, 90) or "（没有返回内容）"
+
+
+def compute_stats(built_iter, price=None, window: tuple | None = None, prev_iter=None) -> tuple[dict, dict]:
     """(task, built, project, subpath) 的迭代 -> (统计结果, 追溯索引)。纯内存, 不读盘。
 
     price: 可选的 by_model -> (美元, 含未知单价) 换算函数, 由 serve 层注入 (本模块不依赖计价)。
@@ -2879,7 +3089,9 @@ def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
     chg_outside: set = set()
     risk: dict = {}                                   # rule -> {"tasks", "calls", "hits", "level"}
 
+    trows: list = []
     for _t, built, proj, _sub in built_iter:
+        trows.append(_trend_row(built, proj))
         sm = built["summary"]
         tid = sm["id"]
         errs = built.get("errs") or {}
@@ -2951,7 +3163,7 @@ def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
                     m = mcp.get(srv)
                     if m is None:
                         m = mcp[srv] = {"server": srv, "calls": 0, "tasks": set(), "durs": [], "fail": 0,
-                                        "tools": {}, "errors": [], "ref": _ref("mcp", srv),
+                                        "tools": {}, "errors": [], "causes": {}, "ref": _ref("mcp", srv),
                                         "ref_occ": row["ref_occ"]}
                     m["calls"] += 1
                     m["tasks"].add(tid)
@@ -2969,6 +3181,17 @@ def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
                     idx[m["ref"]].append(ref)
                     idx[tt["ref"]].append(ref)
                     if failed:
+                        cz = error_cause(errs.get(n["id"]))
+                        cg = m["causes"].get(cz)
+                        if cg is None:
+                            cg = m["causes"][cz] = {"cause": cz, "n": 0, "tools": set(), "last": None, "example": "",
+                                                    "ref": _ref("mcpcause", f"{srv}\x00{cz}")}
+                        cg["n"] += 1
+                        cg["tools"].add(tname)
+                        idx[cg["ref"]].append(ref)
+                        if cg["last"] is None or (n.get("t0") or 0) >= cg["last"]:
+                            cg["last"] = n.get("t0")
+                            cg["example"] = short(errs.get(n["id"]), 200)
                         m["errors"].append({"task": tid, "node": n["id"], "t0": n.get("t0"), "tool": tname,
                                             "excerpt": short(errs.get(n["id"]), 200)})
             elif k == "skill":
@@ -3125,6 +3348,8 @@ def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
             tl.append(tt)
         m["tools"] = sorted(tl, key=lambda x: (-x["fail"], -x["calls"]))
         m["errors"] = sorted(m["errors"], key=lambda e: -(e["t0"] or 0))[:5]
+        m["causes"] = sorted(({**c, "tools": sorted(c["tools"])} for c in m["causes"].values()),
+                             key=lambda c: (-c["n"], -(c["last"] or 0)))
         mcp_rows.append(m)
     mcp_rows.sort(key=lambda m: (-m["fail"], -m["calls"]))
 
@@ -3159,8 +3384,32 @@ def compute_stats(built_iter, price=None) -> tuple[dict, dict]:
     chg["outside"] = len(chg_outside)                    # 与「个文件被改过」同一个去重口径
     chg["changes"] = len(idx["chg-calls"])               # 以「几次调用改了文件」为准 (一次调用改多个文件只算一次)
     risk_rows = sorted(risk.values(), key=lambda r: (-r["tasks"], -r["hits"]))
+    since, now = window if window else (None, time.time())
+    prev_rows = [_trend_row(b, pj) for _t, b, pj, _s in prev_iter] if prev_iter is not None else None
+    trends = build_trends(trows, since, now, prev_rows, idx)
+    # 行尾小趋势线直接挂在各自那一行上 (名字不单独出现在趋势里 -> 页面不用按名字对, serve 的脱敏也不会漏)
+    sp = trends.pop("spark")
+    for r in tool_rows:
+        r["spark"] = sp["tool"].get(r["name"])
+    for r in skill_rows:
+        r["spark"] = sp["skill"].get(r["name"])
+    for r in risk_rows:
+        r["spark"] = sp["rule"].get(r["rule"])
+    for m in mcp_rows:
+        m["spark"] = sp["mcp"].get(m["server"])
     return {"overview": ov, "tasks": tasks, "tools": tool_rows, "skills": skill_rows, "mcp": mcp_rows,
-            "compare": compare, "changes": chg, "risks": risk_rows}, dict(idx)
+            "compare": compare, "changes": chg, "risks": risk_rows, "trends": trends}, dict(idx)
+
+
+def prev_window(since: float | None, now: float) -> tuple | None:
+    """「vs 上一周期」的比较窗口, 与 /tokens 同一口径: 今天 -> 昨天 00:00 到昨天的同一时刻; 其余 -> 紧挨着的同样长的上一段。"""
+    if since is None:
+        return None
+    d = datetime.fromtimestamp(since)
+    if (d.hour, d.minute, d.second) == (0, 0, 0) and d.date() == datetime.fromtimestamp(now).date():
+        lo = (d - timedelta(days=1)).timestamp()
+        return lo, lo + (now - since)
+    return since - (now - since), since
 
 
 def _new_stamp() -> str:
@@ -3179,7 +3428,11 @@ def stats(base: Path | None = None, since: float | None = None, project: str | N
         hit = _STAMPS.get(st) if st else None
         if hit and not fresh and now - hit[0] < STATS_TTL:
             return hit[1]
-    res, idx = compute_stats(_iter_built(base, since, project, running_sessions or set()), price=price)
+    rs = running_sessions or set()
+    pw = prev_window(since, now)
+    prev_iter = None if pw is None else _iter_built(base, pw[0], project, rs, until=pw[1])
+    res, idx = compute_stats(_iter_built(base, since, project, rs), price=price, window=(since, now),
+                             prev_iter=prev_iter)
     with _STATS_LOCK:
         stamp = _new_stamp()
         res["stamp"] = stamp
@@ -3222,6 +3475,54 @@ def stats_refs(stamp: str, ref: str, flag: str | None = None, sort: str = "time"
     page = items[offset:offset + limit]
     return {"stamp": stamp, "total": len(items), "offset": offset, "items": page,
             "tasks": {x["task"]: res["tasks"].get(x["task"]) for x in page}}
+
+
+_BRIEF: dict = {}                                 # 主会话文件 -> ((mtime, size, running), 简报, 算的时刻)
+BRIEF_MIN_AGE = 5.0                               # 正在跑的会话文件每秒都在变: 5 秒内复用上一份, 大会话一次要 ~0.5s
+
+
+def session_brief(main_path, running: bool = False) -> dict | None:
+    """一个会话「当前 (最后一个) 任务」的简报: 任务 id、提问开头、风险标记 (不带路径与命令)、改动计数。
+    /sessions 的角标与风险事件源共用; 按文件 (mtime, size) 缓存, 文件没变就不重算。"""
+    mp = Path(main_path)
+    try:
+        st = mp.stat()
+    except OSError:
+        return None
+    sig = (st.st_mtime, st.st_size, running)
+    hit = _BRIEF.get(str(mp))
+    now = time.time()
+    if hit and (hit[0] == sig or (hit[0][2] == running and now - hit[2] < BRIEF_MIN_AGE)):
+        return hit[1]
+    tasks, _ = session_tasks(mp)
+    if not tasks:
+        return None
+    t = tasks[-1]
+    _TASK_INDEX[t["id"]] = mp
+    built = build_task(t, running=running, baseline=baseline(mp.parent.parent, ttl=300))
+    sm = built["summary"]
+    L = sm.get("changes") or {}
+    ct: dict = {}                                        # 调用 id -> 结束时刻: 事件时间 = 标记最后一个证据发生的时刻
+    stack = [built["tree"]]
+    while stack:
+        n = stack.pop()
+        if n.get("kind") == "call":
+            ct[n["id"]] = n.get("t1") or n.get("t0")
+        stack.extend(n.get("children") or [])
+
+    def at(x):
+        ts = [ct.get(r["id"]) for r in x.get("refs") or [] if r.get("kind") == "call"]
+        ts = [t for t in ts if t]
+        return max(ts) if ts else sm.get("t1")
+
+    brief = {"task": sm["id"], "prompt": short(sm.get("prompt"), 60), "t0": sm.get("t0"), "running": running,
+             "risks": [{"rule": x["rule"], "level": x["level"], "label": x["label"], "n": x.get("n"), "at": at(x),
+                        "key": f"{x['rule']}:{_norm_hash(x['label'])}"} for x in sm.get("risks") or []],
+             "changes": (L.get("totals") or {}).get("changes", 0), "files": (L.get("totals") or {}).get("files", 0)}
+    _BRIEF[str(mp)] = (sig, brief, now)
+    if len(_BRIEF) > 200:
+        _BRIEF.pop(next(iter(_BRIEF)))
+    return brief
 
 
 def get_task(task_id: str, base: Path | None = None, running_sessions: set | None = None) -> dict | None:
@@ -3327,7 +3628,8 @@ def get_script(task_id: str, run_id: str, base: Path | None = None) -> dict | No
 
 
 def baseline(base: Path | None = None, ttl: float = 300) -> dict:
-    """每个工具的历史耗时基线 {tool: {"n", "p90"}} —— 全部文件、全部历史; 故意等待与后台启动不算; TTL 内复用。"""
+    """历史耗时基线 {比较对象: {"n", "p90"}} —— Bash / PowerShell 按命令族, 别的按工具名 (见 cmd_family);
+    全部文件、全部历史; 故意等待与后台启动不算; TTL 内复用。"""
     now = time.time()
     if _BASELINE["data"] is not None and now - _BASELINE["t"] < ttl:
         return _BASELINE["data"]
@@ -3350,10 +3652,15 @@ def baseline(base: Path | None = None, ttl: float = 300) -> dict:
                     if c.get("bg") or c.get("wait") or ex.get("isAsync") or ex.get("status") == "async_launched":
                         continue
                     if c["ts"] is not None and r["ts"] is not None:
-                        durs[c["name"]].append(max(0.0, r["ts"] - c["ts"]))
-    data = {name: {"n": len(v), "p90": p90(v)} for name, v in durs.items()}
+                        durs[c.get("fam") or c["name"]].append(max(0.0, r["ts"] - c["ts"]))
+    data = {name: {"n": len(v), "p90": p90(v), "slow_at": _pct_at(v, SLOW_PCTL)} for name, v in durs.items()}
     _BASELINE.update(t=now, data=data)
     return data
+
+
+def baseline_ready() -> bool:
+    """耗时基线算过没有 (冷启动要把全部 transcript 读一遍, 十几秒)。没算过时, 高频接口别去触发它。"""
+    return _BASELINE["data"] is not None
 
 
 def warm(base: Path | None = None) -> None:

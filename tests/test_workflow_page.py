@@ -113,7 +113,8 @@ def _export(base, out: Path) -> dict:
     for r in st["skills"]:
         refs |= {r["ref_occ"], r["ref_calls"]}
     for m in st["mcp"]:
-        refs |= {m["ref"], m["ref_occ"]} | {x["ref"] for x in m["tools"]}
+        refs |= {m["ref"], m["ref_occ"]} | {x["ref"] for x in m["tools"]} | {c["ref"] for c in m.get("causes") or []}
+    refs |= {b["ref"] for b in st["trends"]["buckets"]}
     for rows in st["compare"].values():
         refs |= {r["ref"] for r in rows}
     data["drills"] = {f"{ref}|{flag}": serve._wf_drill(base, {"since": ["all"], "stamp": [st["stamp"]], "ref": [ref],
@@ -136,6 +137,6 @@ def test_workflow_page_runs_clean(session, tmp_path):
     assert report["drawers"] >= 10
     seen = report["seen"]
     for k in ("stage_strip", "band", "dep_badge", "script_view", "glossary", "full_text",
-              "stats", "dots", "mcp_errors", "drill_jump", "changes", "chg_jump", "risks", "risk_jump"):
+              "stats", "dots", "mcp_causes", "trends", "trend_pts", "drill_jump", "changes", "chg_jump", "risks", "risk_jump"):
         assert seen[k], f"页面没有渲染出 {k}"
     assert report["stat_drills"] >= 15 and report["stat_jumps"] >= 15, report

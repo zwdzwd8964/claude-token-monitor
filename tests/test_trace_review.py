@@ -334,7 +334,7 @@ def test_deliberate_waits_are_never_slow(clean, tmp_path):
         result(61, "w", ""),
     ]
     base, main = _session(tmp_path, lines)
-    b = trace.build_task(_tasks(main)["P1"], baseline={"Bash": {"n": 100, "p90": 2.0}})
+    b = trace.build_task(_tasks(main)["P1"], baseline={"Bash:sleep": {"n": 100, "p90": 2.0, "slow_at": 2.0}})
     assert "slow" not in _nodes(b, lambda n: n.get("id") == "w")[0]["flags"]
 
 

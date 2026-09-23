@@ -320,7 +320,7 @@ def test_tree_structure(session):
 
 def test_flags_and_estimates(session):
     tasks, _ = _tasks(session)
-    built = trace.build_task(tasks["P1"], baseline={"Bash": {"n": 30, "p90": 1.0}})
+    built = trace.build_task(tasks["P1"], baseline={"Bash:npm test": {"n": 30, "p90": 1.0, "slow_at": 1.0}})   # 基线按命令族
     calls = {c["id"]: c for c in _find(built["tree"], lambda n: n["kind"] == "call")}
     assert "fail" in calls["tu1"]["flags"]
     assert "retry" in calls["tu3"]["flags"]                 # 同一命令 (空白不同) 失败后又跑
@@ -329,7 +329,9 @@ def test_flags_and_estimates(session):
     # 发起成本: 响应最终 output 50, 里面 2 个并行调用 -> 各 ≈25
     assert calls["tu1"]["issue_est"] == 25 and calls["tu2"]["issue_est"] == 25
     assert calls["tu1"]["meta"]["parallel"] == 2
-    few = trace.build_task(tasks["P1"], baseline={"Bash": {"n": 5, "p90": 1.0}})
+    few = trace.build_task(tasks["P1"], baseline={"Bash:npm test": {"n": 5, "p90": 1.0, "slow_at": 1.0}})
+    other = trace.build_task(tasks["P1"], baseline={"Bash:ls": {"n": 30, "p90": 0.1, "slow_at": 0.1}})
+    assert "slow" not in [c for c in _find(other["tree"], lambda n: n.get("id") == "tu1")][0]["flags"]   # 不拿 ls 的基线比 npm test
     c1 = [c for c in _find(few["tree"], lambda n: n.get("id") == "tu1")][0]
     assert "slow" not in c1["flags"]                        # 样本不足: 不判慢
 

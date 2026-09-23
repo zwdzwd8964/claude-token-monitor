@@ -56,7 +56,7 @@ vm.runInContext(js, ctx);
 const errors = [];
 let drawers = 0;
 const seen = { stage_strip: false, band: false, dep_badge: false, script_view: false, glossary: false, full_text: false,
-               stats: false, dots: false, mcp_errors: false, drill_jump: false, changes: false, chg_jump: false,
+               stats: false, dots: false, mcp_causes: false, trends: false, trend_pts: false, drill_jump: false, changes: false, chg_jump: false,
                risks: false, risk_jump: false };
 let statDrills = 0, statJumps = 0;
 function run(label, fn) {
@@ -96,14 +96,16 @@ async function statsSmoke() {
   for (let i = 0; i < 3; i++) await tick();
   const html0 = String(el("stats").innerHTML);
   seen.stats = html0.includes("工具排行") && html0.includes("跨任务对照");
-  seen.mcp_errors = html0.includes('class="e" data-go-task=');
+  seen.mcp_causes = html0.includes('class="cz"');
+  seen.trends = html0.includes('id="sec-trend"') && html0.includes('class="trc"');
+  seen.trend_pts = html0.includes('<rect class="tp"');
   for (const [tab, keys] of [["tools", ["name", "calls", "tasks", "time", "p50", "fail", "result_est"]], ["skills", ["name", "tasks", "calls", "tokens", "time", "fail"]]])
     for (const k of keys) run(`sort ${tab} ${k}`, () => vm.runInContext(`ST_SORT[${JSON.stringify(tab)}] = ${JSON.stringify(k)}; renderStats()`, ctx));
   run("more", () => vm.runInContext("ST_MORE.tools = ST_MORE.skills = ST_MORE.cmp = true; renderStats()", ctx));
   const spans = new Map(), gos = new Map();
   const collect = () => {
     const h = String(el("stats").innerHTML);
-    for (const [ref, flag, sort, title, n] of attrs(h, /<span class="num[^"]*" data-drill="([^"]*)" data-flag="([^"]*)" data-sort="([^"]*)" data-title="([^"]*)"(?: data-n="(\d+)")?/g))
+    for (const [ref, flag, sort, title, n] of attrs(h, /<(?:span|rect) class="(?:num|tp)[^"]*" data-drill="([^"]*)" data-flag="([^"]*)" data-sort="([^"]*)" data-title="([^"]*)"(?: data-n="(\d+)")?/g))
       spans.set(ref + "|" + flag + "|" + sort, {ref, flag, sort, title, n});
     for (const [t, n, k] of attrs(h, /data-go-task="([^"]*)" data-go-node="([^"]*)" data-go-kind="([^"]*)"/g)) gos.set(t + "|" + n, [t, n, k]);
     if (h.includes('class="pt')) seen.dots = true;

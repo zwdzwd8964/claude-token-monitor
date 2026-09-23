@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import activity, billing, control, notify, procmon, remote, runner, trace
 from .aggregate import Agg, filter_since, group_by, summarize
-from .event_sources import activity_source, cost_source
+from .event_sources import activity_source, cost_source, risk_source
 from .events import bus as event_bus
 from .parser import load_records
 from .pricing import cost_usd
@@ -523,6 +523,9 @@ def _wf_scrub_stats(out: dict) -> dict:
             tt["tool"] = _wf_red(tt["tool"])
         for e in m.get("errors") or []:
             e["tool"], e["excerpt"] = _wf_red(e.get("tool")), _wf_red(e.get("excerpt"))
+        for c in m.get("causes") or []:              # 失败原因归类: 归类文字与示例原文都来自工具返回
+            c["cause"], c["example"] = _wf_red(c.get("cause")), _wf_red(c.get("example"))
+            c["tools"] = [_wf_red(t) for t in c.get("tools") or []]
     done = set()                                     # 最慢 / 最贵 与 points 里的是同一个对象 (deepcopy 保留共享): 只处理一次
     for r in out.get("risks") or []:
         r["why"] = _wf_red(r.get("why"))
@@ -572,6 +575,33 @@ def _wf_drill(base, q) -> dict:
         if t:
             t["prompt"] = _wf_red(t.get("prompt"))
     out["restamped"] = restamped
+    return out
+
+
+_BRIEF_MAX_AGE = 86400                 # 一天没动静的会话不算简报 (列表里可能有几十个老会话)
+
+
+def _sessions_with_briefs(base) -> dict:
+    """/api/sessions = activity 快照 + 每个会话当前任务的简报 (风险标记 / 改动计数 / 回放入口)。
+    activity.snapshot 有 2 秒的**共享**缓存 (事件 pump 也在用): 只拷贝、绝不原地改。"""
+    snap = activity.snapshot(base, live=procmon.live_claude_index())
+    out = dict(snap)
+    rows = []
+    ready = trace.baseline_ready()      # 冷启动基线还没热好: 先不挂简报 (页面照常出, 十几秒后角标自己出现)
+    for row in snap.get("sessions", []):
+        r = dict(row)
+        age = row.get("last_activity_age_s")
+        if ready and row.get("file") and (age is None or age < _BRIEF_MAX_AGE):
+            try:
+                b = trace.session_brief(row["file"], running=row.get("state") in ("WORKING", "PROCESSING"))
+            except Exception:
+                b = None
+            if b:
+                r["workflow"] = {"task": b["task"], "changes": b["changes"], "files": b["files"],
+                                 "risks": [{"rule": x["rule"], "label": _wf_red(x["label"]), "n": x.get("n")}
+                                           for x in b["risks"]]}
+        rows.append(r)
+    out["sessions"] = rows
     return out
 
 
@@ -732,8 +762,9 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
                 self._json(procmon.snapshot)
                 return
             if path == "/api/sessions":
-                # 组合层在这里把 process 支柱的活性索引注入 activity —— activity 本身不 import procmon。
-                self._json(lambda: activity.snapshot(base, live=procmon.live_claude_index()))
+                # 组合层在这里把 process 支柱的活性索引注入 activity —— activity 本身不 import procmon;
+                # 再把 trace 支柱的「当前任务简报」挂上 (角标 + 实时回放入口)。
+                self._json(lambda: _sessions_with_briefs(base))
                 return
             if path == "/api/events":
                 q = parse_qs(parsed.query)
@@ -867,6 +898,7 @@ def run_serve(base: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
         return
     activity_source.start_pump(Path(base), live_factory=procmon.live_claude_index)   # M2: 对话活动事件 pump (5s, 带活性消歧)
     cost_source.start_pump(Path(base))        # M3.5: 成本预算 pump (60s)
+    risk_source.start_pump(Path(base), live_factory=procmon.live_claude_index)   # 改动与风险 S3: 风险事件 pump (15s, 只发 info)
     billing.start_pump()                      # B1: 厂商账单 pump (5min; 未配 key 则零外发)
     trace.start_warmer(Path(base))            # /workflow: 后台把 transcript 读进缓存 + 算耗时基线 (冷启动约 6-10s)
     notifier = notify.start_notifier()        # M3: 通知层订阅总线 (默认仅本地, 配 token 才外发)
@@ -1261,9 +1293,31 @@ _BASE_CSS = """
   .nav { display:flex; gap:14px; margin-left:auto; align-items:center; font-size:13px; }
   .nav a { color:var(--dim); text-decoration:none; padding:4px 8px; border-radius:7px; }
   .nav a:hover, .nav a.active { color:var(--fg); background:var(--panel); }
+  .nav details.more { position:relative; }
+  .nav details.more summary { list-style:none; cursor:pointer; color:var(--dim); padding:4px 8px; border-radius:7px; }
+  .nav details.more summary::-webkit-details-marker { display:none; }
+  .nav details.more summary:hover, .nav details.more summary.active, .nav details.more[open] summary { color:var(--fg); background:var(--panel); }
+  .nav details.more .menu { position:absolute; right:0; top:calc(100% + 4px); display:flex; flex-direction:column; gap:2px;
+      min-width:120px; background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:4px; z-index:60;
+      box-shadow:0 8px 24px rgba(0,0,0,.45); }
   .muted { color:var(--dim); } .warn { color:var(--warn); }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
 """
+
+# ---- 统一导航 (改动与风险 S3: 低频页收进「更多」; 一处定义, 各页替换 __NAV__) ----
+_NAV_MAIN = [("/", "主页"), ("/sessions", "Session 状态"), ("/tokens", "Token 看板"), ("/workflow", "工作流"),
+             ("/processes", "进程监控")]
+_NAV_MORE = [("/doctor", "体检"), ("/backtest", "回测"), ("/billing", "厂商账单")]
+
+
+def _nav_html(active: str = "") -> str:
+    def a(h, t):
+        return f'<a href="{h}"' + (' class="active"' if h == active else "") + f">{t}</a>"
+    cur = next((t for h, t in _NAV_MORE if h == active), "")
+    return ("".join(a(h, t) for h, t in _NAV_MAIN)
+            + f'<details class="more"><summary' + (' class="active"' if cur else "") + ">"
+            + (f"更多 · {cur}" if cur else "更多") + ' ▾</summary><div class="menu">'
+            + "".join(a(h, t) for h, t in _NAV_MORE) + "</div></details>")
 
 # ---- 主页 (并行同级入口) ----
 HOME = r"""<!doctype html>
@@ -1379,7 +1433,7 @@ PROC_PAGE = r"""<!doctype html>
 <header>
   <h1>进程 / 端口监控 <span>只读 · 本机 (终止需开控制模式)</span></h1>
   <div class="nav">
-    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/tokens">Token 看板</a><a href="/workflow">工作流</a><a href="/processes" class="active">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
+    __NAV__
   </div>
 </header>
 <main>
@@ -1633,6 +1687,11 @@ SESS_PAGE = r"""<!doctype html>
   .sb.unk  { color:var(--dim); border-color:#33384a; }
   .sb.closed { color:var(--dim); border-color:#33384a; }
   .idle { color:var(--dim); font-size:11px; border:1px solid var(--line); border-radius:6px; padding:1px 6px; }
+  .rkb { color:var(--warn); font-size:11px; border:1px solid #4a3d22; border-radius:6px; padding:1px 6px; text-decoration:none;
+         max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rkb:hover { border-color:var(--warn); }
+  .wfl { font-size:11.5px; color:var(--accent); text-decoration:none; white-space:nowrap; }
+  .wfl:hover { text-decoration:underline; }
   .detail { color:var(--dim); font-size:12.5px; margin-top:2px; }
   .snippet { color:var(--fg); opacity:.8; font-style:italic; }
   .events { display:flex; gap:6px; flex-wrap:wrap; margin-top:7px; }
@@ -1651,7 +1710,7 @@ SESS_PAGE = r"""<!doctype html>
 <header>
   <h1>Session 状态 <span>Mission Control · M1 先看见, 不通知</span></h1>
   <div class="nav">
-    <a href="/">主页</a><a href="/sessions" class="active">Session 状态</a><a href="/tokens">Token 看板</a><a href="/workflow">工作流</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
+    __NAV__
   </div>
 </header>
 <main>
@@ -1680,7 +1739,8 @@ const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&
 function fmtAgo(s){ if(s==null)return '—'; s=+s; if(s<60)return s+'s 前'; if(s<3600)return Math.floor(s/60)+'m 前'; if(s<86400)return Math.floor(s/3600)+'h 前'; return Math.floor(s/86400)+'d 前'; }
 function fmtClock(epoch){ if(!epoch) return '—'; try { return new Date(epoch*1000).toLocaleTimeString(); } catch(e){ return '—'; } }
 const EVT_LABEL = {SESSION_STARTED:'会话开始', TASK_COMPLETED:'任务完成', TOOL_ERROR:'工具出错',
-  SESSION_IDLE:'空闲', SESSION_STUCK:'久未返回', TOKEN_BUDGET_WARNING:'预算告警', PROCESS_CRASHED:'进程崩溃', COMMAND_ISSUED:'已下指令'};
+  SESSION_IDLE:'空闲', SESSION_STUCK:'久未返回', TOKEN_BUDGET_WARNING:'预算告警', PROCESS_CRASHED:'进程崩溃', COMMAND_ISSUED:'已下指令',
+  DESTRUCTIVE_OP:'破坏性操作', ERROR_SPIKE:'连续失败', REPEATED_FILE_EDIT:'改了又改没通过', LARGE_DIFF:'大改动'};
 let EVENTS=[], evCursor=0, evDropped=0;
 function evDetail(e){   // 返回纯文本; 转义由唯一的外层 esc(evDetail(e)) 负责, 这里不再 esc 以免双重转义
   const p=e.payload||{};
@@ -1688,6 +1748,10 @@ function evDetail(e){   // 返回纯文本; 转义由唯一的外层 esc(evDetai
   if(e.type==='SESSION_STUCK') return p.state_label||'久未返回';
   if(e.type==='TOOL_ERROR') return '工具 '+(p.tool_name||'?')+' 报错';
   if(e.type==='TASK_COMPLETED') return p.state_from?('从 '+p.state_from+' 完成一轮'):'完成一轮';
+  if(e.type==='DESTRUCTIVE_OP') return (p.kind||'?')+'（规则判断，只标不拦）';
+  if(e.type==='ERROR_SPIKE') return '连着失败 '+(p.count||'?')+' 次';
+  if(e.type==='REPEATED_FILE_EDIT') return '同一个文件来回 '+(p.count||'?')+' 轮都没通过';
+  if(e.type==='LARGE_DIFF') return p.rule==='large-task'?('一个任务动了 '+p.count+' 个文件'):('单次大改动 '+(p.count||'?')+' 次');
   return '';
 }
 function renderTimeline(){
@@ -1811,6 +1875,10 @@ function render(){
   const body = rows.map(s=>{
     const cls=CLS[s.state]||'unk';
     const idleBadge = (s.state==='AWAITING_USER'&&s.idle) ? '<span class="idle" title="Claude 已回复你, 超过 10min 没人接话 —— 你欠它一句话">等你已久</span>' : '';
+    const wf = s.workflow, live = s.state==='WORKING'||s.state==='PROCESSING';
+    const wfHref = wf ? '/workflow?task='+encodeURIComponent(wf.task) : '';
+    const riskBadge = (wf && wf.risks.length) ? `<a class="rkb" href="${wfHref}" title="${esc('风险（规则判断，推断；只标不拦）\n'+wf.risks.map(r=>'· '+r.label).join('\n')+'\n点击看当前任务的回放')}">⚠ ${esc(wf.risks[0].label)}${wf.risks.length>1?' 等 '+wf.risks.length+' 条':''}</a>` : '';
+    const wfLink = wf ? `<a class="wfl" href="${wfHref}" title="${live?'打开当前任务的实时回放（每 5 秒自动刷新）':'打开这个会话最后一个任务的回放'}">${live?'实时回放 →':'回放 →'}</a>` : '';
     const titleText = s.title || s.project;                 // 标题为主, 无标题回退项目名
     const metaBits = [];
     if(s.title) metaBits.push(esc(s.project)+(s.subpath?' /'+esc(s.subpath):''));   // 有标题时项目名降为辅
@@ -1826,7 +1894,7 @@ function render(){
       <div class="r1">
         <span class="title" title="${esc(s.title||'')}">${esc(titleText)}</span>
         <span class="sb ${cls}" title="${esc(s.state_label)}">${esc(s.state_label)}</span>
-        ${idleBadge}
+        ${idleBadge}${riskBadge}${wfLink}
         <span class="age">${fmtAgo(s.last_activity_age_s)}</span>
       </div>
       ${metaBits.length?`<div class="meta2">${metaBits.join(' · ')}</div>`:''}
@@ -1895,7 +1963,7 @@ NOTIFY_PAGE = r"""<!doctype html>
 <header>
   <h1>通知 / 规则 <span>Mission Control · M3 · 出站推送 (有用且不烦)</span></h1>
   <div class="nav">
-    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/tokens">Token 看板</a><a href="/workflow">工作流</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
+    __NAV__
   </div>
 </header>
 <main>
@@ -2009,7 +2077,7 @@ CONTROL_PAGE = r"""<!doctype html>
 <header>
   <h1>远程审批 / 控制 <span>Mission Control · M4 · 你显式下达, 全程审计, 失败回退本地</span></h1>
   <div class="nav">
-    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/tokens">Token 看板</a><a href="/workflow">工作流</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
+    __NAV__
   </div>
 </header>
 <main>
@@ -2180,7 +2248,7 @@ DOCTOR_PAGE = r"""<!doctype html>
 <header>
   <h1>体检 / doctor <span>Mission Control · M4.5 · 对真相校验, 让格式漂移可被发现</span></h1>
   <div class="nav">
-    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/tokens">Token 看板</a><a href="/workflow">工作流</a><a href="/processes">进程监控</a><a href="/doctor" class="active">体检</a><a href="/backtest">回测</a><a href="/billing">厂商账单</a>
+    __NAV__
   </div>
 </header>
 <main>
@@ -2237,7 +2305,7 @@ BACKTEST_PAGE = r"""<!doctype html>
 <header>
   <h1>准确率回测 / L2 <span>用 transcript 的未来当真值 · 三把尺并排, 你分别评测</span></h1>
   <div class="nav">
-    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/tokens">Token 看板</a><a href="/workflow">工作流</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest" class="active">回测</a><a href="/billing">厂商账单</a>
+    __NAV__
   </div>
 </header>
 <main>
@@ -2313,7 +2381,7 @@ BILLING_PAGE = r"""<!doctype html>
 <header>
   <h1>厂商账单 / billing <span>OpenAI · Anthropic 的真实 API 平台开销 (官方 usage/cost API)</span></h1>
   <div class="nav">
-    <a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/tokens">Token 看板</a><a href="/workflow">工作流</a><a href="/processes">进程监控</a><a href="/doctor">体检</a><a href="/backtest">回测</a><a href="/billing" class="active">厂商账单</a>
+    __NAV__
   </div>
 </header>
 <main>
@@ -2411,9 +2479,7 @@ setInterval(load, 60000);
 
 # ---- /workflow 页面 (独立文件, 不再往本文件里内联 —— RECAP 侧批 #6) ----
 def _load_page(name: str) -> str:
-    nav = ('<a href="/">主页</a><a href="/sessions">Session 状态</a><a href="/tokens">Token 看板</a>'
-           '<a href="/workflow" class="active">工作流</a><a href="/processes">进程监控</a><a href="/doctor">体检</a>'
-           '<a href="/backtest">回测</a><a href="/billing">厂商账单</a>')
+    nav = _nav_html("/workflow")
     try:
         src = (Path(__file__).parent / "pages" / name).read_text(encoding="utf-8")
     except OSError:
@@ -2422,3 +2488,10 @@ def _load_page(name: str) -> str:
 
 
 WORKFLOW_PAGE = _load_page("workflow.html")
+PROC_PAGE = PROC_PAGE.replace("__NAV__", _nav_html("/processes"))
+SESS_PAGE = SESS_PAGE.replace("__NAV__", _nav_html("/sessions"))
+NOTIFY_PAGE = NOTIFY_PAGE.replace("__NAV__", _nav_html("/notify"))
+CONTROL_PAGE = CONTROL_PAGE.replace("__NAV__", _nav_html("/control"))
+DOCTOR_PAGE = DOCTOR_PAGE.replace("__NAV__", _nav_html("/doctor"))
+BACKTEST_PAGE = BACKTEST_PAGE.replace("__NAV__", _nav_html("/backtest"))
+BILLING_PAGE = BILLING_PAGE.replace("__NAV__", _nav_html("/billing"))
