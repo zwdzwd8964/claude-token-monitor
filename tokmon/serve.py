@@ -5,6 +5,7 @@
 
   GET /                      -> 单页 HTML 看板 (内联, 无外部 CDN, 可离线)
   GET /api/summary?since=&scope=&vscode_only=  -> JSON 汇总 (含「vs 上一周期」自基线对比)
+  GET /api/tokens/cube?since=&scope=&vscode_only=  -> /tokens 页的数据立方 (同口径, 前端本地切片/联动筛选)
 
 自基线对比 (复盘): 对所选窗口, 额外聚合「紧邻的、等长的上一周期」(同一份 load_records()
 输出的第二次 filter+summarize), 给出 token/成本/项目的 Δ% —— 回答北极星第三问
@@ -23,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import activity, billing, control, notify, procmon, remote, runner, trace
+from . import activity, billing, control, notify, procmon, remote, runner, tokens_view, trace
 from .aggregate import Agg, filter_since, group_by, summarize
 from .event_sources import activity_source, cost_source, risk_source
 from .events import bus as event_bus
@@ -139,6 +140,46 @@ def build_summary(base: Path, since: str, scope: str, vscode_only: bool) -> dict
         "by_project": _rows(rows, lambda r: r.project),
         "by_model": _rows(rows, lambda r: r.model),
         "by_source": _rows(rows, lambda r: r.source_kind),
+    }
+
+
+def build_cube(base: Path, since: str, scope: str, vscode_only: bool) -> dict:
+    """GET /api/tokens/cube —— /tokens 页的数据立方 (tokens_view.build), 口径与 build_summary 完全相同:
+    同一个 load_records / parse_since / _baseline_window / _filter_window, 所以两边的总量、按天/项目/模型/来源、
+    基线都能逐项对上 (tests/test_tokens_view.py 钉死)。`total` / `baseline.total` 随包下发, 前端自己对账。"""
+    include_kinds = SCOPE_KINDS.get(scope, SCOPE_KINDS["all"])
+    records = load_records(base, include_kinds, vscode_only)
+    now = datetime.now().astimezone()
+    cutoff = parse_since(since)
+    rows = filter_since(records, cutoff)
+    bw = _baseline_window(since, now, cutoff)
+    prev_rows = _filter_window(records, *bw) if bw is not None else None
+    cube = tokens_view.build(rows, prev_rows, records)
+    prev_enc = cube.pop("prev_rows")
+    baseline = None
+    if bw is not None:
+        prev_lo, prev_hi = bw
+        earliest = min((r.timestamp for r in records), default=None)
+        baseline = {
+            "prev_lo": prev_lo.isoformat(timespec="seconds"),
+            "prev_hi": prev_hi.isoformat(timespec="seconds"),
+            "lo": round(prev_lo.timestamp(), 3),
+            "hi": round(prev_hi.timestamp(), 3),
+            "kind": "prev-day-partial" if (since or "").strip().lower() == "today" else "prev-period",
+            "partial": earliest is not None and prev_lo < earliest,
+            "total": _agg_dict(summarize(prev_rows)),
+            "rows": prev_enc,
+        }
+    return {
+        "v": 1,
+        "generated_at": now.isoformat(timespec="seconds"),
+        "window": since or "all",
+        "scope": scope,
+        "vscode_only": vscode_only,
+        "span": tokens_view.span_of(cutoff, now, records),
+        "total": _agg_dict(summarize(rows)),
+        "baseline": baseline,
+        **cube,
     }
 
 
@@ -672,7 +713,7 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
             known = {"/", "/tokens", "/processes", "/sessions", "/notify", "/control", "/doctor", "/backtest",
                      "/billing", "/workflow", "/api/workflow/tasks", "/api/workflow/task", "/api/workflow/call",
                      "/api/workflow/text", "/api/workflow/script", "/api/workflow/stats", "/api/workflow/drill",
-                     "/api/summary", "/api/processes", "/api/health", "/api/sessions", "/api/events",
+                     "/api/summary", "/api/tokens/cube", "/api/processes", "/api/health", "/api/sessions", "/api/events",
                      "/api/notifications", "/api/notify-test", "/api/control", "/api/budget", "/api/doctor",
                      "/api/backtest", "/api/billing"}
             p = urlparse(self.path).path
@@ -757,6 +798,13 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
                 scope = q.get("scope", ["all"])[0]
                 vscode_only = q.get("vscode_only", ["0"])[0] in ("1", "true", "True")
                 self._json(lambda: build_summary(base, since, scope, vscode_only))
+                return
+            if path == "/api/tokens/cube":        # 已过上面的读门 (远程模式要令牌), 与 /api/summary 同参数同口径
+                q = parse_qs(parsed.query)
+                since = q.get("since", ["7d"])[0]
+                scope = q.get("scope", ["all"])[0]
+                vscode_only = q.get("vscode_only", ["0"])[0] in ("1", "true", "True")
+                self._json(lambda: build_cube(base, since, scope, vscode_only))
                 return
             if path == "/api/processes":
                 self._json(procmon.snapshot)
@@ -999,283 +1047,7 @@ $('#t').focus();
 """
 
 
-PAGE = r"""<!doctype html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>tokmon · Token 看板</title>
-<style>
-  :root { --bg:#0f1115; --panel:#181b22; --line:#262b36; --fg:#e6e9ef; --dim:#8b93a7;
-          --accent:#7aa2f7; --warn:#e0af68; --good:#9ece6a; --bar:#3d59a1; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
-  header { padding:18px 24px; border-bottom:1px solid var(--line);
-           display:flex; flex-wrap:wrap; gap:16px; align-items:center; }
-  h1 { font-size:18px; margin:0; font-weight:600; }
-  h1 span { color:var(--dim); font-weight:400; font-size:13px; margin-left:8px; }
-  .controls { display:flex; gap:10px; align-items:center; margin-left:auto; flex-wrap:wrap; }
-  select, button, label.chk { background:var(--panel); color:var(--fg);
-           border:1px solid var(--line); border-radius:8px; padding:6px 10px; font-size:13px; }
-  button { cursor:pointer; } button:hover { border-color:var(--accent); }
-  label.chk { display:inline-flex; gap:6px; align-items:center; cursor:pointer; }
-  main { padding:24px; display:grid; gap:20px;
-         grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); max-width:1280px; }
-  .kpis { grid-column:1/-1; display:grid; gap:14px;
-          grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); }
-  .kpi { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
-  .kpi .v { font-size:24px; font-weight:600; }
-  .kpi .k { color:var(--dim); font-size:12px; margin-bottom:4px; }
-  .chiprow { margin-top:7px; }
-  .chip { display:inline-block; font-size:11px; padding:2px 7px; border-radius:6px;
-          border:1px solid var(--line); white-space:nowrap; }
-  .chip.good { color:var(--good); border-color:#2c3a23; background:#151d12; }
-  .chip.bad  { color:var(--warn); border-color:#3a3320; background:#1d1a12; }
-  .chip.flat { color:var(--dim); }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
-  .card h2 { font-size:14px; margin:0 0 12px; font-weight:600; }
-  table { width:100%; border-collapse:collapse; }
-  th,td { text-align:right; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
-  th:first-child, td:first-child { text-align:left; }
-  th { color:var(--dim); font-weight:500; font-size:12px; }
-  td.lbl { max-width:220px; overflow:hidden; text-overflow:ellipsis; }
-  .bars { display:flex; flex-direction:column; gap:6px; }
-  .bar-row { display:grid; grid-template-columns:90px 1fr auto; gap:10px; align-items:center; font-size:12px; }
-  .bar-track { background:#11141a; border-radius:5px; height:18px; overflow:hidden; }
-  .bar-fill { background:var(--bar); height:100%; border-radius:5px; min-width:2px; }
-  .pd-row { display:grid; grid-template-columns:1fr auto auto; gap:12px; align-items:center; font-size:12px; }
-  .muted { color:var(--dim); } .warn { color:var(--warn); }
-  footer { padding:14px 24px; color:var(--dim); font-size:12px; border-top:1px solid var(--line); }
-  a { color:var(--accent); }
-</style>
-</head>
-<body>
-<header>
-  <h1><a href="/" style="color:var(--dim);text-decoration:none;margin-right:6px" title="返回监控台主页">←</a>tokmon <span>Token 看板 · 早期预览</span> <a href="/workflow" style="font-size:13px;margin-left:10px;font-weight:400">钱花在哪 → 工作流回放</a></h1>
-  <div class="controls">
-    <select id="since" title="时间窗口">
-      <option value="today">今天</option>
-      <option value="24h">近 24h</option>
-      <option value="7d" selected>近 7 天</option>
-      <option value="2w">近 2 周</option>
-      <option value="all">全部</option>
-    </select>
-    <select id="scope" title="范围">
-      <option value="all" selected>全部 (含子智能体/workflow)</option>
-      <option value="main">仅主会话</option>
-    </select>
-    <label class="chk"><input type="checkbox" id="vscode"> 仅 .vscode</label>
-    <label class="chk"><input type="checkbox" id="auto"> 自动刷新 5s</label>
-    <button id="refresh">刷新</button>
-  </div>
-</header>
-<div id="budget" style="padding:0 24px;margin-top:14px"></div>
-<main id="app"><div class="muted" style="grid-column:1/-1">加载中…</div></main>
-<footer id="foot"></footer>
-
-<script>
-const $ = s => document.querySelector(s);
-// 标签来自 cwd 文件夹名 (未公开格式, 视为真相) -> 转义后再进 innerHTML, 保证忠实显示且不被当作标记。
-const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function fmtTokens(n){
-  n = +n || 0;
-  if(n>=1e9) return (n/1e9).toFixed(2)+"B";
-  if(n>=1e6) return (n/1e6).toFixed(2)+"M";
-  if(n>=1e3) return (n/1e3).toFixed(1)+"k";
-  return String(n|0);
-}
-function fmtUsd(x){ return "$"+(+x||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
-
-// 自基线 Δ 徽标。higherIsGood: 命中率这种「越高越好」传 true; 成本/token 传 false。
-// 诚实约定: 无基线 -> 「无基线」; 上期为 0 而本期>0 -> 「新增」; 先给绝对量再给 %。
-function deltaChip(cur, prev, hasBaseline, fmtAbs, higherIsGood){
-  if(!hasBaseline) return `<span class="chip flat" title="当前窗口无可比的上一周期 (选 today/24h/7d/2w 才有基线)">— 无基线</span>`;
-  const diff = cur - prev;
-  const absTxt = (diff>=0?"+":"−") + fmtAbs(Math.abs(diff));
-  if(prev === 0){
-    if(cur === 0) return `<span class="chip flat" title="上一周期也为 0">持平</span>`;
-    const cls = higherIsGood ? "good" : "bad";
-    return `<span class="chip ${cls}" title="上一周期为 0 (${absTxt})">＋新增</span>`;
-  }
-  const p = (cur - prev) / prev * 100;
-  const cls = Math.abs(p) <= 0.5 ? "flat" : (((p > 0) === higherIsGood) ? "good" : "bad");
-  const arrow = p > 0.5 ? "▲" : (p < -0.5 ? "▼" : "·");
-  return `<span class="chip ${cls}" title="对比你自己的上一等长周期 (非预算)">${arrow} ${absTxt} · ${(p>=0?"+":"")+p.toFixed(0)}%</span>`;
-}
-
-function hitRate(a){
-  const denom = (a.cache_read||0) + (a.cache_write||0) + (a.input||0);
-  return denom > 0 ? a.cache_read/denom : null;   // 命中率 = 缓存读 / (缓存读+缓存写+输入)
-}
-
-function barList(rows, link){
-  if(!rows.length) return `<div class="muted">无数据</div>`;
-  const m = Math.max(1, ...rows.map(r=>r.tokens));
-  return `<div class="bars">` + rows.map(r=>`
-    <div class="bar-row">
-      ${link ? `<a class="lbl" href="${link(r.label)}" title="看 ${esc(r.label)} 的任务回放 →" style="color:inherit">${esc(r.label)} ↗</a>`
-             : `<span class="lbl" title="${esc(r.label)}">${esc(r.label)}</span>`}
-      <div class="bar-track"><div class="bar-fill" style="width:${(r.tokens/m*100).toFixed(1)}%"></div></div>
-      <span>${fmtTokens(r.tokens)} · ${fmtUsd(r.cost)}${r.any_unpriced?'<span class="warn">*</span>':''}</span>
-    </div>`).join("") + `</div>`;
-}
-function tableOf(rows){
-  if(!rows.length) return `<div class="muted">无数据</div>`;
-  return `<table><thead><tr>
-    <th>名称</th><th>Tokens</th><th>Input</th><th>Output</th><th>Cache R/W</th><th>Cost</th><th>Msgs</th>
-    </tr></thead><tbody>` + rows.map(r=>`<tr>
-      <td class="lbl" title="${esc(r.label)}">${esc(r.label)}</td>
-      <td>${fmtTokens(r.tokens)}</td>
-      <td>${fmtTokens(r.input)}</td>
-      <td>${fmtTokens(r.output)}</td>
-      <td>${fmtTokens(r.cache_read)}/${fmtTokens(r.cache_write)}</td>
-      <td>${fmtUsd(r.cost)}${r.any_unpriced?'<span class="warn">*</span>':''}</td>
-      <td>${r.count}</td>
-    </tr>`).join("") + `</tbody></table>`;
-}
-
-// 「变化最大的项目」: 按成本相对上一周期的变化绝对值排序, 含新增/已停。
-function projectDeltaCard(pd, hasBaseline){
-  if(!hasBaseline || !pd.length) return "";
-  const rows = pd.map(p=>({...p, diff:(p.cost||0)-(p.prev_cost||0)}))
-                 .filter(p=>p.cost>0 || p.prev_cost>0)
-                 .sort((a,b)=>Math.abs(b.diff)-Math.abs(a.diff))
-                 .slice(0,6);
-  if(!rows.length) return "";
-  const body = rows.map(p=>{
-    let status, cls;
-    const absd = (p.diff>=0?"+":"−")+fmtUsd(Math.abs(p.diff));
-    if(p.prev_cost===0 && p.cost>0){ status="＋新增"; cls="bad"; }
-    else if(p.cost===0 && p.prev_cost>0){ status="已停 ✓"; cls="good"; }
-    else { const pp=(p.cost-p.prev_cost)/p.prev_cost*100;
-           status=(pp>0.5?"▲ +":(pp<-0.5?"▼ ":"· "))+Math.abs(pp).toFixed(0)+"%";
-           cls=pp>0.5?"bad":(pp<-0.5?"good":"flat"); }
-    const star = p.any_unpriced ? '<span class="warn">*</span>' : '';
-    return `<div class="pd-row">
-      <span class="lbl" title="${esc(p.label)}">${esc(p.label)}</span>
-      <span class="muted">${fmtUsd(p.cost)}${star}</span>
-      <span class="chip ${cls}" title="vs 上一周期 ${absd}">${status} · ${absd}</span></div>`;
-  }).join("");
-  return `<div class="card"><h2>变化最大的项目 <span class="muted" style="font-weight:400;font-size:12px;margin-left:6px">成本 vs 上一周期</span></h2><div class="bars">${body}</div></div>`;
-}
-
-let reqId = 0;
-async function load(){
-  const my = ++reqId;                       // 只让最新一次请求作数 -> 丢弃乱序/过期响应
-  const since = $("#since").value, scope = $("#scope").value;
-  const vscode = $("#vscode").checked ? "1" : "0";
-  $("#foot").textContent = "加载中…";
-  try{
-    const r = await fetch(`/api/summary?since=${since}&scope=${scope}&vscode_only=${vscode}`);
-    const d = await r.json();
-    if(my !== reqId) return;                 // 期间已有更新的请求发出, 本次结果作废
-    if(d.error){ $("#app").innerHTML = `<div class="warn" style="grid-column:1/-1">出错: ${esc(d.error)}</div>`; return; }
-    render(d);
-    let base = "";
-    if(d.baseline){
-      base = d.baseline.kind==="prev-day-partial"
-        ? " · 基线=昨天同一时段 (非预算)"
-        : ` · 基线=上一等长周期 ${d.baseline.prev_lo.slice(0,10)}~${d.baseline.prev_hi.slice(0,10)} (非预算)`;
-      if(d.baseline.partial) base += ` · <span class="warn">⚠ 历史不足, 基线偏低</span>`;
-      if(d.baseline.total.any_unpriced) base += ` · <span class="warn">* 基线含未知单价模型, 对比偏高</span>`;
-    } else {
-      base = " · 当前窗口无可比基线 (选 today/24h/7d/2w 可对比)";
-    }
-    $("#foot").innerHTML = `数据生成于 ${esc(d.generated_at)} · 窗口=${esc(d.window)} · scope=${esc(d.scope)}`
-      + base
-      + (d.total.any_unpriced ? ` · <span class="warn">* 含未知单价模型, 成本偏低</span>` : "")
-      + ` · 纯本地只读, 不外发`;
-  }catch(e){ if(my === reqId) $("#foot").textContent = "请求失败: "+e; }
-}
-
-function render(d){
-  const t = d.total, b = d.baseline, hasB = !!b;
-  const hr = hitRate(t), hrPrev = hasB ? hitRate(b.total) : null;
-  const hrChip = (hr!==null && hrPrev!==null)
-    ? deltaChip(hr*100, hrPrev*100, true, x=>x.toFixed(1)+"pp", true) : "";
-  const kpis = [
-    {k:"总 Tokens", v:fmtTokens(t.tokens),
-     chip:deltaChip(t.tokens, hasB?b.total.tokens:0, hasB, fmtTokens, false)},
-    {k:"等价成本", v:fmtUsd(t.cost)+((t.any_unpriced||(hasB&&b.total.any_unpriced))?' *':''),
-     chip:deltaChip(t.cost, hasB?b.total.cost:0, hasB, fmtUsd, false)},
-    {k:"缓存命中率", v: hr===null?"—":(hr*100).toFixed(0)+"%", chip:hrChip},
-    {k:"Output", v:fmtTokens(t.output), chip:""},
-    {k:"消息数", v:String(t.count), chip:""},
-  ];
-  const kpiHtml = kpis.map(c=>`<div class="kpi"><div class="k">${c.k}</div>`
-    + `<div class="v">${c.v}</div>${c.chip?`<div class="chiprow">${c.chip}</div>`:""}</div>`).join("");
-  $("#app").innerHTML = `
-    <div class="kpis">${kpiHtml}</div>
-    <div class="card"><h2>按天</h2>${barList(d.by_day)}</div>
-    <div class="card"><h2>按项目 <span class="muted" style="font-size:12px;font-weight:400">点项目名看它的任务回放</span></h2>${barList(d.by_project, l => '/workflow?project=' + encodeURIComponent(l) + '&since=' + ({today:'today','24h':'7d','7d':'7d','2w':'30d',all:'all'}[$("#since").value] || '7d'))}</div>
-    ${projectDeltaCard(d.project_deltas, hasB)}
-    <div class="card"><h2>按模型</h2>${tableOf(d.by_model)}</div>
-    <div class="card"><h2>按来源 (main / subagent / workflow)</h2>${tableOf(d.by_source)}</div>
-  `;
-}
-
-// ---- 预算 / 阈值告警 (M3.5) ----
-let CTRL_TOKEN=localStorage.getItem('mc_ctl_token')||'';
-const SCOPE_ZH={daily:'今日预算',weekly:'近7天预算',project:'项目预算'};
-function bcolor(pct){ return pct>=90?'#f7768e':(pct>=70?'var(--warn)':'var(--good)'); }
-async function loadBudget(){
-  const af=document.activeElement;                 // 别在你正打字时把表单重绘没了
-  if(af && (af.id==='bd'||af.id==='bw')) return;
-  try{
-    const d=await (await fetch('/api/budget')).json();
-    const bs=d.budgets||[];
-    let inner='';
-    if(bs.length){
-      inner='<div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">'+bs.map(b=>{
-        const pct=Math.max(0,b.pct), w=Math.min(100,pct), col=bcolor(pct);
-        const name=(SCOPE_ZH[b.scope]||b.scope)+(b.project?(' · '+esc(b.project)):'');
-        return `<div class="card" style="padding:12px 14px">
-          <div style="display:flex;justify-content:space-between"><span>${name}</span><span style="color:${col};font-weight:600">${pct}%</span></div>
-          <div style="height:8px;border-radius:5px;background:#11141a;margin-top:8px;overflow:hidden"><div style="height:100%;width:${w}%;background:${col}"></div></div>
-          <div class="muted" style="font-size:12px;margin-top:6px">${fmtUsd(b.spend)} / ${fmtUsd(b.limit)}</div></div>`;
-      }).join('')+'</div>';
-    } else {
-      inner='<div class="muted" style="font-size:13px">未设预算。设个日/周等价美元上限, 越线(70%/90%)就主动提醒你 →</div>';
-    }
-    const form=`<div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
-        <span class="muted" style="font-size:12px">设预算 $:</span>
-        <input id="bd" type="number" min="0" step="1" placeholder="日" style="width:80px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:5px 8px">
-        <input id="bw" type="number" min="0" step="1" placeholder="周(近7天)" style="width:110px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:5px 8px">
-        <button id="bsave" style="background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:5px 12px;cursor:pointer">保存</button>
-        <span id="bmsg" class="muted" style="font-size:12px"></span></div>`;
-    $('#budget').innerHTML=`<h2 style="font-size:15px;margin:0 0 8px">预算 / 阈值告警 <span class="muted" style="font-weight:400;font-size:12px">越线 → 事件 → 通知 (critical@90%)</span></h2>${inner}${form}`;
-    $('#bsave').addEventListener('click', saveBudget);
-  }catch(e){}
-}
-async function saveBudget(){
-  if(!CTRL_TOKEN){ const t=prompt('粘贴控制令牌 (见服务器控制台 / ~/.tokmon/control_token):'); if(t&&t.trim()){ CTRL_TOKEN=t.trim(); localStorage.setItem('mc_ctl_token',CTRL_TOKEN); } }
-  if(!CTRL_TOKEN){ $('#bmsg').textContent='需要控制令牌'; return; }
-  const body={}; const d=$('#bd').value, w=$('#bw').value;
-  if(d!=='') body.daily_usd=parseFloat(d);
-  if(w!=='') body.weekly_usd=parseFloat(w);
-  $('#bmsg').textContent='保存中…';
-  try{
-    const r=await fetch('/api/budget',{method:'POST',headers:{'Content-Type':'application/json','X-Control-Token':CTRL_TOKEN},body:JSON.stringify(body)});
-    if(r.status===403){ localStorage.removeItem('mc_ctl_token'); CTRL_TOKEN=''; $('#bmsg').textContent='令牌无效, 重试'; return; }
-    $('#bmsg').textContent = r.ok?'已保存':('失败 '+r.status); loadBudget();
-  }catch(e){ $('#bmsg').textContent='失败: '+e; }
-}
-
-let timer = null;
-function tickAll(){ load(); loadBudget(); }
-function setAuto(){
-  if(timer){ clearInterval(timer); timer=null; }
-  if($("#auto").checked){ timer = setInterval(tickAll, 5000); }
-}
-["since","scope","vscode"].forEach(id=>$("#"+id).addEventListener("change", load));
-$("#auto").addEventListener("change", setAuto);
-$("#refresh").addEventListener("click", tickAll);
-load(); loadBudget();
-</script>
-</body>
-</html>
-"""
+# /tokens 页面已搬到 tokmon/pages/tokens.html (由文件末尾的 _load_page 载入, 与 /workflow 同一机制)。
 
 
 # ---- 公共样式 (主页 + 进程页共用基础皮肤) ----
@@ -2477,9 +2249,10 @@ setInterval(load, 60000);
 """.replace("__BASE__", _BASE_CSS)
 
 
-# ---- /workflow 页面 (独立文件, 不再往本文件里内联 —— RECAP 侧批 #6) ----
-def _load_page(name: str) -> str:
-    nav = _nav_html("/workflow")
+# ---- 独立文件的页面 (/workflow, /tokens —— 不再往本文件里内联, RECAP 侧批 #6) ----
+def _load_page(name: str, active: str = "/workflow") -> str:
+    """读 tokmon/pages/<name>, 换上公共皮肤与统一导航 (active = 高亮哪一项)。文件缺失 -> 友好提示页, 不崩。"""
+    nav = _nav_html(active)
     try:
         src = (Path(__file__).parent / "pages" / name).read_text(encoding="utf-8")
     except OSError:
@@ -2487,7 +2260,8 @@ def _load_page(name: str) -> str:
     return src.replace("__BASE__", _BASE_CSS).replace("__NAV__", nav)
 
 
-WORKFLOW_PAGE = _load_page("workflow.html")
+WORKFLOW_PAGE = _load_page("workflow.html", "/workflow")
+PAGE = _load_page("tokens.html", "/tokens")      # /tokens (名字沿用旧的内联常量)
 PROC_PAGE = PROC_PAGE.replace("__NAV__", _nav_html("/processes"))
 SESS_PAGE = SESS_PAGE.replace("__NAV__", _nav_html("/sessions"))
 NOTIFY_PAGE = NOTIFY_PAGE.replace("__NAV__", _nav_html("/notify"))

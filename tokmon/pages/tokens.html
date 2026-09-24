@@ -1,0 +1,1667 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token 看板</title>
+<link rel="icon" href="data:,">
+<style>__BASE__
+  /* ---------- 版本 A「驾驶舱」: 一屏分析台, 12 栏紧凑卡片, 过滤是主交互 ---------- */
+  :root { --grid:#222733; --axis:#394152; --ink2:#b9c0d0; --selbg:#1f2a40; --selbd:#34466d; }
+  body { font-variant-numeric:tabular-nums; }
+  header { padding:12px 20px; }
+  button, select, input { font:inherit; }
+
+  /* 顶栏 (sticky): 窗口 / 范围 / 指标 + 当前筛选 */
+  .tb { position:sticky; top:0; z-index:40; background:rgba(15,17,21,.94); border-bottom:1px solid var(--line);
+        padding:7px 20px 6px; display:flex; flex-direction:column; gap:5px; backdrop-filter:blur(6px); }
+  .tb .r1 { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .tb .lbl { color:var(--dim); font-size:12px; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--panel); }
+  .seg button { border:0; background:transparent; color:var(--dim); padding:4px 10px; font-size:12.5px; cursor:pointer; white-space:nowrap; }
+  .seg button + button { border-left:1px solid var(--line); }
+  .seg button:hover { color:var(--fg); }
+  .seg button.on { background:#253252; color:var(--fg); }
+  .seg.sm button { padding:2px 8px; font-size:11.5px; }
+  select, .btn, label.chk { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:8px;
+        padding:4px 9px; font-size:12.5px; }
+  .btn { cursor:pointer; } .btn:hover { border-color:var(--accent); }
+  label.chk { display:inline-flex; gap:5px; align-items:center; cursor:pointer; white-space:nowrap; }
+  .tb .sp { flex:1 1 auto; }
+  #stamp { font-size:11.5px; color:var(--dim); white-space:nowrap; }
+  .fx { display:flex; flex-wrap:wrap; gap:5px; align-items:center; font-size:12px; min-height:22px; }
+  .fx .hint { color:var(--dim); font-size:11.5px; }
+  .fchip { display:inline-flex; align-items:center; gap:4px; padding:0 2px 0 8px; border-radius:999px; line-height:20px;
+        background:var(--selbg); border:1px solid var(--selbd); max-width:340px; }
+  .fchip b { color:var(--dim); font-weight:500; white-space:nowrap; }
+  .fchip span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fchip button { border:0; background:transparent; color:var(--dim); cursor:pointer; padding:0 5px; font-size:13px; line-height:18px; }
+  .fchip button:hover { color:var(--fg); }
+  #fclear { border:0; background:transparent; color:var(--accent); cursor:pointer; font-size:12px; padding:0 4px; }
+  body.busy main.g { opacity:.6; transition:opacity .15s; }
+
+  /* 网格 */
+  main.g { display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); gap:10px; padding:10px 20px 12px;
+        max-width:1720px; margin:0 auto; }
+  .card { padding:9px 12px 10px; border-radius:10px; min-width:0; position:relative; }
+  .w2 { grid-column:span 2; } .w3 { grid-column:span 3; } .w4 { grid-column:span 4; } .w5 { grid-column:span 5; }
+  .w7 { grid-column:span 7; } .w12 { grid-column:1 / -1; }
+  .ch { display:flex; align-items:baseline; gap:8px; margin-bottom:5px; flex-wrap:wrap; min-height:22px; }
+  .ch h2 { font-size:13px; margin:0; font-weight:600; white-space:nowrap; }
+  .ch .q { color:var(--dim); font-size:11.5px; }
+  .ch .sp { flex:1 1 auto; }
+  .cb { position:relative; min-width:0; }
+  .note { color:var(--dim); font-size:11.5px; line-height:1.5; }
+  .callout { font-size:12px; color:var(--ink2); margin:0 0 4px; line-height:1.45; }
+  .callout b { color:var(--fg); font-weight:600; }
+  .empty { color:var(--dim); font-size:12.5px; padding:26px 4px; text-align:center; }
+  .err { color:var(--bad); font-size:12px; }
+
+  /* KPI */
+  .kpi { padding:7px 11px 5px; display:flex; flex-direction:column; gap:1px; }
+  .kpi .kl { color:var(--dim); font-size:11.5px; display:flex; gap:6px; align-items:baseline; white-space:nowrap; overflow:hidden; }
+  .kpi .kl i { font-style:normal; color:var(--warn); }
+  .kpi .kv { font-size:20px; font-weight:600; line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .kpi.hero .kv { font-size:23px; }
+  .kpi .kv .st { color:var(--warn); font-size:15px; margin-left:2px; cursor:help; }
+  .kpi .kc { min-height:19px; }
+  .kpi svg { display:block; margin-top:2px; }
+  .chip { display:inline-block; font-size:11px; padding:1px 7px; border-radius:6px; border:1px solid var(--line); white-space:nowrap; }
+  .chip.good { color:var(--good); border-color:#2c3a23; background:#151d12; }
+  .chip.bad  { color:var(--warn); border-color:#3a3320; background:#1d1a12; }
+  .chip.flat, .chip.neu { color:var(--dim); }
+  .chip.neu { color:var(--ink2); }
+
+  /* SVG 通用 */
+  svg { overflow:visible; }
+  svg text { fill:var(--dim); font-size:10.5px; font-family:inherit; }
+  svg .gl { stroke:var(--grid); stroke-width:1; shape-rendering:crispEdges; }
+  svg .bl { stroke:var(--axis); stroke-width:1; shape-rendering:crispEdges; }
+  svg .hit { fill:transparent; cursor:pointer; }
+  svg .hit:hover { fill:rgba(255,255,255,.045); }
+  svg [data-f] { cursor:pointer; }
+  svg .lab { fill:var(--ink2); }
+  svg .lab-hi { fill:var(--fg); font-weight:600; }
+  svg .dimm, .dimm { opacity:.28; }
+  svg .seln { stroke:var(--fg); stroke-width:1.5; }
+  .cb.lh [data-k]:not(.lk) { opacity:.22; transition:opacity .08s; }
+  .cb.lh tr[data-k]:not(.lk) { opacity:.35; }
+  .cb.lh .lkp > [data-rel]:not(.lk) { opacity:.22; }
+
+  /* 图例 */
+  .lg { display:flex; flex-wrap:wrap; gap:3px 12px; font-size:11.5px; color:var(--ink2); margin-top:4px; }
+  .lg span { display:inline-flex; align-items:center; gap:5px; cursor:pointer; white-space:nowrap; }
+  .lg span.off { opacity:.4; text-decoration:line-through; }
+  .lg span:hover { color:var(--fg); }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:2px; flex:0 0 auto; }
+  .sw.hat { background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.6) 0 2px,transparent 2px 5px) !important; }
+
+  /* 成本构成的小表 */
+  table.ct { width:100%; border-collapse:collapse; font-size:12px; margin-top:6px; }
+  table.ct td { padding:2px 4px; border-bottom:1px solid #1e222b; white-space:nowrap; text-align:right; }
+  table.ct td:first-child { text-align:left; }
+  table.ct tr { cursor:pointer; }
+  table.ct tr:hover td { background:#1c2029; }
+  table.ct tr.dimm { opacity:.4; }
+  table.ct th { color:var(--dim); font-weight:500; font-size:11px; text-align:right; padding:0 4px 2px; }
+  table.ct th:first-child { text-align:left; }
+
+  /* 变化最大的项目 */
+  .pd { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:4px 8px; align-items:center; font-size:12px; }
+  .pd .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+  .pd .nm:hover { color:var(--accent); }
+  .pd .v { color:var(--ink2); text-align:right; }
+
+  /* 预算 */
+  .bud { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; margin-top:6px; font-size:12px; }
+  .bm { display:inline-flex; align-items:center; gap:6px; }
+  .bm .tr { width:70px; height:6px; border-radius:4px; background:#262c3a; overflow:hidden; display:inline-block; }
+  .bm .tr i { display:block; height:100%; }
+  details.bset { font-size:12px; }
+  details.bset summary { cursor:pointer; color:var(--accent); list-style:none; }
+  details.bset summary::-webkit-details-marker { display:none; }
+  details.bset .bf { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:6px; }
+  details.bset input { width:84px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:3px 7px; }
+
+  /* 明细 */
+  details.more { grid-column:1 / -1; }
+  details.more > summary { cursor:pointer; font-size:13px; font-weight:600; list-style:none; }
+  details.more > summary::-webkit-details-marker { display:none; }
+  details.more > summary .q { color:var(--dim); font-weight:400; font-size:11.5px; margin-left:6px; }
+  .tabs { display:grid; grid-template-columns:repeat(auto-fit,minmax(580px,1fr)); gap:14px 20px; margin-top:10px; }
+  .tabs h3 { font-size:12.5px; margin:0 0 4px; font-weight:600; }
+  .tw { overflow-x:auto; }
+  table.dt { width:100%; border-collapse:collapse; font-size:12px; }
+  table.dt th, table.dt td { text-align:right; padding:3px 6px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  table.dt th:first-child, table.dt td:first-child { text-align:left; }
+  table.dt th { color:var(--dim); font-weight:500; font-size:11px; }
+  table.dt td.lbl { max-width:220px; overflow:hidden; text-overflow:ellipsis; }
+  table.dt tr[data-f] { cursor:pointer; } table.dt tr[data-f]:hover td { background:#1c2029; }
+  table.dt tr.selr td { background:var(--selbg); }
+
+  footer { padding:12px 20px 24px; color:var(--dim); font-size:12px; border-top:1px solid var(--line); line-height:1.7;
+        max-width:1720px; margin:0 auto; }
+
+  /* 浮动提示 */
+  .tip { position:fixed; z-index:100; pointer-events:none; background:#0b0d12; border:1px solid #2d3445; border-radius:8px;
+        padding:6px 9px; font-size:12px; line-height:1.5; max-width:340px; box-shadow:0 8px 24px rgba(0,0,0,.5); color:var(--ink2); }
+  .tip .t0 { color:var(--fg); font-weight:600; }
+  .tip div { white-space:pre-wrap; word-break:break-word; }
+  .tip .tk { display:inline-block; width:10px; height:3px; border-radius:2px; margin-right:6px; vertical-align:3px; }
+
+  /* 响应式: 中屏 6 栏, 手机 2 栏 */
+  @media (max-width:1180px) {
+    main.g { grid-template-columns:repeat(6,minmax(0,1fr)); }
+    .w3, .w4 { grid-column:span 3; } .w5, .w7 { grid-column:1 / -1; }
+  }
+  @media (max-width:860px) {
+    .w3, .w4 { grid-column:1 / -1; }
+  }
+  @media (max-width:700px) {
+    header { padding:10px 12px; flex-direction:column; align-items:flex-start; gap:6px; }
+    header h1 span { display:block; margin:2px 0 0; }
+    .nav { margin-left:0; flex-wrap:wrap; gap:2px 4px; }
+    .nav a, .nav details.more summary { white-space:nowrap; }
+    .tb { padding:6px 12px; position:static; }
+    main.g { grid-template-columns:repeat(2,minmax(0,1fr)); padding:8px 12px; gap:8px; }
+    .w2 { grid-column:span 1; } .w3, .w4, .w5, .w7 { grid-column:1 / -1; }
+    .kpi .kv { font-size:18px; } .kpi.hero .kv { font-size:20px; }
+    .tabs { grid-template-columns:minmax(0,1fr); }
+    footer { padding:12px; }
+    .fx .hint { display:none; }
+    .fx { min-height:0; }
+  }
+</style></head>
+<body>
+<header>
+  <h1>Token 看板 <span>今天/这周烧了多少 · 哪个最贵 · 跟预期差多少</span></h1>
+  <div class="nav">__NAV__</div>
+</header>
+
+<div class="tb" id="tb">
+  <div class="r1">
+    <div class="seg" id="win" role="group" aria-label="时间窗口"></div>
+    <select id="scope" title="范围">
+      <option value="all">全部来源 (含子智能体 / workflow)</option>
+      <option value="main">仅主会话</option>
+    </select>
+    <label class="chk" title="只统计 .vscode 下的项目"><input type="checkbox" id="vscode"> 仅 .vscode</label>
+    <div class="seg" id="metric" role="group" aria-label="度量">
+      <button data-metric="cost" title="按等价成本 ($) 画图 —— 默认。97% 的 token 是便宜的缓存读, 按 token 画会误导">$ 等价成本</button>
+      <button data-metric="tokens" title="按 token 数画图">Tokens</button>
+    </div>
+    <span class="sp"></span>
+    <label class="chk"><input type="checkbox" id="auto"> 自动刷新 5s</label>
+    <button class="btn" id="refresh">刷新</button>
+    <span id="stamp"></span>
+  </div>
+  <div class="fx" id="fx"></div>
+</div>
+
+<main class="g" id="app">
+  <section class="card kpi hero w2" id="k-cost"></section>
+  <section class="card kpi w2" id="k-tok"></section>
+  <section class="card kpi w2" id="k-unit"></section>
+  <section class="card kpi w2" id="k-hit"></section>
+  <section class="card kpi w2" id="k-out"></section>
+  <section class="card kpi w2" id="k-n"></section>
+
+  <section class="card w4">
+    <div class="ch"><h2>累计花费</h2><span class="q" id="burn-q">跟预期差多少</span><span class="sp"></span><span class="lg" id="burn-lg" style="margin:0"></span></div>
+    <div class="cb" id="burn"></div>
+    <div class="bud"><span id="bmeters" class="bud" style="margin:0"></span><span class="sp" style="flex:1"></span>
+      <details class="bset" id="bset"><summary>设预算 ▾</summary>
+        <div class="bf"><span class="muted">$</span>
+          <input id="bd" type="number" min="0" step="1" placeholder="日" title="今日等价美元上限">
+          <input id="bw" type="number" min="0" step="1" placeholder="周 (近7天)" title="近 7 天等价美元上限">
+          <button class="btn" id="bsave">保存</button><span id="bmsg" class="muted"></span></div>
+        <div class="note" style="margin-top:4px">越线 70% / 90% → 事件 → 通知 (critical@90%)。保存需要控制令牌。</div>
+      </details>
+    </div>
+  </section>
+  <section class="card w4">
+    <div class="ch"><h2>哪个项目最贵</h2><span class="q">面积 = 当前度量 · ↗ 看任务回放</span></div>
+    <div class="cb" id="tree"></div>
+  </section>
+  <section class="card w4">
+    <div class="ch"><h2>成本构成</h2><span class="q">钱花在 token 的哪部分</span></div>
+    <div class="cb" id="comp"></div>
+  </section>
+
+  <section class="card w4">
+    <div class="ch"><h2 id="day-h">按天</h2><span class="q" id="day-q">拖动框选</span><span class="sp"></span>
+      <div class="seg sm" id="stack" role="group" aria-label="堆叠方式">
+        <button data-stack="component">成分</button><button data-stack="model">模型</button>
+        <button data-stack="source">来源</button><button data-stack="project">项目</button>
+      </div></div>
+    <div class="cb" id="days"></div>
+  </section>
+  <section class="card w4">
+    <div class="ch"><h2>什么时候在花</h2><span class="q">星期 × 小时 (本地时间)</span></div>
+    <div class="cb" id="heat"></div>
+  </section>
+  <section class="card w4">
+    <div class="ch"><h2>哪个会话最贵</h2><span class="q">单个占比 + 累计占比</span></div>
+    <div class="cb" id="pareto"></div>
+  </section>
+
+  <section class="card w5">
+    <div class="ch"><h2>变化最大的项目</h2><span class="q" id="pd-q">vs 上一周期</span></div>
+    <div class="cb" id="pdelta"></div>
+  </section>
+  <section class="card w7">
+    <div class="ch"><h2>模型占比</h2><span class="q" id="mod-q">每天的份额</span></div>
+    <div class="cb" id="models"></div>
+  </section>
+
+  <details class="card more" id="more">
+    <summary>明细 ▸ <span class="q">按模型 / 来源 / 项目 / 会话 / 时间的表格 · 跟随筛选 · 点行筛选</span></summary>
+    <div class="cb" id="tables"></div>
+  </details>
+</main>
+<footer id="foot">加载中…</footer>
+<div class="tip" id="tip" hidden></div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <pattern id="hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+    <line x1="0" y1="0" x2="0" y2="6" stroke="rgba(255,255,255,.6)" stroke-width="2"></line></pattern>
+</defs></svg>
+
+<script>
+"use strict";
+// =====================================================================================
+// /tokens 版本 A「驾驶舱」。数据: GET /api/tokens/cube (一次拉全, 本地切片) + GET /api/budget。
+// 真实优先: 每个数都从同一份立方算, 与 /api/summary 同口径; 未知单价打 * + 斜线纹; $ 是「等价成本」不是账单。
+// 所有来自数据的标签 (项目名 = 文件夹名, 视为不可信) 进 HTML / SVG / 属性前一律 esc(), 进 URL 前 encodeURIComponent。
+// =====================================================================================
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const enc = s => encodeURIComponent(String(s));
+
+// ---------------------------------------------------------------- 格式
+function fmtTokens(n) {
+  n = +n || 0;
+  const a = Math.abs(n);
+  if (a >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (a >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (a >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(Math.round(n));
+}
+function fmtUsd(x) { return "$" + (+x || 0).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
+function fmtUsdS(x) {                     // 轴 / 小标签用的短格式
+  x = +x || 0; const a = Math.abs(x);
+  if (a >= 1e6) return "$" + (x / 1e6).toFixed(2) + "M";
+  if (a >= 1e4) return "$" + (x / 1e3).toFixed(1) + "k";
+  if (a >= 1e3) return "$" + (x / 1e3).toFixed(2) + "k";
+  if (a >= 100) return "$" + x.toFixed(0);
+  if (a >= 10) return "$" + x.toFixed(1);
+  return "$" + x.toFixed(2);
+}
+const isCost = () => ST.metric === "cost";
+const fmtV = v => isCost() ? fmtUsd(v) : fmtTokens(v);
+const fmtVS = v => isCost() ? fmtUsdS(v) : fmtTokens(v);
+function fmtPct(x) {
+  if (!isFinite(x)) return "—";
+  const p = x * 100;
+  if (p > 0 && p < 0.1) return "<0.1%";
+  return p.toFixed(p < 10 ? 1 : 0) + "%";
+}
+const pad2 = n => (n < 10 ? "0" : "") + n;
+function localParts(t) {                  // epoch 秒 -> 服务端本地时区的 {mo, d, h, mi} (不依赖浏览器时区)
+  const x = new Date((t + (CUBE && CUBE.span ? CUBE.span.tz_offset_s || 0 : 0)) * 1000);
+  return {y: x.getUTCFullYear(), mo: x.getUTCMonth() + 1, d: x.getUTCDate(), h: x.getUTCHours(), mi: x.getUTCMinutes()};
+}
+function fmtTime(t, withDate) {
+  const p = localParts(t);
+  return (withDate ? pad2(p.mo) + "-" + pad2(p.d) + " " : "") + pad2(p.h) + ":" + pad2(p.mi);
+}
+function textW(s, px) {                   // 粗估文字宽度 (CJK 按全角) —— 标签放得下才画, 放不下交给提示
+  px = px || 10.5; let w = 0;
+  for (const ch of String(s)) w += ch.charCodeAt(0) > 0x2e80 ? px : px * 0.6;
+  return w;
+}
+function fit(s, maxW, px) {               // 截断到 maxW 宽, 加 …
+  s = String(s);
+  if (textW(s, px) <= maxW) return s;
+  let out = "";
+  for (const ch of s) { if (textW(out + ch + "…", px) > maxW) break; out += ch; }
+  return out ? out + "…" : "";
+}
+
+// ---------------------------------------------------------------- 常量 / 配色
+// 配色经 dataviz 校验脚本在本页卡片底色 #181b22 上跑过 (相邻对 CVD / 常规视觉 / 对比度全过):
+//   成分 [#008300 #3987e5 #d95926 #199e70] + 工具中性灰; 模型 [#9085e9 #c98500 #d55181 #008300];
+//   来源 = 同一色相的有序明度梯度 (主会话 → 子智能体 → workflow, 委托越深越暗)。颜色跟着实体走, 不跟排名走。
+const WINS = [["today", "今天"], ["24h", "24h"], ["7d", "7 天"], ["2w", "2 周"], ["all", "全部"]];
+const WF_SINCE = {today: "today", "24h": "7d", "7d": "7d", "2w": "30d", all: "all"};    // 跳 /workflow 的窗口映射 (沿用旧页)
+const STACKS = ["component", "model", "source", "project"];
+const DIM_ZH = {k: "成分", p: "项目", m: "模型", s: "来源", x: "会话", d: "日期", e: "时段", wd: "星期", h: "小时", c: "星期×小时"};
+const ROW_DIMS = ["p", "m", "s", "x", "d", "e", "h", "wd", "c"];
+const WD_ZH = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+const VALS = ["n", "in", "out", "cr", "cw", "ws", "wf", "c", "ci", "co", "ccw", "ccr", "ct", "un", "ut"];
+const COMPS = [                           // 堆叠顺序 (自下而上 / 自左而右)
+  {k: "in", zh: "Input", cost: "ci", tok: "in", col: "#008300"},
+  {k: "cr", zh: "缓存读", cost: "ccr", tok: "cr", col: "#3987e5"},
+  {k: "cw", zh: "缓存写", cost: "ccw", tok: "cw", col: "#d95926"},
+  {k: "out", zh: "Output", cost: "co", tok: "out", col: "#199e70"},
+  {k: "tool", zh: "工具", cost: "ct", tok: null, col: "#b4bccd"},
+];
+const COMP_BY = Object.fromEntries(COMPS.map(c => [c.k, c]));
+const MODEL_COLS = ["#9085e9", "#c98500", "#d55181", "#008300"];
+const PROJ_COLS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"];
+const OTHER_COL = "#5d6475";
+const SRC_COL = {main: "#c3d3fb", subagent: "#7aa2f7", workflow: "#3d59a1"};
+const SRC_ZH = {main: "主会话", subagent: "子智能体", workflow: "workflow"};
+const ACCENT = "#7aa2f7";
+const RAMP = ["#1a2c4a", "#1c5cab", "#3987e5", "#86b6ef", "#dce9fb"];     // 热力图: 单色相, 越亮越多
+
+// ---------------------------------------------------------------- 状态
+const ST = {since: "7d", scope: "all", vs: false, metric: "cost", stack: "component", auto: false};
+const F = {};                             // 联动筛选: 维度 -> Set。同维度内 OR, 跨维度 AND。按名字存, 不存索引。
+for (const k of Object.keys(DIM_ZH)) F[k] = new Set();
+let CUBE = null, R = [], B = [], MOD = {}, PROJ = {}, SESS = {};
+let reqId = 0, SIG = "", BUDGET = null, BUDGET_SIG = "", timer = null;
+let HIDE_M = new Set();                   // 模型占比图: 图例隐藏的模型 (只影响这一张图)
+let HOVER = "", TIP_S = "", BRUSH = null, SUPPRESS = false, BURN = null;
+const RENDER_ERRORS = [];                 // 单张图渲染出错不拖垮整页 (原则 5); 冒烟测试读它
+
+// ---------------------------------------------------------------- 数据
+function ingest(d) {
+  CUBE = d;
+  const ix = {};
+  (d.cols || []).forEach((c, i) => { ix[c] = i; });
+  const days = d.days || [], P = d.projects || [], M = d.models || [], S = d.sources || [], X = d.sessions || [];
+  MOD = {}; M.forEach(m => { MOD[m.id] = m; });
+  PROJ = {}; P.forEach(p => { PROJ[p.id] = p; });
+  SESS = {}; X.forEach(x => { SESS[x.id] = {id: x.id, p: (P[x.p] || {}).id, t0: x.t0, t1: x.t1}; });
+  const dec = rows => {
+    const out = [];
+    for (const a of rows || []) {
+      if (!Array.isArray(a)) continue;
+      const day = days[a[ix.d]], p = P[a[ix.p]], m = M[a[ix.m]], s = S[a[ix.s]], x = X[a[ix.x]];
+      if (!day || !p || !m || !s || !x) continue;         // 残缺行跳过而不是崩
+      const r = {e: +a[ix.e], d: day.d, wd: day.wd, h: +a[ix.h], p: p.id, m: m.id, s: s, x: x.id};
+      for (const c of VALS) r[c] = +a[ix[c]] || 0;
+      out.push(r);
+    }
+    return out;
+  };
+  R = dec(d.rows);
+  B = d.baseline ? dec(d.baseline.rows) : [];
+}
+function kv(r, dim) { return dim === "c" ? r.wd + "-" + r.h : r[dim]; }
+function pass(r, skip) {
+  for (const dim of ROW_DIMS) {
+    if (skip && skip.indexOf(dim) >= 0) continue;
+    const f = F[dim];
+    if (f.size && !f.has(kv(r, dim))) return false;
+  }
+  return true;
+}
+const view = (rows, skip) => rows.filter(r => pass(r, skip));
+function mval(r, metric) {                // 当前度量 (受「成分」筛选影响)
+  const cost = (metric || ST.metric) === "cost";
+  if (!F.k.size) return cost ? r.c : r.in + r.out + r.cr + r.cw;
+  let v = 0;
+  for (const c of COMPS) if (F.k.has(c.k)) v += cost ? r[c.cost] : (c.tok ? r[c.tok] : 0);
+  return v;
+}
+function tot(rows) {
+  const t = {};
+  for (const c of VALS) t[c] = 0;
+  t.vc = 0; t.vt = 0;
+  for (const r of rows) {
+    for (const c of VALS) t[c] += r[c];
+    t.vc += mval(r, "cost"); t.vt += mval(r, "tokens");
+  }
+  t.tok = t.in + t.out + t.cr + t.cw;
+  return t;
+}
+const baseOK = () => !!(CUBE && CUBE.baseline) && !F.d.size && !F.e.size;
+function baseWhy() {
+  if (!CUBE || !CUBE.baseline) return "当前窗口无可比的上一周期 (选 今天/24h/7天/2周 才有基线)";
+  return "按日期/时段筛选时, 上一周期没有对应的一段, 不比较";
+}
+function hitRate(a) {
+  const den = (a.cr || 0) + (a.cw || 0) + (a.in || 0);
+  return den > 0 ? a.cr / den : null;          // 命中率 = 缓存读 / (缓存读+缓存写+输入), 与旧页同式
+}
+const grain = () => (ST.since === "today" || ST.since === "24h") ? "hour" : "day";
+function localHourOf(e) { return localParts(e * 3600).h; }
+function axisBuckets() {                  // 稠密时间轴: 没花钱的天/小时也占一格 (空就是空, 不插值)
+  const sp = CUBE.span || {}, out = [];
+  if (grain() === "hour") {
+    const e0 = Math.floor((sp.lo || 0) / 3600), e1 = Math.floor((sp.hi || 0) / 3600);
+    for (let e = e0; e <= e1 && out.length < 800; e++) {
+      const lp = localParts(e * 3600);
+      out.push({key: e, dim: "e", lab: pad2(lp.h) + ":00", long: pad2(lp.mo) + "-" + pad2(lp.d) + " " + pad2(lp.h) + ":00"});
+    }
+    return out;
+  }
+  const parse = s => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ""); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) : NaN; };
+  let t = parse(sp.d0);
+  const t1 = parse(sp.d1);
+  if (!isFinite(t) || !isFinite(t1)) return out;
+  for (; t <= t1 && out.length < 3000; t += 864e5) {
+    const iso = new Date(t).toISOString().slice(0, 10), wd = (new Date(t).getUTCDay() + 6) % 7;
+    out.push({key: iso, dim: "d", lab: iso.slice(5), long: iso + " " + WD_ZH[wd]});
+  }
+  return out;
+}
+const bkey = r => grain() === "hour" ? r.e : r.d;
+function modelCol(id) { const m = MOD[id]; return m && m.rank < MODEL_COLS.length ? MODEL_COLS[m.rank] : OTHER_COL; }
+function projCol(id) { const p = PROJ[id]; return p && p.g < PROJ_COLS.length ? PROJ_COLS[p.g] : OTHER_COL; }
+const unpriced = id => !!(MOD[id] && MOD[id].priced === false);
+
+// ---------------------------------------------------------------- 筛选
+function valsOf(el) {
+  const dim = el.getAttribute("data-f");
+  const raw = el.getAttribute("data-vs");
+  const list = raw != null ? raw.split(" ").filter(Boolean).map(decodeURIComponent) : [el.getAttribute("data-v")];
+  return list.map(v => parseVal(dim, v)).filter(v => v !== null);
+}
+function applyFilter(dim, vals, add) {
+  if (!F[dim] || !vals.length) return;
+  const S = F[dim];
+  if (add) {
+    for (const v of vals) { if (S.has(v)) S.delete(v); else S.add(v); }
+  } else {
+    const same = S.size === vals.length && vals.every(v => S.has(v));
+    S.clear();
+    if (!same) vals.forEach(v => S.add(v));   // 再点一次同一个 = 取消
+  }
+  render();
+}
+function clearFilters(dim) {
+  if (dim) F[dim].clear(); else for (const k in F) F[k].clear();
+  render();
+}
+function parseVal(dim, raw) {             // URL / 属性里的值 -> 类型化的筛选值; 不合法一律 null (安全忽略)
+  if (raw == null) return null;
+  raw = String(raw);
+  if (!raw.length || raw.length > 400) return null;
+  switch (dim) {
+    case "d": return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
+    case "e": return /^\d{1,9}$/.test(raw) ? +raw : null;
+    case "h": return /^\d{1,2}$/.test(raw) && +raw < 24 ? +raw : null;
+    case "wd": return /^[0-6]$/.test(raw) ? +raw : null;
+    case "c": return /^[0-6]-(\d|1\d|2[0-3])$/.test(raw) ? raw : null;
+    case "k": return COMP_BY[raw] ? raw : null;
+    case "s": return SRC_ZH[raw] ? raw : null;
+    case "p": case "m": case "x": return raw;
+    default: return null;
+  }
+}
+function chipLabel(dim, v) {
+  if (dim === "k") return COMP_BY[v] ? COMP_BY[v].zh : v;
+  if (dim === "s") return SRC_ZH[v] || v;
+  if (dim === "x") return String(v).slice(0, 8) + (SESS[v] && SESS[v].p ? " · " + SESS[v].p : "");
+  if (dim === "e") return fmtTime(v * 3600, true) + "–" + pad2(localHourOf(v)) + ":59";
+  if (dim === "h") return pad2(v) + ":00–" + pad2(v) + ":59";
+  if (dim === "wd") return WD_ZH[v] || v;
+  if (dim === "c") { const [w, h] = String(v).split("-"); return (WD_ZH[+w] || w) + " " + pad2(+h) + "时"; }
+  return v;
+}
+function compressDays(vals) {            // 连续日期合成一段 (09-15 ~ 09-18), 让芯片短
+  const s = [...vals].sort();
+  const out = [];
+  let a = null, b = null;
+  const next = d => new Date(Date.parse(d + "T00:00:00Z") + 864e5).toISOString().slice(0, 10);
+  for (const d of s) {
+    if (a && next(b) === d) { b = d; continue; }
+    if (a) out.push([a, b]);
+    a = b = d;
+  }
+  if (a) out.push([a, b]);
+  return out;
+}
+function renderChips() {
+  let h = "", n = 0;
+  for (const dim of ["k", "p", "m", "s", "x", "d", "e", "wd", "h", "c"]) {
+    const S = F[dim];
+    if (!S.size) continue;
+    if (dim === "d") {
+      for (const [a, b] of compressDays(S)) {
+        n++;
+        const lab = a === b ? a.slice(5) : a.slice(5) + " ~ " + b.slice(5);
+        const vs = [];
+        for (const d of S) if (d >= a && d <= b) vs.push(enc(d));
+        h += `<span class="fchip"><b>日期</b><span>${esc(lab)}</span><button data-rm="d" data-rvs="${esc(vs.join(" "))}" title="去掉这个筛选">×</button></span>`;
+      }
+      continue;
+    }
+    for (const v of S) {
+      n++;
+      const lab = chipLabel(dim, v);
+      h += `<span class="fchip" title="${esc(DIM_ZH[dim] + " = " + v)}"><b>${esc(DIM_ZH[dim])}</b><span>${esc(lab)}</span>`
+        + `<button data-rm="${dim}" data-rvs="${esc(enc(v))}" title="去掉这个筛选">×</button></span>`;
+    }
+  }
+  $("#fx").innerHTML = n
+    ? `<span class="hint">筛选</span>${h}<button id="fclear">清除全部</button>`
+    : `<span class="hint">点任意图形筛选 (其它图与 KPI 跟着变) · Shift / Ctrl + 点击多选 · 在「按天」图上拖动可框选日期 · 同一维度内为「或」, 不同维度为「且」</span>`;
+}
+
+// ---------------------------------------------------------------- URL 状态
+function syncUrl() {
+  const u = new URLSearchParams();
+  if (ST.since !== "7d") u.set("since", ST.since);
+  if (ST.scope !== "all") u.set("scope", ST.scope);
+  if (ST.vs) u.set("vs", "1");
+  if (ST.metric !== "cost") u.set("metric", ST.metric);
+  if (ST.stack !== "component") u.set("stack", ST.stack);
+  if (ST.auto) u.set("auto", "1");
+  for (const dim of Object.keys(DIM_ZH)) for (const v of F[dim]) u.append(dim, String(v));
+  const qs = u.toString();
+  try { history.replaceState(null, "", (location.pathname || "/tokens") + (qs ? "?" + qs : "")); } catch (e) { /* 沙箱里没有 history 也不影响 */ }
+}
+function restore(search) {
+  let q;
+  try { q = new URLSearchParams(search != null ? search : location.search); } catch (e) { return; }
+  const one = k => { const v = q.get(k); return v == null ? null : String(v).slice(0, 40); };
+  const since = one("since"); if (WINS.some(w => w[0] === since)) ST.since = since;
+  const scope = one("scope"); if (scope === "all" || scope === "main") ST.scope = scope;
+  ST.vs = one("vs") === "1";
+  ST.auto = one("auto") === "1";
+  const metric = one("metric"); if (metric === "cost" || metric === "tokens") ST.metric = metric;
+  const stack = one("stack"); if (STACKS.indexOf(stack) >= 0) ST.stack = stack;
+  for (const dim of Object.keys(DIM_ZH)) {
+    F[dim].clear();
+    for (const raw of q.getAll(dim).slice(0, 60)) {
+      const v = parseVal(dim, raw);
+      if (v !== null) F[dim].add(v);
+    }
+  }
+}
+
+// ---------------------------------------------------------------- SVG 小工具
+function niceTicks(max, n) {              // 0 起的整齐刻度
+  if (!(max > 0)) return [0, 1];
+  const raw = max / (n || 4), mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(s => s * mag).find(s => s >= raw) || raw;
+  const out = [];
+  for (let v = 0; v <= max + step * 0.001; v += step) out.push(+v.toPrecision(12));
+  if (out[out.length - 1] < max) out.push(+(out[out.length - 1] + step).toPrecision(12));
+  return out;
+}
+function topRound(x, y, w, h, r) {        // 上端圆角、底端方角的柱 (数据端 4px 圆角, 基线端方)
+  r = Math.max(0, Math.min(r, w / 2, h));
+  if (r < 0.5) return `M${x},${y + h}V${y}H${x + w}V${y + h}Z`;
+  return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+}
+function lum(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+  if (!m) return 0.5;
+  const n = parseInt(m[1], 16), f = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+  return 0.2126 * f(n >> 16 & 255) + 0.7152 * f(n >> 8 & 255) + 0.0722 * f(n & 255);
+}
+const inkOn = hex => lum(hex) > 0.28 ? "#0b0d12" : "#ffffff";   // 色块里的字: 按底色明度选黑/白
+function rampCol(t) {
+  t = Math.max(0, Math.min(1, t));
+  const seg = (RAMP.length - 1) * t, i = Math.min(RAMP.length - 2, Math.floor(seg)), f = seg - i;
+  const a = parseInt(RAMP[i].slice(1), 16), b = parseInt(RAMP[i + 1].slice(1), 16);
+  const ch = s => Math.round(((a >> s) & 255) + (((b >> s) & 255) - ((a >> s) & 255)) * f);
+  return "#" + [16, 8, 0].map(s => pad2h(ch(s))).join("");
+}
+const pad2h = n => (n < 16 ? "0" : "") + n.toString(16);
+function widthOf(id, def) {
+  const el = document.getElementById(id);
+  const w = el && el.clientWidth;
+  return (w && w > 60) ? Math.floor(w) : def;
+}
+const tipAttr = lines => ` data-tip="${esc(lines.filter(x => x != null && x !== "").join("\n"))}"`;
+function legend(items) {                  // items: [{col, zh, attrs, hatch, off}]
+  return `<div class="lg">` + items.map(it =>
+    `<span ${it.attrs || ""}${it.off ? ' class="off"' : ""}><i class="sw${it.hatch ? " hat" : ""}" style="background:${it.col}"></i>${esc(it.zh)}</span>`).join("") + `</div>`;
+}
+
+// ---------------------------------------------------------------- 自基线 Δ 徽标 (与旧页同一语义)
+// higherIsGood: 命中率这种「越高越好」传 true; 成本/token 传 false; 只表示变化、不评好坏的传 null。
+// 诚实约定: 无基线 -> 「无基线」; 上期为 0 而本期>0 -> 「新增」; 先给绝对量再给 %。
+function deltaChip(cur, prev, hasBaseline, fmtAbs, higherIsGood) {
+  if (!hasBaseline) return `<span class="chip flat" title="${esc(baseWhy())}">— 无基线</span>`;
+  const diff = cur - prev;
+  const absTxt = (diff >= 0 ? "+" : "−") + fmtAbs(Math.abs(diff));
+  const tone = up => higherIsGood === null ? "neu" : (up === higherIsGood ? "good" : "bad");
+  if (prev === 0) {
+    if (cur === 0) return `<span class="chip flat" title="上一周期也为 0">持平</span>`;
+    return `<span class="chip ${tone(true)}" title="上一周期为 0 (${esc(absTxt)})">＋新增</span>`;
+  }
+  const p = (cur - prev) / prev * 100;
+  const cls = Math.abs(p) <= 0.5 ? "flat" : tone(p > 0);
+  const arrow = p > 0.5 ? "▲" : (p < -0.5 ? "▼" : "·");
+  return `<span class="chip ${cls}" title="对比你自己的上一等长周期 (非预算) · 上一周期 ${esc(fmtAbs(prev))}">${arrow} ${esc(absTxt)} · ${(p >= 0 ? "+" : "") + p.toFixed(0)}%</span>`;
+}
+
+// ---------------------------------------------------------------- C1 · KPI + 迷你趋势
+function bucketTotals(rows) {
+  const m = new Map();
+  for (const r of rows) {
+    const k = bkey(r);
+    let t = m.get(k);
+    if (!t) { t = {vc: 0, vt: 0, n: 0, out: 0, cr: 0, cw: 0, in: 0}; m.set(k, t); }
+    t.vc += mval(r, "cost"); t.vt += mval(r, "tokens"); t.n += r.n; t.out += r.out; t.cr += r.cr; t.cw += r.cw; t.in += r.in;
+  }
+  return m;
+}
+function spark(axis, bt, fn, fmt, name, w) {
+  const H = 20, P = 2, n = axis.length;
+  if (!n) return "";
+  const vals = axis.map(a => { const t = bt.get(a.key); return t ? fn(t) : (fn({vc: 0, vt: 0, n: 0, out: 0, cr: 0, cw: 0, in: 0})); });
+  const have = vals.filter(v => v != null && isFinite(v));
+  if (!have.length) return `<svg width="${w}" height="${H}"></svg>`;
+  const hi = Math.max(...have) || 1;
+  const x = i => n === 1 ? w / 2 : P + i * (w - 2 * P) / (n - 1);
+  const y = v => H - P - (v / hi) * (H - 2 * P);
+  let d = "", pen = false, area = "", last = null;
+  vals.forEach((v, i) => {
+    if (v == null || !isFinite(v)) { pen = false; return; }
+    d += (pen ? "L" : "M") + x(i).toFixed(1) + "," + y(v).toFixed(1); pen = true; last = i;
+  });
+  if (vals.every(v => v != null && isFinite(v))) area = `<path d="${d}L${x(n - 1).toFixed(1)},${H - P}L${x(0).toFixed(1)},${H - P}Z" fill="${ACCENT}" opacity=".12"></path>`;
+  const sel = F[axis[0].dim];
+  let shade = "";
+  if (sel.size) axis.forEach((a, i) => {
+    if (sel.has(a.key)) { const cw = n > 1 ? (w - 2 * P) / (n - 1) : w; shade += `<rect x="${(x(i) - cw / 2).toFixed(1)}" y="0" width="${cw.toFixed(1)}" height="${H}" fill="${ACCENT}" opacity=".13"></rect>`; }
+  });
+  const cw = n > 1 ? (w - 2 * P) / (n - 1) : w;
+  const hits = axis.map((a, i) => `<rect class="hit" x="${(x(i) - cw / 2).toFixed(1)}" y="0" width="${cw.toFixed(1)}" height="${H}"`
+    + ` data-f="${a.dim}" data-v="${esc(a.key)}" data-k="${a.dim}:${esc(enc(a.key))}"${tipAttr([a.long, name + " " + (vals[i] == null ? "—" : fmt(vals[i]))])}></rect>`).join("");
+  const dot = last != null ? `<circle cx="${x(last).toFixed(1)}" cy="${y(vals[last]).toFixed(1)}" r="2.6" fill="${ACCENT}" stroke="#181b22" stroke-width="1.5"></circle>` : "";
+  return `<svg width="${w}" height="${H}" role="img" aria-label="${esc(name)} 趋势">${shade}${area}<path d="${d}" fill="none" stroke="${ACCENT}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"></path>${dot}${hits}</svg>`;
+}
+function renderKPIs() {
+  const cur = tot(view(R)), ok = baseOK(), prev = ok ? tot(view(B)) : tot([]);
+  const kf = F.k.size ? ` <i title="已按成本成分筛选: 只算 ${esc([...F.k].map(k => COMP_BY[k].zh).join(" / "))}">按成分</i>` : "";
+  const unit = t => t.vt > 0 ? t.vc / t.vt * 1e6 : null;
+  const zeroPrev = `<span class="chip flat" title="上一周期没有这项数据 (那段时间没用量), 比不出比例">上期为 0</span>`;
+  const hr = hitRate(cur), hrp = ok ? hitRate(prev) : null;
+  const unStar = cur.un > 0 || (ok && prev.un > 0);
+  const starTip = `含未知单价模型的消息: 本期 ${cur.un} 条 (${fmtTokens(cur.ut)} token)` + (ok ? `, 上一周期 ${prev.un} 条 (${fmtTokens(prev.ut)} token)` : "")
+    + (cur.ut === 0 && (!ok || prev.ut === 0) ? " —— 都是 0 token 的占位消息, 金额不受影响" : " —— 这部分按 $0 计, 成本偏低");
+  const axis = axisBuckets();
+  const bt = bucketTotals(view(R, ["d", "e"]));
+  const sw = id => Math.max(80, widthOf(id, 200) - 22);
+  const K = [
+    {id: "k-cost", k: "等价成本" + kf, v: esc(fmtUsd(cur.vc)) + (unStar ? `<span class="st" title="${esc(starTip)}">*</span>` : ""),
+     chip: deltaChip(cur.vc, prev.vc, ok, fmtUsd, false), fn: t => t.vc, fmt: fmtUsdS, name: "等价成本",
+     tip: "按公开单价 × 用量估算的等价价值, 不是账单 (订阅用户实际不按此扣费)"},
+    {id: "k-tok", k: "总 Tokens" + kf, v: esc(fmtTokens(cur.vt)), chip: deltaChip(cur.vt, prev.vt, ok, fmtTokens, false),
+     fn: t => t.vt, fmt: fmtTokens, name: "Tokens", tip: "输入 + 输出 + 缓存写 + 缓存读"},
+    {id: "k-unit", k: "单价 $/百万 token" + kf, v: unit(cur) == null ? "—" : esc("$" + unit(cur).toFixed(2)),
+     chip: !ok ? deltaChip(0, 0, false, String, false) : ((unit(cur) != null && unit(prev) != null) ? deltaChip(unit(cur), unit(prev), true, x => "$" + x.toFixed(2), false) : zeroPrev),
+     fn: unit, fmt: x => "$" + x.toFixed(2) + "/M", name: "单价",
+     tip: "等价成本 ÷ token 数。缓存读很便宜, 所以 token 多不等于钱多 —— 这个数每天能差好几倍"},
+    {id: "k-hit", k: "缓存命中率", v: hr === null ? "—" : esc((hr * 100).toFixed(0) + "%"),
+     chip: !ok ? deltaChip(0, 0, false, String, true) : ((hr !== null && hrp !== null) ? deltaChip(hr * 100, hrp * 100, true, x => x.toFixed(1) + "pp", true) : zeroPrev),
+     fn: hitRate, fmt: x => (x * 100).toFixed(0) + "%", name: "命中率", tip: "缓存读 ÷ (缓存读 + 缓存写 + 输入)。不受「成分」筛选影响"},
+    {id: "k-out", k: "Output", v: esc(fmtTokens(cur.out)), chip: deltaChip(cur.out, prev.out, ok, fmtTokens, null),
+     fn: t => t.out, fmt: fmtTokens, name: "Output", tip: "模型输出的 token"},
+    {id: "k-n", k: "消息数", v: esc(cur.n.toLocaleString("en-US")), chip: deltaChip(cur.n, prev.n, ok, x => String(Math.round(x)), null),
+     fn: t => t.n, fmt: x => String(Math.round(x)), name: "消息数", tip: "去重后的 assistant 消息条数"},
+  ];
+  for (const c of K) {
+    const el = document.getElementById(c.id);
+    if (!el) continue;
+    el.innerHTML = `<div class="kl" title="${esc(c.tip)}">${c.k}</div><div class="kv">${c.v}</div>`
+      + `<div class="kc">${c.chip || ""}</div><div class="cb" id="${c.id}-s">${spark(axis, bt, c.fn, c.fmt, c.name, sw(c.id))}</div>`;
+  }
+}
+
+// ---------------------------------------------------------------- C1 · 累计花费曲线
+function cumPts(rows, lo, hi, shift) {    // 按小时的阶梯累计: 这一小时内线性上升, 没花钱的时段是平的 (不插值)
+  const by = new Map();
+  for (const r of rows) by.set(r.e, (by.get(r.e) || 0) + mval(r));
+  const es = [...by.keys()].sort((a, b) => a - b);
+  let cum = 0;
+  const pts = [[lo + shift, 0]];
+  for (const e of es) {
+    const t0 = Math.max(lo, e * 3600), t1 = Math.max(t0, Math.min(hi, (e + 1) * 3600));
+    pts.push([t0 + shift, cum]);
+    cum += by.get(e);
+    pts.push([t1 + shift, cum]);
+  }
+  pts.push([hi + shift, cum]);
+  return pts;
+}
+function cumAt(pts, t) {
+  if (!pts || !pts.length || t < pts[0][0]) return null;
+  for (let i = 1; i < pts.length; i++) {
+    if (t <= pts[i][0]) {
+      const [a, va] = pts[i - 1], [b, vb] = pts[i];
+      return b > a ? va + (vb - va) * (t - a) / (b - a) : vb;
+    }
+  }
+  return pts[pts.length - 1][1];
+}
+function budgetFor() {                    // 预算只在口径完全一致时画: 今天 = 日预算, 近 7 天 = 周预算 (都按全部来源、未筛选、$)
+  if (!BUDGET || !Array.isArray(BUDGET.budgets)) return null;
+  const want = ST.since === "today" ? "daily" : (ST.since === "7d" ? "weekly" : null);
+  const b = want && BUDGET.budgets.find(x => x.scope === want);
+  if (!b) return null;
+  const clean = ST.scope === "all" && !ST.vs && isCost() && !Object.values(F).some(s => s.size);
+  return {limit: +b.limit || 0, zh: want === "daily" ? "日预算" : "周预算 (近 7 天)", clean};
+}
+function renderBurn() {
+  const el = $("#burn"), sp = CUBE.span || {};
+  const W = widthOf("burn", 460), H = 164, PL = 46, PR = 10, PT = 8, PB = 18;
+  const pw = W - PL - PR, ph = H - PT - PB;
+  const rows = view(R, ["d", "e"]);
+  const lo = sp.lo, hi = sp.hi;
+  const today = ST.since === "today";
+  const x1 = today ? lo + 86400 : hi;
+  const pts = cumPts(rows, lo, hi, 0);
+  const curEnd = pts[pts.length - 1][1];
+  let ppts = null, prevEnd = null;
+  if (CUBE.baseline) {
+    const bl = CUBE.baseline;
+    ppts = cumPts(view(B, ["d", "e"]), bl.lo, bl.hi, lo - bl.lo);
+    prevEnd = ppts[ppts.length - 1][1];
+  }
+  let proj = null;
+  const elapsed = hi - lo;
+  if (today && elapsed >= 3600 && curEnd > 0) proj = curEnd / elapsed * 86400;   // 线性外推到 24:00
+  const bud = budgetFor();
+  const ymax = Math.max(curEnd, prevEnd || 0, proj || 0, bud && bud.clean ? bud.limit : 0) * 1.06 || 1;
+  const ticks = niceTicks(ymax, 4), top = ticks[ticks.length - 1];
+  const X = t => PL + (t - lo) / Math.max(1, x1 - lo) * pw;
+  const Y = v => PT + ph - v / top * ph;
+  const path = p => p.map((q, i) => (i ? "L" : "M") + X(q[0]).toFixed(1) + "," + Y(q[1]).toFixed(1)).join("");
+  let g = "";
+  for (const t of ticks) g += `<line class="gl" x1="${PL}" x2="${W - PR}" y1="${Y(t).toFixed(1)}" y2="${Y(t).toFixed(1)}"></line><text x="${PL - 5}" y="${(Y(t) + 3.5).toFixed(1)}" text-anchor="end">${esc(fmtVS(t))}</text>`;
+  // x 刻度: 多天 -> 本地零点; 今天/24h -> 每 3/6 小时
+  const off = sp.tz_offset_s || 0;
+  let xt = "";
+  if (x1 - lo <= 2 * 86400) {
+    const step = pw < 360 ? 6 : 3;
+    for (let e = Math.ceil(lo / 3600); e * 3600 <= x1; e++) {
+      const lh = localHourOf(e);
+      if (lh % step) continue;
+      const xx = X(e * 3600);
+      xt += `<line class="gl" x1="${xx.toFixed(1)}" x2="${xx.toFixed(1)}" y1="${PT + ph}" y2="${PT + ph + 3}"></line><text x="${xx.toFixed(1)}" y="${H - 4}" text-anchor="middle">${pad2(lh)}:00</text>`;
+    }
+  } else {
+    const days = (x1 - lo) / 86400, every = Math.max(1, Math.ceil(days / Math.max(2, Math.floor(pw / 52))));
+    let k = 0;
+    for (let t = Math.ceil((lo + off) / 86400) * 86400 - off; t <= x1; t += 86400, k++) {
+      if (k % every) continue;
+      const lp = localParts(t), xx = X(t);
+      xt += `<line class="gl" x1="${xx.toFixed(1)}" x2="${xx.toFixed(1)}" y1="${PT}" y2="${PT + ph}" opacity=".6"></line><text x="${xx.toFixed(1)}" y="${H - 4}" text-anchor="middle">${pad2(lp.mo)}-${pad2(lp.d)}</text>`;
+    }
+  }
+  // 选中的日期/时段: 在曲线上打底色
+  let shade = "";
+  if (F.d.size) for (const d of F.d) {
+    const t0 = Date.parse(d + "T00:00:00Z") / 1000 - off;
+    if (t0 + 86400 < lo || t0 > x1) continue;
+    const a = X(Math.max(lo, t0)), b = X(Math.min(x1, t0 + 86400));
+    shade += `<rect x="${a.toFixed(1)}" y="${PT}" width="${Math.max(1, b - a).toFixed(1)}" height="${ph}" fill="${ACCENT}" opacity=".1"></rect>`;
+  }
+  if (F.e.size) for (const e of F.e) {
+    const a = X(Math.max(lo, e * 3600)), b = X(Math.min(x1, (e + 1) * 3600));
+    if (b > a) shade += `<rect x="${a.toFixed(1)}" y="${PT}" width="${(b - a).toFixed(1)}" height="${ph}" fill="${ACCENT}" opacity=".1"></rect>`;
+  }
+  let s = shade + g + xt + `<line class="bl" x1="${PL}" x2="${W - PR}" y1="${PT + ph}" y2="${PT + ph}"></line>`;
+  if (ppts) s += `<path d="${path(ppts)}" fill="none" stroke="#8b93a7" stroke-width="1.5" stroke-linejoin="round" opacity=".85"></path>`;
+  s += `<path d="${path(pts)}L${X(hi).toFixed(1)},${Y(0).toFixed(1)}L${X(lo).toFixed(1)},${Y(0).toFixed(1)}Z" fill="${ACCENT}" opacity=".1"></path>`;
+  s += `<path d="${path(pts)}" fill="none" stroke="${ACCENT}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>`;
+  s += `<circle cx="${X(hi).toFixed(1)}" cy="${Y(curEnd).toFixed(1)}" r="4" fill="${ACCENT}" stroke="#181b22" stroke-width="2"></circle>`;
+  let lab = `<text class="lab-hi" x="${Math.min(W - PR, X(hi) + 0).toFixed(1)}" y="${Math.max(PT + 9, Y(curEnd) - 8).toFixed(1)}" text-anchor="end">${esc(fmtVS(curEnd))}</text>`;
+  if (proj != null) {
+    s += `<path d="M${X(hi).toFixed(1)},${Y(curEnd).toFixed(1)}L${X(x1).toFixed(1)},${Y(proj).toFixed(1)}" fill="none" stroke="${ACCENT}" stroke-width="1.5" stroke-dasharray="4 4" opacity=".8"></path>`;
+    lab += `<text class="lab" x="${(X(x1) - 2).toFixed(1)}" y="${Math.max(PT + 9, Y(proj) - 6).toFixed(1)}" text-anchor="end">估算 ${esc(fmtVS(proj))}</text>`;
+  }
+  if (bud && bud.clean && bud.limit > 0) {
+    s += `<line x1="${PL}" x2="${W - PR}" y1="${Y(bud.limit).toFixed(1)}" y2="${Y(bud.limit).toFixed(1)}" stroke="var(--warn)" stroke-width="1.5"></line>`;
+    lab += `<text x="${PL + 4}" y="${(Y(bud.limit) - 4).toFixed(1)}" style="fill:var(--warn)">${esc(bud.zh + " " + fmtUsdS(bud.limit))}</text>`;
+  }
+  s += lab;
+  s += `<line id="burn-x" x1="0" x2="0" y1="${PT}" y2="${PT + ph}" stroke="#c0caf5" stroke-width="1" opacity="0"></line>`;
+  s += `<rect id="burn-ov" x="${PL}" y="${PT}" width="${pw}" height="${ph}" fill="transparent"></rect>`;
+  BURN = {pts, ppts, lo, hi, x1, PL, pw, X, Y, today};
+  el.innerHTML = `<svg width="${W}" height="${H}" role="img" aria-label="累计花费曲线">${s}</svg>`;
+  // 图例 + 副标题
+  const lg = [`<span><i class="tk" style="background:${ACCENT};display:inline-block;width:14px;height:2px;border-radius:1px"></i>本期</span>`];
+  if (ppts) lg.push(`<span title="${esc(CUBE.baseline.kind === "prev-day-partial" ? "昨天的同一时段, 按已过时长对齐" : "紧邻的上一等长周期, 按已过时长对齐")}"><i style="display:inline-block;width:14px;height:2px;background:#8b93a7;border-radius:1px"></i>${CUBE.baseline.kind === "prev-day-partial" ? "昨天同一时段" : "上一周期"}</span>`);
+  if (bud && bud.clean) lg.push(`<span><i style="display:inline-block;width:14px;height:2px;background:var(--warn)"></i>${esc(bud.zh)}</span>`);
+  if (proj != null) lg.push(`<span title="估算 = 今天已花 ÷ 已过时长 × 24h (线性外推), 不是预测"><i style="display:inline-block;width:14px;border-top:2px dashed ${ACCENT}"></i>估算</span>`);
+  $("#burn-lg").innerHTML = lg.join("");
+  let q = `本期 <b>${esc(fmtV(curEnd))}</b>`;
+  if (ppts && prevEnd != null) {
+    const d = prevEnd > 0 ? (curEnd - prevEnd) / prevEnd * 100 : null;
+    q += ` · ${CUBE.baseline.kind === "prev-day-partial" ? "昨天同一时点" : "上一周期同一时点"} ${esc(fmtV(prevEnd))}` + (d == null ? "" : ` (${d >= 0 ? "+" : ""}${d.toFixed(0)}%)`);
+    if (CUBE.baseline.partial) q += ` · <span class="warn" title="历史不足 2 个窗口长, 上一周期缺数据">⚠ 基线偏低</span>`;
+  } else if (!CUBE.baseline) q += " · 此窗口无上一周期可比";
+  if (proj != null) q += ` · <span title="估算 = 今天已花 ÷ 已过时长 × 24h (线性外推)。夜里也在跑的话会偏差很大">估算全天 ≈ ${esc(fmtV(proj))}</span>`;
+  else if (today && elapsed < 3600) q += " · 今天刚开始, 不外推";
+  if (bud && !bud.clean) q += ` · <span title="预算按全部来源、未筛选的 $ 计; 当前视图口径不同, 所以不画预算线">预算线已隐藏 (口径不同)</span>`;
+  else if (!bud && BUDGET && (BUDGET.budgets || []).length && ST.since !== "today" && ST.since !== "7d") q += ` · <span title="日预算对应「今天」, 周预算对应「近 7 天」">预算线只在 今天 / 7 天 窗口画</span>`;
+  $("#burn-q").innerHTML = q;
+}
+function burnHover(clientX, rect) {
+  if (!BURN) return null;
+  const t = BURN.lo + ((clientX - rect.left) - BURN.PL) / BURN.pw * (BURN.x1 - BURN.lo);
+  const tt = Math.max(BURN.lo, Math.min(BURN.x1, t));
+  const xl = $("#burn-x");
+  if (xl) { const xx = BURN.X(tt).toFixed(1); xl.setAttribute("x1", xx); xl.setAttribute("x2", xx); xl.setAttribute("opacity", ".6"); }
+  const lines = [fmtTime(tt, true) + (tt > BURN.hi ? " (之后是估算)" : "")];
+  const c = tt <= BURN.hi ? cumAt(BURN.pts, tt) : null;
+  const p = BURN.ppts ? cumAt(BURN.ppts, tt) : null;
+  if (c != null) lines.push(ACCENT + "|" + fmtV(c) + "  本期累计");
+  if (p != null && tt <= (BURN.ppts[BURN.ppts.length - 1][0])) lines.push("#8b93a7|" + fmtV(p) + "  上一周期同一时点");
+  if (c != null && p != null && p > 0) lines.push("差 " + ((c - p) / p * 100 >= 0 ? "+" : "") + ((c - p) / p * 100).toFixed(0) + "%");
+  return lines.join("\n");
+}
+function burnLeave() { const xl = $("#burn-x"); if (xl && xl.setAttribute) xl.setAttribute("opacity", "0"); }
+
+// ---------------------------------------------------------------- C2 · 成本构成
+function renderComp() {
+  const rows = view(R, ["k"]);
+  const t = tot(rows);
+  const parts = COMPS.map(c => {
+    let v$ = 0;
+    for (const r of rows) v$ += r[c.cost];
+    return Object.assign({}, c, {v$: v$, vt: c.tok ? t[c.tok] : 0});
+  });
+  const resid = t.c - parts.reduce((s, p) => s + p.v$, 0);
+  if (Math.abs(resid) > 0.005) parts.push({k: null, zh: "未拆分", col: OTHER_COL, v$: resid, vt: 0});
+  const T$ = t.c, TT = t.tok;
+  const W = widthOf("comp", 420), BH = 20;
+  const bar = (y, total, key, name) => {
+    let x = 0, s = "";
+    const live = parts.filter(p => p[key] > 0);
+    live.forEach((p, i) => {
+      const w = total > 0 ? p[key] / total * W : 0;
+      const gap = i < live.length - 1 && w > 3 ? 2 : 0;
+      const dim = F.k.size && p.k && !F.k.has(p.k) ? " dimm" : "";
+      const share = total > 0 ? p[key] / total : 0;
+      const val = key === "v$" ? fmtUsd(p[key]) : fmtTokens(p[key]);
+      const attrs = p.k ? ` data-f="k" data-v="${p.k}" data-k="k:${p.k}"` : "";
+      s += `<rect class="${dim.trim()}" x="${x.toFixed(1)}" y="${y}" width="${Math.max(0.5, w - gap).toFixed(1)}" height="${BH}" fill="${p.col}"${attrs}`
+        + tipAttr([p.zh + (p.k ? "" : " (与内核单价公式对不上的部分)"), p.col + "|" + val + " · " + fmtPct(share) + " 的" + name]) + `></rect>`;
+      const lt = fmtPct(share);
+      if (w - gap >= textW(lt, 11) + 10) s += `<text x="${(x + (w - gap) / 2).toFixed(1)}" y="${y + 14}" text-anchor="middle" style="fill:${inkOn(p.col)};font-size:11px;font-weight:600;pointer-events:none"${dim ? ' opacity=".35"' : ""}>${lt}</text>`;
+      x += w;
+    });
+    if (!live.length) s += `<rect x="0" y="${y}" width="${W}" height="${BH}" fill="#20242d"></rect>`;
+    return s;
+  };
+  const un = t.ut > 0 ? `<tspan style="fill:var(--warn)">*</tspan>` : "";   // 图上的 * = 真有未知单价的 token (按 $0 计)
+  const cur$ = isCost(), H = 2 * (BH + 18) + 4;
+  let s = `<text x="0" y="11" class="${cur$ ? "lab-hi" : "lab"}">等价成本 ${esc(fmtUsd(T$))}${un}</text>` + bar(16, T$, "v$", "等价成本")
+    + `<text x="0" y="${BH + 16 + 17}" class="${cur$ ? "lab" : "lab-hi"}">Tokens ${esc(fmtTokens(TT))}</text>` + bar(BH + 16 + 22, TT, "vt", " token");
+  let h = `<svg width="${W}" height="${H}" role="img" aria-label="成本构成: 按 $ 与按 token">` + s + `</svg>`;
+  // 一句话洞察 (F1): token 份额最大的成分, 它的钱份额是多少; 以及「token 少、钱多」的那个成分
+  if (T$ > 0 && TT > 0) {
+    const shares = parts.filter(p => p.k).map(p => ({p, s$: p.v$ / T$, st: p.vt / TT}));
+    const topT = shares.slice().sort((a, b) => b.st - a.st)[0];
+    const lever = shares.slice().sort((a, b) => (b.s$ - b.st) - (a.s$ - a.st))[0];
+    let msg = "";
+    if (topT && topT.st - topT.s$ > 0.05) msg = `Tokens 里 <b>${fmtPct(topT.st)}</b> 是${esc(topT.p.zh)}, 但只占 <b>${fmtPct(topT.s$)}</b> 的钱`;
+    if (lever && lever.s$ - lever.st > 0.05) msg += (msg ? "; " : "") + `${esc(lever.p.zh)}只有 ${fmtPct(lever.st)} 的 token, 却占 <b>${fmtPct(lever.s$)}</b> 的钱`;
+    if (msg) h = `<p class="callout">${msg} —— 所以默认按 $ 看。</p>` + h;
+  }
+  const M = CUBE.mult || {};
+  const how = {in: "input 单价", cr: `input 单价 × ${M.cr ?? "?"}`, cw: `input 单价 × ${M.cw5 ?? "?"} (5m) / × ${M.cw1 ?? "?"} (1h)`,
+               out: "output 单价", tool: `web search $${M.ws ?? "?"}/次`};
+  h += `<table class="ct"><thead><tr><th>成分</th><th>等价成本</th><th>占 $</th><th>Tokens</th><th>占 token</th></tr></thead><tbody>`
+    + parts.filter(p => p.k && (p.v$ > 0 || p.vt > 0 || p.k === "in" || p.k === "out")).map(p => {
+      const dim = F.k.size && !F.k.has(p.k) ? ' class="dimm"' : "";
+      return `<tr${dim} data-f="k" data-v="${p.k}" data-k="k:${p.k}"${tipAttr([p.zh + " · 计价: " + how[p.k], "点击: 只看这一成分 (所有图跟着变)"])}>`
+        + `<td><i class="sw" style="background:${p.col};margin-right:6px;vertical-align:-1px"></i>${esc(p.zh)}</td>`
+        + `<td>${esc(fmtUsd(p.v$))}</td><td>${T$ > 0 ? fmtPct(p.v$ / T$) : "—"}</td>`
+        + `<td>${p.tok ? esc(fmtTokens(p.vt)) : "—"}</td><td>${p.tok && TT > 0 ? fmtPct(p.vt / TT) : "—"}</td></tr>`;
+    }).join("") + `</tbody></table>`;
+  if (parts.some(p => !p.k)) h += `<div class="note warn">⚠ 有 ${esc(fmtUsd(resid))} 的成本没能按内核公式拆开, 以「未拆分」单列。</div>`;
+  $("#comp").innerHTML = h;
+}
+
+// ---------------------------------------------------------------- 变化最大的项目
+function renderDeltas() {
+  const el = $("#pdelta");
+  const ok = baseOK();
+  $("#pd-q").textContent = !CUBE.baseline ? "vs 上一周期" : (CUBE.baseline.kind === "prev-day-partial" ? (isCost() ? "成本" : "Tokens") + " vs 昨天同一时段" : (isCost() ? "成本" : "Tokens") + " vs 上一周期");
+  if (!ok) { el.innerHTML = `<div class="empty">${esc(baseWhy())}</div>`; return; }
+  const cur = new Map(), prev = new Map(), unp = new Set();
+  for (const r of view(R, ["p"])) { cur.set(r.p, (cur.get(r.p) || 0) + mval(r)); if (r.ut) unp.add(r.p); }
+  for (const r of view(B, ["p"])) { prev.set(r.p, (prev.get(r.p) || 0) + mval(r)); if (r.ut) unp.add(r.p); }
+  const all = new Set([...cur.keys(), ...prev.keys()]);
+  const rows = [...all].map(p => ({p, c: cur.get(p) || 0, v: prev.get(p) || 0})).filter(x => x.c > 0 || x.v > 0)
+    .map(x => Object.assign(x, {diff: x.c - x.v})).sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff)).slice(0, 7);
+  if (!rows.length) { el.innerHTML = `<div class="empty">两个周期都没有数据</div>`; return; }
+  el.innerHTML = `<div class="pd">` + rows.map(x => {
+    let status, cls;
+    const absd = (x.diff >= 0 ? "+" : "−") + fmtV(Math.abs(x.diff));
+    if (x.v === 0 && x.c > 0) { status = "＋新增"; cls = "bad"; }
+    else if (x.c === 0 && x.v > 0) { status = "已停 ✓"; cls = "good"; }
+    else {
+      const pp = (x.c - x.v) / x.v * 100;
+      status = (pp > 0.5 ? "▲ +" : (pp < -0.5 ? "▼ " : "· ")) + Math.abs(pp).toFixed(0) + "%";
+      cls = pp > 0.5 ? "bad" : (pp < -0.5 ? "good" : "flat");
+    }
+    const sel = F.p.size && !F.p.has(x.p) ? " dimm" : "";
+    const st = unp.has(x.p) ? '<span class="warn" title="含未知单价模型的 token, 按 $0 计, 成本偏低">*</span>' : "";
+    return `<span class="nm${sel}" data-f="p" data-v="${esc(x.p)}" data-k="p:${esc(enc(x.p))}"${tipAttr([x.p, "本期 " + fmtV(x.c), "上一周期 " + fmtV(x.v), "点击筛选这个项目"])}>${esc(x.p)}${st}</span>`
+      + `<span class="v${sel}">${esc(fmtV(x.c))}</span><span class="chip ${cls}${sel}" title="vs 上一周期 ${esc(absd)}">${status} · ${esc(absd)}</span>`;
+  }).join("") + `</div>`;
+}
+
+// ---------------------------------------------------------------- C3 · 按天 (或按小时) 堆叠柱 + 单价条
+function stackSeries(rows) {              // 当前堆叠方式下的系列 [{key, zh, col, hatch, f, vs, val(r)}]
+  const cost = isCost();
+  if (ST.stack === "component") {
+    return COMPS.filter(c => (cost || c.tok) && (!F.k.size || F.k.has(c.k)))
+      .map(c => ({key: c.k, zh: c.zh, col: c.col, f: "k", vs: [c.k], val: r => cost ? r[c.cost] : r[c.tok]}));
+  }
+  if (ST.stack === "model") {
+    const ms = [...new Set(rows.map(r => r.m))].sort((a, b) => (MOD[a].rank - MOD[b].rank) || (a < b ? -1 : 1));
+    const own = ms.filter(m => MOD[m].rank < MODEL_COLS.length), rest = ms.filter(m => MOD[m].rank >= MODEL_COLS.length);
+    const out = own.map(m => ({key: m, zh: m, col: modelCol(m), hatch: unpriced(m), f: "m", vs: [m], val: r => r.m === m ? mval(r) : 0}));
+    if (rest.length) out.push({key: "__om", zh: "其他模型", col: OTHER_COL, hatch: rest.some(unpriced), f: "m", vs: rest, val: r => rest.indexOf(r.m) >= 0 ? mval(r) : 0});
+    return out;
+  }
+  if (ST.stack === "source") {
+    return ["main", "subagent", "workflow"].filter(s => rows.some(r => r.s === s))
+      .map(s => ({key: s, zh: SRC_ZH[s], col: SRC_COL[s], f: "s", vs: [s], val: r => r.s === s ? mval(r) : 0}));
+  }
+  const by = new Map();
+  for (const r of rows) by.set(r.p, (by.get(r.p) || 0) + mval(r));
+  const ps = [...by.entries()].filter(e => e[1] > 0).sort((a, b) => b[1] - a[1]).map(e => e[0]);
+  const top = ps.slice(0, 5), rest = ps.slice(5);
+  const out = top.sort((a, b) => (PROJ[a].g - PROJ[b].g)).map(p => ({key: p, zh: p, col: projCol(p), f: "p", vs: [p], val: r => r.p === p ? mval(r) : 0}));
+  if (rest.length) out.push({key: "__op", zh: `其他 ${rest.length} 个项目`, col: OTHER_COL, f: "p", vs: rest, val: r => rest.indexOf(r.p) >= 0 ? mval(r) : 0});
+  return out;
+}
+function vsAttr(f, vs) { return vs.length === 1 ? `data-f="${f}" data-v="${esc(vs[0])}"` : `data-f="${f}" data-vs="${esc(vs.map(enc).join(" "))}"`; }
+function colGeom(W, n, PL, PR) {
+  const pw = W - PL - PR, slot = pw / Math.max(1, n), bw = Math.max(1.5, Math.min(24, slot * 0.72));
+  return {pw, slot, bw, x: i => PL + i * slot + (slot - bw) / 2};
+}
+function renderDays() {
+  const el = $("#days");
+  const hour = grain() === "hour";
+  $("#day-h").textContent = hour ? "按小时" : "按天";
+  $("#day-q").textContent = hour ? "几点花得多 · 拖动框选时段" : "哪天花得多 · 拖动框选日期";
+  const rows = view(R, ["d", "e"]);
+  const axis = axisBuckets();
+  const ser = stackSeries(rows);
+  const data = new Map(), unp = new Map(), unt = new Map(), totals = new Map(), toks = new Map(), costs = new Map();
+  for (const r of rows) {
+    const k = bkey(r);
+    let o = data.get(k);
+    if (!o) { o = {}; data.set(k, o); }
+    for (const s of ser) { const v = s.val(r); if (v) o[s.key] = (o[s.key] || 0) + v; }
+    totals.set(k, (totals.get(k) || 0) + mval(r));
+    toks.set(k, (toks.get(k) || 0) + mval(r, "tokens"));
+    costs.set(k, (costs.get(k) || 0) + mval(r, "cost"));
+    if (r.un) unp.set(k, (unp.get(k) || 0) + r.un);
+    if (r.ut) unt.set(k, (unt.get(k) || 0) + r.ut);
+  }
+  const W = widthOf("days", 460), H = 150, PL = 44, PR = 6, PT = 14, PB = 18;
+  const ph = H - PT - PB;
+  const G = colGeom(W, axis.length, PL, PR);
+  const max = Math.max(0, ...[...totals.values()]);
+  const ticks = niceTicks(max, 4), top = ticks[ticks.length - 1] || 1;
+  const Y = v => PT + ph - v / top * ph;
+  let s = "";
+  for (const t of ticks) s += `<line class="gl" x1="${PL}" x2="${W - PR}" y1="${Y(t).toFixed(1)}" y2="${Y(t).toFixed(1)}"></line><text x="${PL - 5}" y="${(Y(t) + 3.5).toFixed(1)}" text-anchor="end">${esc(fmtVS(t))}</text>`;
+  const sel = F[hour ? "e" : "d"];
+  const every = Math.max(1, Math.ceil((hour ? 36 : 34) / G.slot));
+  let maxI = -1, maxV = 0;
+  axis.forEach((a, i) => { const v = totals.get(a.key) || 0; if (v > maxV) { maxV = v; maxI = i; } });
+  axis.forEach((a, i) => {
+    const o = data.get(a.key) || {}, x = G.x(i);
+    let y0 = PT + ph, segs = "";
+    const live = ser.filter(sr => (o[sr.key] || 0) > 0);
+    live.forEach((sr, j) => {
+      const h = o[sr.key] / top * ph;
+      const isTop = j === live.length - 1;
+      const gap = !isTop && h > 2.5 ? 1.5 : 0;
+      const y = y0 - h;
+      const rel = ` data-rel="${esc(sr.vs.map(v => sr.f + ":" + enc(v)).join(" "))}"`;
+      segs += isTop ? `<path d="${topRound(x, y, G.bw, h - gap, 3)}" fill="${sr.col}"${rel}></path>` : `<rect x="${x.toFixed(1)}" y="${(y + gap).toFixed(1)}" width="${G.bw.toFixed(1)}" height="${Math.max(0.5, h - gap).toFixed(1)}" fill="${sr.col}"${rel}></rect>`;
+      if (sr.hatch) segs += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${G.bw.toFixed(1)}" height="${h.toFixed(1)}" fill="url(#hatch)" pointer-events="none"></rect>`;
+      y0 = y;
+    });
+    const tv = totals.get(a.key) || 0, un = unp.get(a.key) || 0, ut = unt.get(a.key) || 0;
+    const tip = [a.long + (ut ? " *" : ""), "合计 " + fmtV(tv)]
+      .concat(live.slice().reverse().map(sr => sr.col + "|" + fmtV(o[sr.key]) + " · " + fmtPct(tv > 0 ? o[sr.key] / tv : 0) + "  " + sr.zh + (sr.hatch ? " (未知单价)" : "")))
+      .concat(un ? [ut ? "* 含 " + un + " 条未知单价消息 (" + fmtTokens(ut) + " token), 按 $0 计, 成本偏低" : "含 " + un + " 条未知单价的 0 token 占位消息 (不影响金额)"] : [])
+      .concat(["点击筛选这一" + (hour ? "小时" : "天") + " · 拖动框选一段 · Shift 多选"]);
+    const dim = sel.size && !sel.has(a.key) ? ' class="dimm"' : "";
+    const kk = `${a.dim}:${esc(enc(a.key))}`;
+    s += `<g data-k="${kk}"${dim}>${segs}<rect class="hit" x="${(PL + i * G.slot).toFixed(1)}" y="${PT}" width="${G.slot.toFixed(1)}" height="${ph}" data-f="${a.dim}" data-v="${esc(a.key)}"${tipAttr(tip)}></rect></g>`;
+    if (ut && isCost()) s += `<text x="${(x + G.bw / 2).toFixed(1)}" y="${(Y(tv) - 3).toFixed(1)}" text-anchor="middle" style="fill:var(--warn)">*</text>`;
+    if (i % every === 0 || (every > 1 && i === axis.length - 1 && (axis.length - 1) % every >= every / 2))
+      s += `<text x="${(x + G.bw / 2).toFixed(1)}" y="${H - 4}" text-anchor="middle">${esc(a.lab)}</text>`;
+  });
+  if (maxI >= 0) s += `<text class="lab-hi" x="${Math.min(W - 16, Math.max(PL + 14, G.x(maxI) + G.bw / 2)).toFixed(1)}" y="${Math.max(9, Y(maxV) - (unt.get(axis[maxI].key) && isCost() ? 12 : 4)).toFixed(1)}" text-anchor="middle">${esc(fmtVS(maxV))}</text>`;
+  s += `<line class="bl" x1="${PL}" x2="${W - PR}" y1="${PT + ph}" y2="${PT + ph}"></line>`;
+  s += `<rect id="brushr" x="0" y="${PT}" width="0" height="${ph}" fill="${ACCENT}" opacity=".18" pointer-events="none"></rect>`;
+  let h = `<svg class="brush" data-dim="${hour ? "e" : "d"}" data-pl="${PL}" data-slot="${G.slot}" data-n="${axis.length}" width="${W}" height="${H}" style="touch-action:pan-y" role="img" aria-label="按${hour ? "小时" : "天"}的堆叠柱">${s}</svg>`;
+  h += legend(ser.map(sr => ({col: sr.col, zh: sr.zh + (sr.hatch ? " *" : ""), hatch: sr.hatch,
+    attrs: `${vsAttr(sr.f, sr.vs)} data-k="${sr.f}:${esc(enc(sr.vs[0]))}"` + tipAttr([sr.zh, "点击: 筛选" + DIM_ZH[sr.f] + (sr.vs.length > 1 ? " (" + sr.vs.length + " 个)" : "")])})));
+  // 单价条 (F1): 每百万 token 的等价 $ —— 同一 x 轴的小倍数, 不是第二根 y 轴。
+  // 只给「量够大」的格子画柱、比倍数 (token >= 最大一格的 1%): 几十条消息的零碎日子单价很极端 (样本太小),
+  // 拿它定比例尺会把其余柱压扁、拿它比倍数会夸大 —— 这些格子只画一个基线上的点, 真实单价照样在提示里。
+  const SH = 46, sph = SH - 14;
+  const units = axis.map(a => (toks.get(a.key) || 0) > 0 ? (costs.get(a.key) || 0) / toks.get(a.key) * 1e6 : null);
+  const tmax = Math.max(0, ...axis.map(a => toks.get(a.key) || 0));
+  const big = axis.map(a => (toks.get(a.key) || 0) >= 0.01 * tmax && tmax > 0);
+  const uv = units.filter(v => v != null);
+  if (uv.length) {
+    const sig = units.map((v, i) => (v != null && big[i]) ? v : null), sv = sig.filter(v => v != null);
+    const umax = Math.max(...(sv.length ? sv : uv));
+    const uT = niceTicks(umax, 1), utop = uT[uT.length - 1] || 1;
+    let u = `<text x="${PL - 5}" y="${sph - 2}" text-anchor="end">$/M</text><line class="bl" x1="${PL}" x2="${W - PR}" y1="${sph + 2}" y2="${sph + 2}"></line>`;
+    axis.forEach((a, i) => {
+      const v = units[i];
+      if (v == null) return;
+      const hh = Math.max(1, v / utop * (sph - 4)), x = G.x(i);
+      const dim = sel.size && !sel.has(a.key) ? ' class="dimm"' : "";
+      const mark = big[i] ? `<path d="${topRound(x, sph + 2 - hh, G.bw, hh, 2)}" fill="#8b93a7" opacity=".8"></path>`
+        : `<circle cx="${(x + G.bw / 2).toFixed(1)}" cy="${sph - 1}" r="1.8" fill="#8b93a7" opacity=".7"></circle>`;
+      u += `<g data-k="${a.dim}:${esc(enc(a.key))}"${dim}>${mark}`
+        + `<rect class="hit" x="${(PL + i * G.slot).toFixed(1)}" y="0" width="${G.slot.toFixed(1)}" height="${sph + 2}" data-f="${a.dim}" data-v="${esc(a.key)}"`
+        + tipAttr([a.long, "$" + v.toFixed(2) + " / 百万 token", "等价成本 " + fmtUsd(costs.get(a.key)) + " ÷ " + fmtTokens(toks.get(a.key)) + " token",
+                   big[i] ? "" : "量太小 (不到最大一格的 1%), 单价不画柱、不参与倍数比较"]) + `></rect></g>`;
+    });
+    let ratio = null;
+    if (sv.length > 1) {
+      const smax = Math.max(...sv), smin = Math.min(...sv), iMax = sig.indexOf(smax), iMin = sig.indexOf(smin);
+      ratio = smin > 0 ? smax / smin : null;
+      const ly = v => Math.max(9, sph + 2 - v / utop * (sph - 4) - 3);
+      u += `<text class="lab" x="${(G.x(iMax) + G.bw / 2).toFixed(1)}" y="${ly(smax).toFixed(1)}" text-anchor="middle">$${smax.toFixed(1)}</text>`;
+      if (iMin !== iMax) u += `<text class="lab" x="${(G.x(iMin) + G.bw / 2).toFixed(1)}" y="${ly(smin).toFixed(1)}" text-anchor="middle">$${smin.toFixed(1)}</text>`;
+    }
+    const tiny = axis.filter((a, i) => units[i] != null && !big[i]).length;
+    h += `<div class="note" style="margin:6px 0 0">每百万 token 的等价 $${ratio && ratio >= 1.5 ? ` —— 最贵的${hour ? "一小时" : "一天"}是最便宜的 <b style="color:var(--fg)">${ratio.toFixed(1)}×</b>: token 多不等于钱多` : ""}`
+      + (tiny ? `<span title="这些${hour ? "时段" : "日子"}的 token 不到最大一格的 1%, 单价样本太小, 只画一个点 (真实值在提示里)"> · ${tiny} 个零碎${hour ? "时段" : "日子"}只画点</span>` : "") + `</div>`
+      + `<svg width="${W}" height="${SH}" role="img" aria-label="每百万 token 的等价单价">${u}</svg>`;
+  }
+  if (!rows.length) h = `<div class="empty">当前筛选下没有数据</div>` + h;
+  el.innerHTML = h;
+}
+
+// ---------------------------------------------------------------- C4 · 星期 × 小时 热力图
+function renderHeat() {
+  const el = $("#heat");
+  const rows = view(R, ["h", "wd", "c"]);
+  const grid = [...Array(7)].map(() => new Array(24).fill(0)), n = [...Array(7)].map(() => new Array(24).fill(0));
+  const hourT = new Array(24).fill(0), wdT = new Array(7).fill(0);
+  let total = 0;
+  for (const r of rows) { const v = mval(r); grid[r.wd][r.h] += v; n[r.wd][r.h] += r.n; hourT[r.h] += v; wdT[r.wd] += v; total += v; }
+  const W = widthOf("heat", 520), PL = 30, PR = 40, MT = 34, CH = 17, GAP = 2;
+  const cw = (W - PL - PR) / 24;
+  const H = MT + 7 * CH + 16;
+  const mx = Math.max(0, ...grid.flat());
+  const hmax = Math.max(0, ...hourT), wmax = Math.max(0, ...wdT);
+  let s = "";
+  // 顶部边际: 每个小时的合计 (F2 的直接答案)
+  const peakH = hourT.indexOf(hmax);
+  for (let h = 0; h < 24; h++) {
+    const v = hourT[h], hh = hmax > 0 ? v / hmax * (MT - 16) : 0, x = PL + h * cw + GAP / 2;
+    const dim = (F.h.size && !F.h.has(h)) ? ' class="dimm"' : "";
+    s += `<g data-k="h:${h}"${dim}><path d="${topRound(x, MT - 3 - hh, cw - GAP, hh, 2)}" fill="${ACCENT}" opacity=".7"></path>`
+      + `<rect class="hit" x="${(PL + h * cw).toFixed(1)}" y="0" width="${cw.toFixed(1)}" height="${MT - 2}" data-f="h" data-v="${h}"`
+      + tipAttr([pad2(h) + ":00–" + pad2(h) + ":59 (所有日子)", fmtV(v) + " · " + fmtPct(total > 0 ? v / total : 0), "点击筛选这个小时"]) + `></rect></g>`;
+  }
+  if (hmax > 0) s += `<text class="lab-hi" x="${Math.min(W - PR, Math.max(PL + 14, PL + peakH * cw + cw / 2)).toFixed(1)}" y="${(MT - 3 - (MT - 16) - 3).toFixed(1)}" text-anchor="middle">${esc(fmtVS(hmax))}</text>`;
+  for (let w = 0; w < 7; w++) {
+    const y = MT + w * CH;
+    const wdim = (F.wd.size && !F.wd.has(w)) ? " dimm" : "";
+    s += `<text class="${wdim.trim()}" x="${PL - 5}" y="${(y + CH / 2 + 3.5).toFixed(1)}" text-anchor="end" data-f="wd" data-v="${w}" data-k="wd:${w}"`
+      + tipAttr([WD_ZH[w] + " 合计 " + fmtV(wdT[w]), "点击筛选这个星期几"]) + `>${WD_ZH[w]}</text>`;
+    for (let h = 0; h < 24; h++) {
+      const v = grid[w][h], x = PL + h * cw + GAP / 2;
+      const on = (!F.c.size || F.c.has(w + "-" + h)) && (!F.h.size || F.h.has(h)) && (!F.wd.size || F.wd.has(w));
+      const fill = v > 0 ? rampCol(0.12 + 0.88 * v / (mx || 1)) : "#1c2029";
+      s += `<rect x="${x.toFixed(1)}" y="${y + GAP / 2}" width="${(cw - GAP).toFixed(1)}" height="${CH - GAP}" rx="2" fill="${fill}"${on ? "" : ' opacity=".3"'}`
+        + ` data-f="c" data-v="${w}-${h}" data-k="c:${w}-${h}" data-rel="h:${h} wd:${w}"`
+        + tipAttr([WD_ZH[w] + " " + pad2(h) + ":00–" + pad2(h) + ":59", v > 0 ? fmtV(v) + " · " + fmtPct(total > 0 ? v / total : 0) : "没有花费", n[w][h] ? n[w][h] + " 条消息" : "", "点击筛选这一格 · Shift 多选"]) + `></rect>`;
+    }
+    const wv = wdT[w], ww = wmax > 0 ? wv / wmax * (PR - 8) : 0;
+    s += `<rect x="${(W - PR + 4).toFixed(1)}" y="${y + 4}" width="${Math.max(0, ww).toFixed(1)}" height="${CH - 8}" rx="1.5" fill="#8b93a7" opacity=".6"${wdim ? ' class="dimm"' : ""}></rect>`;
+  }
+  for (let h = 0; h < 24; h += (cw < 16 ? 6 : 3)) s += `<text x="${(PL + h * cw + cw / 2).toFixed(1)}" y="${H - 3}" text-anchor="middle">${pad2(h)}</text>`;
+  let h = "";
+  if (total > 0) {
+    let night = 0;
+    for (let x = 0; x < 7; x++) night += hourT[x];
+    const top3 = hourT.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, 3).filter(x => x[0] > 0);
+    h = `<p class="callout">凌晨 00:00–06:59 占 <b>${fmtPct(night / total)}</b> · ${isCost() ? "最贵" : "token 最多"}的一小时 <b>${pad2(peakH)}:00</b> (${esc(fmtV(hmax))}, ${fmtPct(hmax / total)})`
+      + (top3.length > 1 ? ` · 其次 ${top3.slice(1).map(x => pad2(x[1]) + ":00").join(" / ")}` : "") + `</p>`;
+  }
+  h += `<svg width="${W}" height="${H}" role="img" aria-label="星期 × 小时 热力图">${s}</svg>`;
+  h += `<div class="lg" style="justify-content:space-between"><span style="cursor:default">颜色越亮 = 越多 · 0 <i style="display:inline-block;width:90px;height:8px;border-radius:2px;background:linear-gradient(90deg,${RAMP.join(",")})"></i> ${esc(fmtVS(mx))}/格</span>`
+    + `<span style="cursor:default" title="时间按服务端本地时区分桶">UTC${(CUBE.span.tz_offset_s || 0) >= 0 ? "+" : "−"}${pad2(Math.floor(Math.abs(CUBE.span.tz_offset_s || 0) / 3600))}:${pad2(Math.floor(Math.abs(CUBE.span.tz_offset_s || 0) % 3600 / 60))}</span></div>`;
+  if (!rows.length) h = `<div class="empty">当前筛选下没有数据</div>`;
+  el.innerHTML = h;
+}
+
+// ---------------------------------------------------------------- C5 · 项目矩形树图
+function squarify(items, x, y, w, h) {
+  const out = [];
+  const total = items.reduce((s, i) => s + i.v, 0);
+  if (!(total > 0) || w <= 0 || h <= 0) return out;
+  const scale = w * h / total;
+  let rest = items.map(i => Object.assign({}, i, {a: i.v * scale}));
+  const worst = (row, side) => {
+    const sum = row.reduce((s, r) => s + r.a, 0), mx = Math.max(...row.map(r => r.a)), mn = Math.min(...row.map(r => r.a));
+    return Math.max(side * side * mx / (sum * sum), sum * sum / (side * side * mn));
+  };
+  while (rest.length) {
+    const side = Math.min(w, h);
+    const row = [rest[0]];
+    let i = 1;
+    while (i < rest.length && worst(row.concat([rest[i]]), side) <= worst(row, side)) { row.push(rest[i]); i++; }
+    const sum = row.reduce((s, r) => s + r.a, 0), thick = sum / side;
+    let off = 0;
+    for (const r of row) {
+      const len = r.a / thick;
+      out.push(w >= h ? Object.assign(r, {x: x, y: y + off, w: thick, h: len}) : Object.assign(r, {x: x + off, y: y, w: len, h: thick}));
+      off += len;
+    }
+    if (w >= h) { x += thick; w -= thick; } else { y += thick; h -= thick; }
+    rest = rest.slice(i);
+  }
+  return out;
+}
+function wfLink(p) { return "/workflow?project=" + enc(p) + "&since=" + enc(WF_SINCE[ST.since] || "7d"); }
+function renderTree() {
+  const el = $("#tree");
+  const rows = view(R, ["p"]);
+  const by = new Map(), un = new Map(), ut = new Map(), nmsg = new Map();
+  for (const r of rows) {
+    by.set(r.p, (by.get(r.p) || 0) + mval(r)); nmsg.set(r.p, (nmsg.get(r.p) || 0) + r.n);
+    if (r.un) un.set(r.p, (un.get(r.p) || 0) + r.un);
+    if (r.ut) ut.set(r.p, (ut.get(r.p) || 0) + r.ut);
+  }
+  const all = [...by.entries()].filter(e => e[1] > 0).sort((a, b) => b[1] - a[1]);
+  const total = all.reduce((s, e) => s + e[1], 0);
+  if (!all.length) { el.innerHTML = `<div class="empty">当前筛选下没有数据</div>`; return; }
+  const N = 8;
+  let items = all.slice(0, N).map(e => ({id: e[0], v: e[1], vs: [e[0]]}));
+  const rest = all.slice(N);
+  if (rest.length === 1) items.push({id: rest[0][0], v: rest[0][1], vs: [rest[0][0]]});
+  else if (rest.length) items.push({id: null, v: rest.reduce((s, e) => s + e[1], 0), vs: rest.map(e => e[0]), zh: `其他 ${rest.length} 个`});
+  const W = widthOf("tree", 440), H = 196;
+  // 「其他」放最后、不参与按大小排序 (它总被挤到角落, 与真实项目分开)
+  const tiles = squarify(items, 0, 0, W, H);
+  let s = "";
+  for (const t of tiles) {
+    const nm = t.id == null ? t.zh : t.id;
+    const col = t.id == null ? OTHER_COL : projCol(t.id);
+    const selOn = F.p.size ? t.vs.some(v => F.p.has(v)) : true;
+    const u = t.vs.reduce((a, p) => a + (ut.get(p) || 0), 0), un0 = t.vs.reduce((a, p) => a + (un.get(p) || 0), 0);
+    const x = t.x + 1, y = t.y + 1, w = Math.max(0, t.w - 2), h = Math.max(0, t.h - 2);
+    const tipL = [nm + (u ? " *" : ""), fmtV(t.v) + " · " + fmtPct(t.v / total)];
+    if (t.id == null) tipL.push(t.vs.slice(0, 12).join("、") + (t.vs.length > 12 ? " …" : ""));
+    else tipL.push(t.vs.reduce((a, p) => a + (nmsg.get(p) || 0), 0) + " 条消息");
+    if (un0) tipL.push(u ? "* 含 " + un0 + " 条未知单价消息 (" + fmtTokens(u) + " token), 按 $0 计, 成本偏低" : "含 " + un0 + " 条未知单价的 0 token 占位消息 (不影响金额)");
+    tipL.push("点击筛选" + (t.id == null ? "这些项目" : "这个项目") + (t.id != null ? " · 右上 ↗ 看它的任务回放" : ""));
+    const kk = t.id == null ? t.vs.map(v => "p:" + enc(v)).join(" ") : "p:" + enc(t.id);
+    s += `<g data-k="${esc(kk)}"${selOn ? "" : ' class="dimm"'}><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="4" fill="${col}" fill-opacity="${t.id == null ? ".55" : ".42"}"`
+      + `${F.p.size && selOn ? ' class="seln"' : ""} ${vsAttr("p", t.vs)}${tipAttr(tipL)}></rect>`;
+    const pad = 6, fs = 12;
+    const canName = w >= 34 && h >= 20;
+    if (canName) {
+      const room = w - 2 * pad - (t.id != null && w >= 60 ? 14 : 0);
+      const lab = fit(nm + (u ? "*" : ""), room, fs);
+      if (lab) s += `<text x="${(x + pad).toFixed(1)}" y="${(y + pad + 10).toFixed(1)}" style="fill:var(--fg);font-size:${fs}px;font-weight:600;pointer-events:none">${esc(lab)}</text>`;
+      if (h >= 38) {
+        const v2 = fit(fmtVS(t.v) + " · " + fmtPct(t.v / total), w - 2 * pad, 11);
+        if (v2) s += `<text x="${(x + pad).toFixed(1)}" y="${(y + pad + 25).toFixed(1)}" style="fill:var(--ink2);font-size:11px;pointer-events:none">${esc(v2)}</text>`;
+      }
+    }
+    if (t.id != null && w >= 60 && h >= 20)
+      s += `<a href="${esc(wfLink(t.id))}"><text x="${(x + w - 6).toFixed(1)}" y="${(y + 15).toFixed(1)}" text-anchor="end" style="fill:${ACCENT};font-size:12px" data-tip="${esc("看 " + t.id + " 的任务回放 → /workflow")}">↗</text></a>`;
+  }
+  el.innerHTML = `<svg width="${W}" height="${H}" role="img" aria-label="项目矩形树图">${s}</svg>`
+    + `<div class="note">${all.length} 个项目 · 最大的 ${esc(fit(all[0][0], 160, 11.5))} 占 <b style="color:var(--fg)">${fmtPct(all[0][1] / total)}</b>${rest.length > 1 ? ` · 最小的 ${rest.length} 个合成「其他」` : ""}</div>`;
+}
+
+// ---------------------------------------------------------------- C6 · 会话帕累托
+function fmtDur(sec) {
+  sec = Math.max(0, sec || 0);
+  if (sec < 3600) return Math.max(1, Math.round(sec / 60)) + "m";
+  if (sec < 2 * 86400) return (sec / 3600).toFixed(sec < 36000 ? 1 : 0) + "h";
+  return (sec / 86400).toFixed(1) + "d";
+}
+function renderPareto() {
+  const el = $("#pareto");
+  const rows = view(R, ["x"]);
+  const by = new Map(), un = new Map(), ut = new Map(), nm = new Map();
+  for (const r of rows) {
+    by.set(r.x, (by.get(r.x) || 0) + mval(r)); nm.set(r.x, (nm.get(r.x) || 0) + r.n);
+    if (r.un) un.set(r.x, (un.get(r.x) || 0) + r.un);
+    if (r.ut) ut.set(r.x, (ut.get(r.x) || 0) + r.ut);
+  }
+  const all = [...by.entries()].filter(e => e[1] > 0).sort((a, b) => b[1] - a[1]);
+  const total = all.reduce((s, e) => s + e[1], 0);
+  if (!all.length) { el.innerHTML = `<div class="empty">当前筛选下没有数据</div>`; return; }
+  const cum = [];
+  all.reduce((s, e, i) => (cum[i] = s + e[1], cum[i]), 0);
+  const at = k => cum[Math.min(k, all.length) - 1] / total;
+  let h = `<p class="callout">${all.length} 个会话 · 第 1 名 <b>${fmtPct(at(1))}</b>`
+    + (all.length >= 2 ? ` · 前 2 名 <b>${fmtPct(at(2))}</b>` : "") + (all.length >= 10 ? ` · 前 10 名 <b>${fmtPct(at(10))}</b>` : "") + `</p>`;
+  const W = widthOf("pareto", 440);
+  const N = Math.min(W >= 560 ? 10 : 8, all.length);
+  const RH = 24, PT = 2, AX = 14, H = PT + N * RH + AX;
+  const TW = Math.round(Math.min(200, Math.max(118, W * 0.38))), VW = 70, LK = 16;
+  const bx = TW + 6, bw = Math.max(40, W - bx - VW - LK);
+  const X = f => bx + f * bw;
+  let s = `<line class="gl" x1="${X(0.8).toFixed(1)}" x2="${X(0.8).toFixed(1)}" y1="${PT}" y2="${PT + N * RH}"></line>`
+    + `<line class="bl" x1="${X(0)}" x2="${X(0)}" y1="${PT}" y2="${PT + N * RH}"></line>`
+    + `<text x="${X(0).toFixed(1)}" y="${H - 2}" text-anchor="start">0</text><text x="${X(0.8).toFixed(1)}" y="${H - 2}" text-anchor="middle">80%</text>`
+    + (X(1) - X(0.8) >= 46 ? `<text x="${X(1).toFixed(1)}" y="${H - 2}" text-anchor="end">100%</text>` : "");
+  let line = "";
+  for (let i = 0; i < N; i++) {
+    const [sid, v] = all[i], meta = SESS[sid] || {}, y = PT + i * RH;
+    const share = v / total, c = cum[i] / total;
+    const sel = F.x.size && !F.x.has(sid) ? ' class="dimm"' : "";
+    const u = ut.get(sid) || 0, u0 = un.get(sid) || 0;
+    const spanLong = meta.t0 ? fmtTime(meta.t0, true) + " → " + fmtTime(meta.t1, true) + " (" + fmtDur(meta.t1 - meta.t0) + ")" : "";
+    const spanShort = meta.t0 ? fmtTime(meta.t0, true) + " · " + fmtDur(meta.t1 - meta.t0) : "";
+    const tip = [sid + (u ? " *" : ""), "项目 " + (meta.p || "?"), spanLong, ACCENT + "|" + fmtV(v) + " · 占 " + fmtPct(share) + " · 累计 " + fmtPct(c),
+                 nm.get(sid) + " 条消息", u0 ? (u ? "* 含 " + u0 + " 条未知单价消息, 成本偏低" : "含 " + u0 + " 条 0 token 占位消息 (不影响金额)") : "",
+                 "点击筛选这个会话 · 行尾 ↗ 看该项目的任务回放"];
+    const head = `${i + 1}  ${sid.slice(0, 8)}${u ? "*" : ""}`;
+    s += `<g data-k="x:${esc(enc(sid))}" data-rel="p:${esc(enc(meta.p || ""))}"${sel}>`
+      + `<rect class="hit" x="0" y="${y}" width="${W - LK}" height="${RH}" data-f="x" data-v="${esc(sid)}"${tipAttr(tip)}></rect>`
+      + `<text x="0" y="${y + 10.5}" style="pointer-events:none"><tspan class="lab" style="font-family:ui-monospace,Consolas,monospace">${esc(head)}</tspan>`
+      + `<tspan> ${esc(fit(meta.p || "?", TW - textW(head, 10.5) - 10, 10.5))}</tspan></text>`
+      + `<text x="${textW(String(i + 1), 10.5) + 12}" y="${y + 21}" style="pointer-events:none;font-size:9.5px;opacity:.85">${esc(fit(spanShort, TW - 20, 9.5))}</text>`
+      + `<rect x="${X(0)}" y="${y + 6}" width="${Math.max(0, c * bw).toFixed(1)}" height="12" rx="2" fill="${ACCENT}" opacity=".16" pointer-events="none"></rect>`
+      + `<path d="M${X(0)},${y + 6}h${Math.max(1, share * bw).toFixed(1)}v12h${-Math.max(1, share * bw).toFixed(1)}Z" fill="${ACCENT}" pointer-events="none"></path>`
+      + `<text x="${(X(1) + 6).toFixed(1)}" y="${y + 15.5}" style="pointer-events:none"><tspan class="lab-hi">${fmtPct(share)}</tspan><tspan> · ${fmtPct(c)}</tspan></text>`
+      + (meta.p ? `<a href="${esc(wfLink(meta.p))}"><text x="${W - 2}" y="${y + 15.5}" text-anchor="end" style="fill:${ACCENT};font-size:12px" data-tip="${esc("看 " + meta.p + " 的任务回放 → /workflow")}">↗</text></a>` : "")
+      + `</g>`;
+    line += (i ? "L" : "M") + X(c).toFixed(1) + "," + (y + 12).toFixed(1);
+  }
+  s += `<path d="${line}" fill="none" stroke="#c0caf5" stroke-width="1.5" stroke-linejoin="round" opacity=".75" pointer-events="none"></path>`;
+  h += `<svg width="${W}" height="${H}" role="img" aria-label="会话帕累托">${s}</svg>`;
+  h += `<div class="lg"><span style="cursor:default"><i class="sw" style="background:${ACCENT}"></i>单个会话占比</span><span style="cursor:default"><i class="sw" style="background:${ACCENT};opacity:.3"></i>累计占比 (浅色条 + 折线)</span>`
+    + (all.length > N ? `<span style="cursor:default" class="muted">其余 ${all.length - N} 个见「明细」</span>` : "") + `</div>`;
+  el.innerHTML = h;
+}
+
+// ---------------------------------------------------------------- C7 · 模型占比 (每天 100% 堆叠)
+function renderModels() {
+  const el = $("#models");
+  const hour = grain() === "hour";
+  $("#mod-q").textContent = hour ? "每小时的份额" : "每天的份额";
+  const rows = view(R, ["m", "d", "e"]);
+  const ms = [...new Set(rows.map(r => r.m))].sort((a, b) => (MOD[a].rank - MOD[b].rank) || (a < b ? -1 : 1));
+  const axis = axisBuckets();
+  const data = new Map(), tokByM = new Map();
+  for (const r of rows) {
+    const k = bkey(r);
+    let o = data.get(k);
+    if (!o) { o = {}; data.set(k, o); }
+    o[r.m] = (o[r.m] || 0) + mval(r);
+    tokByM.set(r.m, (tokByM.get(r.m) || 0) + r.in + r.out + r.cr + r.cw);
+  }
+  const W = widthOf("models", 330), H = 150, PL = 30, PR = 4, PT = 4, PB = 16, ph = H - PT - PB;
+  const G = colGeom(W, axis.length, PL, PR);
+  const shown = ms.filter(m => !HIDE_M.has(m));
+  let s = "";
+  for (const t of [0, 0.5, 1]) s += `<line class="gl" x1="${PL}" x2="${W - PR}" y1="${(PT + ph - t * ph).toFixed(1)}" y2="${(PT + ph - t * ph).toFixed(1)}"></line><text x="${PL - 4}" y="${(PT + ph - t * ph + 3.5).toFixed(1)}" text-anchor="end">${t * 100}%</text>`;
+  const every = Math.max(1, Math.ceil(34 / G.slot));
+  const selT = F[hour ? "e" : "d"];
+  axis.forEach((a, i) => {
+    const o = data.get(a.key) || {};
+    const tv = shown.reduce((sum, m) => sum + (o[m] || 0), 0);
+    if (tv > 0) {
+      let y0 = PT + ph;
+      const live = shown.filter(m => (o[m] || 0) > 0);
+      const tipAll = live.slice().reverse().map(m => modelCol(m) + "|" + fmtPct(o[m] / tv) + " · " + fmtV(o[m]) + "  " + m + (unpriced(m) ? " (未知单价)" : ""));
+      live.forEach((m, j) => {
+        const h = o[m] / tv * ph, y = y0 - h, gap = j < live.length - 1 && h > 2.5 ? 1.5 : 0;
+        const dim = (F.m.size && !F.m.has(m)) || (selT.size && !selT.has(a.key)) ? ' class="dimm"' : "";
+        s += `<g data-k="m:${esc(enc(m))}" data-rel="${a.dim}:${esc(enc(a.key))}"${dim}><rect x="${G.x(i).toFixed(1)}" y="${(y + gap).toFixed(1)}" width="${G.bw.toFixed(1)}" height="${Math.max(0.5, h - gap).toFixed(1)}" fill="${modelCol(m)}" data-f="m" data-v="${esc(m)}"`
+          + tipAttr([a.long + " · " + m, ...tipAll, "点击筛选这个模型 · 图例可隐藏"]) + `></rect>`
+          + (unpriced(m) ? `<rect x="${G.x(i).toFixed(1)}" y="${y.toFixed(1)}" width="${G.bw.toFixed(1)}" height="${h.toFixed(1)}" fill="url(#hatch)" pointer-events="none"></rect>` : "") + `</g>`;
+        y0 = y;
+      });
+    }
+    if (i % every === 0) s += `<text x="${(G.x(i) + G.bw / 2).toFixed(1)}" y="${H - 3}" text-anchor="middle">${esc(a.lab)}</text>`;
+  });
+  s += `<line class="bl" x1="${PL}" x2="${W - PR}" y1="${PT + ph}" y2="${PT + ph}"></line>`;
+  let h = `<svg width="${W}" height="${H}" role="img" aria-label="模型占比">${s}</svg>`;
+  h += legend(ms.map(m => ({col: modelCol(m), zh: m + (unpriced(m) ? " *" : ""), hatch: unpriced(m), off: HIDE_M.has(m),
+    attrs: `data-hidem="${esc(m)}" data-k="m:${esc(enc(m))}"` + tipAttr([m, (HIDE_M.has(m) ? "点击显示" : "点击在这张图里隐藏") + " (不影响其它图)", unpriced(m) ? "* 单价未知: $ 视图里按 0 计" : ""])})));
+  const hiddenUnp = ms.filter(m => unpriced(m) && isCost() && (tokByM.get(m) || 0) > 0);
+  if (hiddenUnp.length) h += `<div class="note warn">* ${esc(hiddenUnp.join("、"))} 单价未知, $ 视图里为 0 —— 切到 Tokens 看它的量</div>`;
+  if (!rows.length) h = `<div class="empty">当前筛选下没有数据</div>`;
+  el.innerHTML = h;
+}
+
+// ---------------------------------------------------------------- 明细表 (也是每张图的表格视图)
+function aggBy(rows, keyfn) {
+  const m = new Map();
+  for (const r of rows) {
+    const k = keyfn(r);
+    let a = m.get(k);
+    if (!a) { a = {label: k, n: 0, in: 0, out: 0, cr: 0, cw: 0, c: 0, un: 0, ut: 0, v: 0}; m.set(k, a); }
+    a.n += r.n; a.in += r.in; a.out += r.out; a.cr += r.cr; a.cw += r.cw; a.c += r.c; a.un += r.un; a.ut += r.ut; a.v += mval(r);
+  }
+  return [...m.values()].sort((a, b) => b.v - a.v || (a.label < b.label ? -1 : 1));
+}
+function table(rows, dim, opts) {
+  opts = opts || {};
+  if (!rows.length) return `<div class="note">无数据</div>`;
+  const lim = opts.limit || rows.length;
+  return `<div class="tw"><table class="dt"><thead><tr><th>${esc(opts.head || "名称")}</th>${opts.extraHead || ""}<th>Tokens</th><th>Input</th><th>Output</th><th>缓存读/写</th><th>等价成本</th><th>消息</th></tr></thead><tbody>`
+    + rows.slice(0, lim).map(r => {
+      const lab = opts.label ? opts.label(r.label) : r.label;
+      const on = dim && F[dim] && F[dim].has(r.label);
+      const link = opts.link ? ` <a href="${esc(opts.link(r.label))}" title="看它的任务回放 →">↗</a>` : "";
+      return `<tr${dim ? ` data-f="${dim}" data-v="${esc(r.label)}" data-k="${dim}:${esc(enc(r.label))}"` : ""}${on ? ' class="selr"' : ""}>`
+        + `<td class="lbl" title="${esc(r.label)}">${esc(lab)}${link}</td>${opts.extra ? opts.extra(r) : ""}`
+        + `<td>${fmtTokens(r.in + r.out + r.cr + r.cw)}</td><td>${fmtTokens(r.in)}</td><td>${fmtTokens(r.out)}</td>`
+        + `<td>${fmtTokens(r.cr)}/${fmtTokens(r.cw)}</td><td>${esc(fmtUsd(r.c))}${r.un ? `<span class="warn" title="${r.ut ? "含未知单价模型的 token (" + esc(fmtTokens(r.ut)) + "), 按 $0 计, 成本偏低" : "含 " + r.un + " 条 0 token 的未知单价占位消息, 金额不受影响 (表格与 /api/summary 的 any_unpriced 同义)"}">*</span>` : ""}</td><td>${r.n}</td></tr>`;
+    }).join("") + `</tbody></table></div>` + (rows.length > lim ? `<div class="note">只列前 ${lim} 个, 共 ${rows.length} 个</div>` : "");
+}
+function renderTables() {
+  const d = $("#more");
+  if (d && d.open === false) { $("#tables").innerHTML = ""; return; }   // 收起时不渲染 (省事也省 DOM)
+  const rows = view(R);
+  const tb = [...aggBy(rows, bkey)].sort((a, b) => (a.label < b.label ? 1 : -1));
+  const hour = grain() === "hour";
+  $("#tables").innerHTML = `<div class="tabs">`
+    + `<div><h3>按模型</h3>${table(aggBy(rows, r => r.m), "m", {label: m => m + (unpriced(m) ? " (未知单价)" : "")})}</div>`
+    + `<div><h3>按来源 (main / subagent / workflow)</h3>${table(aggBy(rows, r => r.s), "s", {label: s => (SRC_ZH[s] || s) + " · " + s})}</div>`
+    + `<div><h3>按项目 <span class="muted" style="font-weight:400">↗ 看它的任务回放</span></h3>${table(aggBy(rows, r => r.p), "p", {link: wfLink})}</div>`
+    + `<div><h3>按会话</h3>${table(aggBy(rows, r => r.x), "x", {head: "会话", limit: 30, label: x => x.slice(0, 8), extraHead: "<th style=\"text-align:left\">项目</th>", extra: r => `<td class="lbl" style="text-align:left">${esc((SESS[r.label] || {}).p || "?")}</td>`})}</div>`
+    + `<div><h3>按${hour ? "小时" : "天"}</h3>${table(tb, hour ? "e" : "d", {head: hour ? "时段" : "日期", label: k => hour ? fmtTime(k * 3600, true) : k})}</div>`
+    + `</div>`;
+}
+
+// ---------------------------------------------------------------- 页脚: 诚实注记 + 自己对账
+function renderFoot() {
+  const d = CUBE, t = tot(R), bl = d.baseline;
+  let base = "";
+  if (bl) {
+    base = bl.kind === "prev-day-partial" ? " · 基线 = 昨天同一时段 (非预算)"
+      : ` · 基线 = 上一等长周期 ${esc(String(bl.prev_lo).slice(0, 10))} ~ ${esc(String(bl.prev_hi).slice(0, 10))} (非预算)`;
+    if (bl.partial) base += ` · <span class="warn">⚠ 历史不足, 基线偏低</span>`;
+    if (bl.total && bl.total.any_unpriced) {
+      const but = B.reduce((s, r) => s + r.ut, 0);
+      base += but > 0 ? ` · <span class="warn">* 基线含未知单价模型 (${esc(fmtTokens(but))} token 按 $0 计), 对比偏高</span>`
+                      : ` · <span class="muted">基线里的未知单价消息都是 0 token 占位, 不影响对比</span>`;
+    }
+  } else base = " · 当前窗口无可比基线 (选 今天/24h/7天/2周 可对比)";
+  const unp = !(d.total && d.total.any_unpriced) ? ""
+    : (t.ut > 0 ? ` · <span class="warn">* 含未知单价模型 (${t.un} 条消息, ${esc(fmtTokens(t.ut))} token), 这部分按 $0 计, 成本偏低 · 图上带 * / 斜线纹的就是它</span>`
+                : ` · <span class="warn">* 含 ${t.un} 条未知单价模型的消息 —— 都是 0 token 的占位消息 (如 &lt;synthetic&gt;), 金额不受影响</span>`);
+  // 自己对账: 立方各行加起来 == 服务端直接汇总的 total (同一 load_records), 对不上就明说
+  let recon = "";
+  if (d.total) {
+    const bad = [];
+    if (Math.abs(t.c - d.total.cost) > 0.01) bad.push(`成本 ${fmtUsd(t.c)} ≠ ${fmtUsd(d.total.cost)}`);
+    if (t.tok !== d.total.tokens) bad.push(`tokens ${t.tok} ≠ ${d.total.tokens}`);
+    if (t.n !== d.total.count) bad.push(`消息 ${t.n} ≠ ${d.total.count}`);
+    recon = bad.length ? ` · <span class="warn">⚠ 页面汇总与服务端总量对不上: ${esc(bad.join(", "))}</span>` : " · 各图与服务端总量已对账 ✓";
+    if (bad.length) RENDER_ERRORS.push("reconcile: " + bad.join(", "));
+  }
+  const off = d.span ? d.span.tz_offset_s || 0 : 0;
+  const tz = `UTC${off >= 0 ? "+" : "−"}${pad2(Math.floor(Math.abs(off) / 3600))}:${pad2(Math.floor(Math.abs(off) % 3600 / 60))}`;
+  $("#foot").innerHTML = `数据生成于 ${esc(d.generated_at)} · 窗口=${esc(d.window)} · scope=${esc(d.scope)}${d.vscode_only ? " · 仅 .vscode" : ""}`
+    + base + unp + recon
+    + `<br>等价成本 = 公开单价 × 用量的<b>估算</b>, 不是账单 (订阅用户实际不按此扣费; 真实账单见「厂商账单」页) · 时间按服务端本地时区 (${tz}) 分桶`
+    + ` · 图表不平滑、柱与面积从 0 起 · 纯本地只读, 不外发`;
+}
+
+// ---------------------------------------------------------------- 顶栏
+function renderBar() {
+  $("#win").innerHTML = WINS.map(([v, zh]) => `<button data-win="${v}"${ST.since === v ? ' class="on"' : ""}>${zh}</button>`).join("");
+  for (const b of document.querySelectorAll("#metric button")) b.classList.toggle("on", b.getAttribute("data-metric") === ST.metric);
+  for (const b of document.querySelectorAll("#stack button")) b.classList.toggle("on", b.getAttribute("data-stack") === ST.stack);
+  $("#scope").value = ST.scope;
+  $("#vscode").checked = ST.vs;
+  $("#auto").checked = ST.auto;
+  renderChips();
+}
+function stamp() {
+  if (CUBE) $("#stamp").textContent = "更新于 " + String(CUBE.generated_at || "").slice(11, 19);
+}
+
+// ---------------------------------------------------------------- 渲染总入口
+function safe(id, fn) {
+  try { fn(); } catch (e) {
+    RENDER_ERRORS.push(id + ": " + ((e && e.message) || e));
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = `<div class="err">这张图渲染出错: ${esc((e && e.message) || e)}</div>`;
+  }
+}
+function render() {
+  renderBar();
+  syncUrl();
+  if (!CUBE) return;
+  HOVER = "";
+  safe("k-cost", renderKPIs);
+  safe("burn", renderBurn);
+  safe("comp", renderComp);
+  safe("pdelta", renderDeltas);
+  safe("days", renderDays);
+  safe("heat", renderHeat);
+  safe("tree", renderTree);
+  safe("pareto", renderPareto);
+  safe("models", renderModels);
+  safe("tables", renderTables);
+  safe("foot", renderFoot);
+  stamp();
+}
+function showError(msg) {
+  $("#foot").innerHTML = `<span class="err">${esc(msg)}</span>`;
+  if (!CUBE) for (const id of ["burn", "comp", "days", "heat", "tree", "pareto", "models", "pdelta"]) { const el = document.getElementById(id); if (el) el.innerHTML = `<div class="empty">${esc(msg)}</div>`; }
+}
+
+// ---------------------------------------------------------------- 加载 (reqId: 只让最新一次请求作数)
+async function load(manual) {
+  const my = ++reqId;
+  const q = `since=${enc(ST.since)}&scope=${enc(ST.scope)}&vscode_only=${ST.vs ? "1" : "0"}`;
+  if (manual) document.body.classList.add("busy");
+  try {
+    const r = await fetch("/api/tokens/cube?" + q);
+    const d = await r.json();
+    if (my !== reqId) return;                 // 期间已有更新的请求发出, 本次作废
+    document.body.classList.remove("busy");
+    if (!d || d.error || !Array.isArray(d.rows)) { showError("出错: " + ((d && d.error) || "数据格式不对")); return; }
+    const sig = JSON.stringify([d.window, d.scope, d.vscode_only, d.rows, d.baseline && d.baseline.rows, d.span && d.span.d1]);
+    const same = sig === SIG && !manual;
+    ingest(d);
+    SIG = sig;
+    if (same) { stamp(); return; }           // 自动刷新但数据没变: 不重画 (不打断悬停/提示, 不闪)
+    render();
+  } catch (e) {
+    if (my === reqId) { document.body.classList.remove("busy"); showError("请求失败: " + e); }
+  }
+}
+
+// ---------------------------------------------------------------- 预算 (M3.5; 表单是静态 DOM, 刷新只重画进度条, 不打断你打字)
+let CTRL_TOKEN = "";
+try { CTRL_TOKEN = localStorage.getItem("mc_ctl_token") || ""; } catch (e) { CTRL_TOKEN = ""; }
+const SCOPE_ZH = {daily: "今日预算", weekly: "近7天预算", project: "项目预算"};
+function bcolor(pct) { return pct >= 90 ? "var(--bad)" : (pct >= 70 ? "var(--warn)" : "var(--good)"); }
+async function loadBudget() {
+  try {
+    const d = await (await fetch("/api/budget")).json();
+    BUDGET = d || {};
+    const bs = BUDGET.budgets || [];
+    $("#bmeters").innerHTML = bs.length ? bs.map(b => {
+      const pct = Math.max(0, +b.pct || 0), w = Math.min(100, pct), col = bcolor(pct);
+      const name = (SCOPE_ZH[b.scope] || b.scope) + (b.project ? " · " + b.project : "");
+      return `<span class="bm" title="${esc(name + ": " + fmtUsd(b.spend) + " / " + fmtUsd(b.limit))}"><span>${esc(name)}</span><span class="tr"><i style="width:${w}%;background:${col}"></i></span>`
+        + `<b style="color:${col}">${pct}%</b><span class="muted">${esc(fmtUsdS(b.spend))} / ${esc(fmtUsdS(b.limit))}</span></span>`;
+    }).join("") : `<span class="muted">未设预算 —— 设个日 / 周上限, 越线主动提醒, 并在曲线上画预算线</span>`;
+    const sig = JSON.stringify(bs);
+    if (sig !== BUDGET_SIG) { BUDGET_SIG = sig; if (CUBE) safe("burn", renderBurn); }
+  } catch (e) { /* 预算拿不到不影响主看板 */ }
+}
+async function saveBudget() {
+  if (!CTRL_TOKEN) {
+    const t = prompt("粘贴控制令牌 (见服务器控制台 / ~/.tokmon/control_token):");
+    if (t && t.trim()) { CTRL_TOKEN = t.trim(); try { localStorage.setItem("mc_ctl_token", CTRL_TOKEN); } catch (e) { /* 存不了就只在本页有效 */ } }
+  }
+  if (!CTRL_TOKEN) { $("#bmsg").textContent = "需要控制令牌"; return; }
+  const body = {}, d = $("#bd").value, w = $("#bw").value;
+  if (d !== "") body.daily_usd = parseFloat(d);
+  if (w !== "") body.weekly_usd = parseFloat(w);
+  $("#bmsg").textContent = "保存中…";
+  try {
+    const r = await fetch("/api/budget", {method: "POST", headers: {"Content-Type": "application/json", "X-Control-Token": CTRL_TOKEN}, body: JSON.stringify(body)});
+    if (r.status === 403) { try { localStorage.removeItem("mc_ctl_token"); } catch (e) { /* ignore */ } CTRL_TOKEN = ""; $("#bmsg").textContent = "令牌无效, 重试"; return; }
+    $("#bmsg").textContent = r.ok ? "已保存" : ("失败 " + r.status);
+    loadBudget();
+  } catch (e) { $("#bmsg").textContent = "失败: " + e; }
+}
+
+// ---------------------------------------------------------------- 交互: 点击 / 悬停联动 / 框选
+function setAuto() {
+  if (timer) { clearInterval(timer); timer = null; }
+  if (ST.auto) timer = setInterval(() => { load(false); loadBudget(); }, 5000);
+}
+function setWindow(v) { if (WINS.some(w => w[0] === v) && v !== ST.since) { ST.since = v; F.d.clear(); F.e.clear(); render(); load(true); } }
+function setMetric(v) { if ((v === "cost" || v === "tokens") && v !== ST.metric) { ST.metric = v; render(); } }
+function setStack(v) { if (STACKS.indexOf(v) >= 0 && v !== ST.stack) { ST.stack = v; render(); } }
+function toggleModel(m) { if (HIDE_M.has(m)) HIDE_M.delete(m); else HIDE_M.add(m); safe("models", renderModels); }
+function onClick(e) {
+  const t = e.target;
+  if (!t || !t.closest) return;
+  if (t.closest("a")) return;                    // 链接 (↗ 回放) 照常跳转, 不当作筛选
+  if (SUPPRESS) { SUPPRESS = false; return; }    // 刚框选完的那次 click 不算
+  let b;
+  if ((b = t.closest("[data-win]"))) return setWindow(b.getAttribute("data-win"));
+  if ((b = t.closest("[data-metric]"))) return setMetric(b.getAttribute("data-metric"));
+  if ((b = t.closest("[data-stack]"))) return setStack(b.getAttribute("data-stack"));
+  if ((b = t.closest("[data-hidem]"))) return toggleModel(b.getAttribute("data-hidem"));
+  if (t.closest("#fclear")) return clearFilters();
+  if ((b = t.closest("[data-rm]"))) {
+    const dim = b.getAttribute("data-rm");
+    for (const raw of (b.getAttribute("data-rvs") || "").split(" ").filter(Boolean)) {
+      const v = parseVal(dim, decodeURIComponent(raw));
+      if (v !== null && F[dim]) F[dim].delete(v);
+    }
+    return render();
+  }
+  if ((b = t.closest("[data-f]"))) applyFilter(b.getAttribute("data-f"), valsOf(b), e.shiftKey || e.ctrlKey || e.metaKey);
+}
+function applyLink(key) {                        // 悬停联动: 同一个实体在所有图里被点亮, 其余变淡
+  for (const el of document.querySelectorAll(".lk")) { el.classList.remove("lk"); el.classList.remove("lkp"); }
+  for (const el of document.querySelectorAll(".cb.lh")) el.classList.remove("lh");
+  if (!key) return;
+  const keys = new Set(key.split(" ").filter(Boolean));
+  for (const cb of document.querySelectorAll("main .cb")) {
+    let hit = false;
+    for (const el of cb.querySelectorAll("[data-k],[data-rel]")) {
+      const ks = ((el.getAttribute("data-k") || "") + " " + (el.getAttribute("data-rel") || "")).split(" ");
+      if (ks.some(k => keys.has(k))) {
+        el.classList.add("lk"); hit = true;
+        for (let a = el.parentElement; a && a !== cb; a = a.parentElement) {
+          if (a.hasAttribute && a.hasAttribute("data-k") && !a.classList.contains("lk")) { a.classList.add("lk"); a.classList.add("lkp"); }
+        }
+      }
+    }
+    if (hit) cb.classList.add("lh");
+  }
+}
+function showTip(s, x, y) {
+  const tip = $("#tip");
+  if (s !== TIP_S) {
+    TIP_S = s;
+    tip.textContent = "";
+    s.split("\n").forEach((ln, i) => {
+      const d = document.createElement("div");
+      const m = /^(#[0-9a-fA-F]{6})\|([\s\S]*)$/.exec(ln);
+      if (m) { const k = document.createElement("i"); k.className = "tk"; k.style.background = m[1]; d.appendChild(k); ln = m[2]; }
+      if (i === 0) d.className = "t0";
+      d.appendChild(document.createTextNode(ln));      // 数据标签一律 textContent, 不进 innerHTML
+      tip.appendChild(d);
+    });
+  }
+  tip.hidden = false;
+  const r = tip.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
+  let lx = x + 14, ly = y + 14;
+  if (lx + r.width > vw - 6) lx = Math.max(6, x - r.width - 14);
+  if (ly + r.height > vh - 6) ly = Math.max(6, y - r.height - 14);
+  tip.style.left = lx + "px"; tip.style.top = ly + "px";
+}
+function hideTip() { const tip = $("#tip"); if (!tip.hidden) { tip.hidden = true; TIP_S = ""; } }
+let RAF = 0, LAST_EV = null;
+function onMove(e) {
+  if (BRUSH) { brushMove(e); return; }          // 框选同步跟手 (很便宜), 不等下一帧
+  LAST_EV = e;
+  if (RAF) return;
+  RAF = requestAnimationFrame(() => { RAF = 0; moveNow(LAST_EV); });
+}
+function moveNow(e) {
+  const t = e.target;
+  if (!t || !t.closest) { hideTip(); return; }
+  if (BRUSH) return;
+  if (t.id === "burn-ov") {
+    const s = burnHover(e.clientX, t.getBoundingClientRect());
+    if (s) showTip(s, e.clientX, e.clientY);
+    return;
+  }
+  burnLeave();
+  const tt = t.closest("[data-tip]");
+  if (tt) showTip(tt.getAttribute("data-tip"), e.clientX, e.clientY); else hideTip();
+  const k = t.closest("[data-k]");
+  const key = k && k.closest("main") ? k.getAttribute("data-k") : "";
+  if (key !== HOVER) { HOVER = key; applyLink(key); }
+}
+function brushIdx(b, clientX) {
+  const x = clientX - b.rect.left;
+  return Math.max(0, Math.min(b.n - 1, Math.floor((x - b.pl) / b.slot)));
+}
+function onDown(e) {
+  const svg = e.target && e.target.closest && e.target.closest("svg.brush");
+  if (!svg || e.button > 0) return;
+  BRUSH = {svg, dim: svg.getAttribute("data-dim"), pl: +svg.getAttribute("data-pl"), slot: +svg.getAttribute("data-slot"),
+           n: +svg.getAttribute("data-n"), rect: svg.getBoundingClientRect(), x0: e.clientX, moved: false, add: e.shiftKey || e.ctrlKey || e.metaKey};
+}
+function brushMove(e) {
+  const b = BRUSH;
+  if (Math.abs(e.clientX - b.x0) > 6) b.moved = true;
+  if (!b.moved) return;
+  hideTip();
+  const i0 = brushIdx(b, b.x0), i1 = brushIdx(b, e.clientX), lo = Math.min(i0, i1), hi = Math.max(i0, i1);
+  const r = b.svg.querySelector("#brushr");
+  if (r) { r.setAttribute("x", (b.pl + lo * b.slot).toFixed(1)); r.setAttribute("width", ((hi - lo + 1) * b.slot).toFixed(1)); }
+}
+function onUp(e) {
+  const b = BRUSH;
+  BRUSH = null;
+  if (!b || !(b.moved || Math.abs(e.clientX - b.x0) > 6)) return;   // 没拖动 = 普通点击, 交给 click
+  SUPPRESS = true;
+  setTimeout(() => { SUPPRESS = false; }, 0);
+  const i0 = brushIdx(b, b.x0), i1 = brushIdx(b, e.clientX), lo = Math.min(i0, i1), hi = Math.max(i0, i1);
+  brushSelect(b.dim, lo, hi, b.add);
+}
+function brushSelect(dim, lo, hi, add) {        // 框选第 lo..hi 格 -> 日期 (或时段) 筛选
+  const axis = axisBuckets().slice(lo, hi + 1);
+  if (!axis.length || !F[dim]) return;
+  if (!add) F[dim].clear();
+  for (const a of axis) F[dim].add(a.key);
+  render();
+}
+
+// ---------------------------------------------------------------- 启动
+restore();
+document.addEventListener("click", onClick);
+document.addEventListener("pointermove", onMove);
+document.addEventListener("pointerdown", onDown);
+document.addEventListener("pointerup", onUp);
+document.documentElement.addEventListener("mouseleave", () => { hideTip(); burnLeave(); applyLink(""); HOVER = ""; });
+window.addEventListener("resize", (() => { let t = 0; return () => { clearTimeout(t); t = setTimeout(render, 150); }; })());
+$("#scope").addEventListener("change", () => { ST.scope = $("#scope").value === "main" ? "main" : "all"; render(); load(true); });
+$("#vscode").addEventListener("change", () => { ST.vs = !!$("#vscode").checked; render(); load(true); });
+$("#auto").addEventListener("change", () => { ST.auto = !!$("#auto").checked; syncUrl(); setAuto(); });
+$("#refresh").addEventListener("click", () => { load(true); loadBudget(); });
+$("#bsave").addEventListener("click", saveBudget);
+$("#more").addEventListener("toggle", () => safe("tables", renderTables));
+renderBar();
+setAuto();
+load(true);
+loadBudget();
+</script>
+</body></html>
