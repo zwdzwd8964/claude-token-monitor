@@ -2,7 +2,8 @@
 
 与 test_workflow_page.py 同一套路: 页面脚本进测试套件, 任一处抛错 / 被 safe() 吞掉的渲染错误 / 没转义的标签都会失败。
 覆盖: 首屏 / $↔tokens / 四种堆叠 / 每种筛选 (且 KPI 跟着变) / 多选 OR · 跨维度 AND / 「其他」多值 / 框选 /
-窗口切换 (小时粒度、预算线、无基线) / URL 往返 / 恶意 URL / 空数据 / 自己对账。没装 node 就跳过。
+窗口切换 (小时粒度、预算线、无基线、请求在途 / 失败) / URL 往返 / 恶意 URL (含原型链键、不存在的日期) / 空数据 / 自己对账 /
+触屏滑动留下的半截框选 / 只有未知单价 token 的项目。没装 node 就跳过。
 """
 
 import json
@@ -54,7 +55,10 @@ def test_tokens_page_runs_clean(base, tmp_path):  # noqa: F811
     for k in ("first", "reconciled", "callout_comp", "callout_heat", "callout_pareto", "baseline_chip", "wf_link",
               "escaped", "metric", "multi", "url_roundtrip", "multi_vs", "brush", "hourly", "budget_line",
               "no_baseline", "hostile_url", "empty", "brush_pointer",
-              "f_p", "f_m", "f_s", "f_x", "f_d", "f_h", "f_wd", "f_c", "f_k", "f_e"):
+              "f_p", "f_m", "f_s", "f_x", "f_d", "f_h", "f_wd", "f_c", "f_k", "f_e",
+              # 审查修复的回归 (触屏半截框选 / 悬停坐标 / 未知单价项目 / 图例自筛 / 切窗口在途与失败 / 今天按星期的假基线 / 按时段不外推)
+              "touch_cancel", "burn_hover", "ghost", "legend_self", "switch_inflight", "switch_fail",
+              "today_wd_nobase", "no_proj_hour"):
         assert seen.get(k), f"页面没有覆盖到 {k}: {seen}"
 
 

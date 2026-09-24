@@ -7,7 +7,6 @@
   /* ---------- 版本 A「驾驶舱」: 一屏分析台, 12 栏紧凑卡片, 过滤是主交互 ---------- */
   :root { --grid:#222733; --axis:#394152; --ink2:#b9c0d0; --selbg:#1f2a40; --selbd:#34466d; }
   body { font-variant-numeric:tabular-nums; }
-  header { padding:12px 20px; }
   button, select, input { font:inherit; }
 
   /* 顶栏 (sticky): 窗口 / 范围 / 指标 + 当前筛选 */
@@ -36,6 +35,10 @@
   .fchip button { border:0; background:transparent; color:var(--dim); cursor:pointer; padding:0 5px; font-size:13px; line-height:18px; }
   .fchip button:hover { color:var(--fg); }
   #fclear { border:0; background:transparent; color:var(--accent); cursor:pointer; font-size:12px; padding:0 4px; }
+  .lnk { border:0; background:transparent; color:var(--accent); cursor:pointer; padding:0; font-size:inherit; }
+  .lnk:hover { text-decoration:underline; }
+  /* 手机上顶栏不吸顶, 筛选芯片滚出屏幕 -> 底部常驻一条「已筛选 · 清除」, 免得把筛选后的数当成全局数 */
+  .fbar { display:none; }
   body.busy main.g { opacity:.6; transition:opacity .15s; }
 
   /* 网格 */
@@ -121,11 +124,11 @@
   details.bset .bf { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:6px; }
   details.bset input { width:84px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:3px 7px; }
 
-  /* 明细 */
-  details.more { grid-column:1 / -1; }
-  details.more > summary { cursor:pointer; font-size:13px; font-weight:600; list-style:none; }
-  details.more > summary::-webkit-details-marker { display:none; }
-  details.more > summary .q { color:var(--dim); font-weight:400; font-size:11.5px; margin-left:6px; }
+  /* 明细 (按 id 限定: 全局导航里也有 details.more「更多」, 不能漏过去) */
+  #more { grid-column:1 / -1; }
+  #more > summary { cursor:pointer; font-size:13px; font-weight:600; list-style:none; }
+  #more > summary::-webkit-details-marker { display:none; }
+  #more > summary .q { color:var(--dim); font-weight:400; font-size:11.5px; margin-left:6px; }
   .tabs { display:grid; grid-template-columns:repeat(auto-fit,minmax(580px,1fr)); gap:14px 20px; margin-top:10px; }
   .tabs h3 { font-size:12.5px; margin:0 0 4px; font-weight:600; }
   .tw { overflow-x:auto; }
@@ -168,6 +171,13 @@
     footer { padding:12px; }
     .fx .hint { display:none; }
     .fx { min-height:0; }
+    .fbar:not([hidden]) { display:flex; position:fixed; left:10px; right:10px; bottom:10px; z-index:60; gap:8px; align-items:center;
+        padding:7px 8px 7px 12px; border-radius:10px; background:#1b2436; border:1px solid var(--selbd); font-size:12.5px;
+        box-shadow:0 8px 24px rgba(0,0,0,.55); }
+    .fbar .ft { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+    .fbar .ft b { color:var(--fg); font-weight:600; }
+    .fbar button { flex:0 0 auto; }
+    footer { padding-bottom:64px; }
   }
 </style></head>
 <body>
@@ -258,6 +268,7 @@
   </details>
 </main>
 <footer id="foot">加载中…</footer>
+<div class="fbar" id="fbar" hidden></div>
 <div class="tip" id="tip" hidden></div>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
   <pattern id="hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
@@ -274,6 +285,7 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const enc = s => encodeURIComponent(String(s));
+const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
 // ---------------------------------------------------------------- 格式
 function fmtTokens(n) {
@@ -302,6 +314,18 @@ function fmtPct(x) {
   const p = x * 100;
   if (p > 0 && p < 0.1) return "<0.1%";
   return p.toFixed(p < 10 ? 1 : 0) + "%";
+}
+// 累计占比: 没到 100% 就不写 100% (99.56% 四舍五入成 100% 会让「其余几个」看起来一分钱没花)
+const fmtCum = x => (x < 1 - 1e-9 && x * 100 >= 99.5) ? ">99%" : fmtPct(x);
+function axisFmt(ticks) {                 // 刻度标签: 小数位随步长, 小额时不会印出 $0.01 $0.01 $0.01
+  const base = isCost() ? fmtUsdS : fmtTokens;
+  const uniq = f => new Set(ticks.map(f)).size === ticks.length;
+  if (uniq(base)) return base;
+  for (let dec = isCost() ? 3 : 1; dec <= 6; dec++) {
+    const f = v => (isCost() ? "$" : "") + v.toFixed(dec);
+    if (uniq(f)) return f;
+  }
+  return base;
 }
 const pad2 = n => (n < 10 ? "0" : "") + n;
 function localParts(t) {                  // epoch 秒 -> 服务端本地时区的 {mo, d, h, mi} (不依赖浏览器时区)
@@ -406,19 +430,34 @@ function mval(r, metric) {                // 当前度量 (受「成分」筛选
 function tot(rows) {
   const t = {};
   for (const c of VALS) t[c] = 0;
-  t.vc = 0; t.vt = 0;
+  t.vc = 0; t.vt = 0; t.vpt = 0;
   for (const r of rows) {
     for (const c of VALS) t[c] += r[c];
-    t.vc += mval(r, "cost"); t.vt += mval(r, "tokens");
+    t.vc += mval(r, "cost"); t.vt += mval(r, "tokens"); t.vpt += pricedTok(r);
   }
   t.tok = t.in + t.out + t.cr + t.cw;
   return t;
 }
-const baseOK = () => !!(CUBE && CUBE.baseline) && !F.d.size && !F.e.size;
+// 有单价的 token (当前「成分」筛选下): 单价 $/M 的分母只能算它 —— 未知单价的 token 按 $0 计, 放进分母会把单价拉低。
+// 立方的行按模型分组, 一行要么全有单价要么全没有; 按比例折算只是保险。
+function pricedTok(r) {
+  const v = mval(r, "tokens");
+  if (!r.ut) return v;
+  const rt = r.in + r.out + r.cr + r.cw;
+  return rt > 0 ? v * Math.max(0, rt - r.ut) / rt : 0;
+}
+const unitOf = t => t.vpt > 0 ? t.vc / t.vpt * 1e6 : null;
+// 今天 / 24h 的上一周期是「另一个星期几」: 按星期 (或星期×小时) 筛选时两边筛的不是同一批日子, 比出来是假的。
+// 7 天 / 2 周两段里每个星期几出现的次数相同, 不受影响。
+const towF = () => (ST.since === "today" || ST.since === "24h") && (F.wd.size > 0 || F.c.size > 0);
+const baseOK = () => !!(CUBE && CUBE.baseline) && !F.d.size && !F.e.size && !towF();
 function baseWhy() {
   if (!CUBE || !CUBE.baseline) return "当前窗口无可比的上一周期 (选 今天/24h/7天/2周 才有基线)";
+  if (!F.d.size && !F.e.size && towF()) return "今天 / 24h 窗口下按星期筛选时, 上一周期是另一个星期几, 不比较";
   return "按日期/时段筛选时, 上一周期没有对应的一段, 不比较";
 }
+// 图上正在显示的立方 == 顶栏的窗口 / 范围 / 仅 .vscode 吗? 切换后新数据回来之前, 不拿旧数据按新设置重画。
+const cubeMatches = () => !!CUBE && CUBE.window === ST.since && CUBE.scope === ST.scope && !!CUBE.vscode_only === ST.vs;
 function hitRate(a) {
   const den = (a.cr || 0) + (a.cw || 0) + (a.in || 0);
   return den > 0 ? a.cr / den : null;          // 命中率 = 缓存读 / (缓存读+缓存写+输入), 与旧页同式
@@ -478,13 +517,17 @@ function parseVal(dim, raw) {             // URL / 属性里的值 -> 类型化�
   raw = String(raw);
   if (!raw.length || raw.length > 400) return null;
   switch (dim) {
-    case "d": return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
+    case "d": {                             // 格式对还不够: 2026-13-99 / 2026-02-30 这种不存在的日期也拒掉 (往返校验)
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+      const t = Date.parse(raw + "T00:00:00Z");
+      return isFinite(t) && new Date(t).toISOString().slice(0, 10) === raw ? raw : null;
+    }
     case "e": return /^\d{1,9}$/.test(raw) ? +raw : null;
     case "h": return /^\d{1,2}$/.test(raw) && +raw < 24 ? +raw : null;
     case "wd": return /^[0-6]$/.test(raw) ? +raw : null;
     case "c": return /^[0-6]-(\d|1\d|2[0-3])$/.test(raw) ? raw : null;
-    case "k": return COMP_BY[raw] ? raw : null;
-    case "s": return SRC_ZH[raw] ? raw : null;
+    case "k": return own(COMP_BY, raw) ? raw : null;       // 只认自己的键: constructor / __proto__ / toString 不算
+    case "s": return own(SRC_ZH, raw) ? raw : null;
     case "p": case "m": case "x": return raw;
     default: return null;
   }
@@ -537,6 +580,21 @@ function renderChips() {
   $("#fx").innerHTML = n
     ? `<span class="hint">筛选</span>${h}<button id="fclear">清除全部</button>`
     : `<span class="hint">点任意图形筛选 (其它图与 KPI 跟着变) · Shift / Ctrl + 点击多选 · 在「按天」图上拖动可框选日期 · 同一维度内为「或」, 不同维度为「且」</span>`;
+  // 手机上顶栏不吸顶: 底部常驻一条, 写明筛了什么 (只在 ≤700px 时由 CSS 显示)
+  const fb = $("#fbar");
+  if (fb) {
+    fb.hidden = !n;
+    if (n) {
+      const labs = [];
+      for (const dim of ["k", "p", "m", "s", "x", "d", "e", "wd", "h", "c"]) {
+        if (!F[dim].size) continue;
+        const vs = dim === "d" ? compressDays(F.d).map(([a, b]) => a === b ? a.slice(5) : a.slice(5) + "~" + b.slice(5)) : [...F[dim]].map(v => chipLabel(dim, v));
+        labs.push(DIM_ZH[dim] + " " + vs.join("/"));
+      }
+      fb.innerHTML = `<span class="ft" data-totop="1" title="回到顶部看筛选芯片"><b>已筛选 ${n} 项</b> · ${esc(labs.join(" · "))}</span>`
+        + `<button class="btn" data-fclear="1">清除</button>`;
+    } else fb.innerHTML = "";
+  }
 }
 
 // ---------------------------------------------------------------- URL 状态
@@ -607,15 +665,17 @@ function widthOf(id, def) {
   return (w && w > 60) ? Math.floor(w) : def;
 }
 const tipAttr = lines => ` data-tip="${esc(lines.filter(x => x != null && x !== "").join("\n"))}"`;
-function legend(items) {                  // items: [{col, zh, attrs, hatch, off}]
+function legend(items) {                  // items: [{col, zh, attrs, hatch, off, dim}]
   return `<div class="lg">` + items.map(it =>
-    `<span ${it.attrs || ""}${it.off ? ' class="off"' : ""}><i class="sw${it.hatch ? " hat" : ""}" style="background:${it.col}"></i>${esc(it.zh)}</span>`).join("") + `</div>`;
+    `<span ${it.attrs || ""}${it.off ? ' class="off"' : (it.dim ? ' class="dimm"' : "")}><i class="sw${it.hatch ? " hat" : ""}" style="background:${it.col}"></i>${esc(it.zh)}</span>`).join("") + `</div>`;
 }
 
 // ---------------------------------------------------------------- 自基线 Δ 徽标 (与旧页同一语义)
 // higherIsGood: 命中率这种「越高越好」传 true; 成本/token 传 false; 只表示变化、不评好坏的传 null。
 // 诚实约定: 无基线 -> 「无基线」; 上期为 0 而本期>0 -> 「新增」; 先给绝对量再给 %。
-function deltaChip(cur, prev, hasBaseline, fmtAbs, higherIsGood) {
+// fmtPrev: 上一周期绝对值的格式 (默认同 fmtAbs); 命中率的差是 pp, 上期值却是 %。
+function deltaChip(cur, prev, hasBaseline, fmtAbs, higherIsGood, fmtPrev) {
+  fmtPrev = fmtPrev || fmtAbs;
   if (!hasBaseline) return `<span class="chip flat" title="${esc(baseWhy())}">— 无基线</span>`;
   const diff = cur - prev;
   const absTxt = (diff >= 0 ? "+" : "−") + fmtAbs(Math.abs(diff));
@@ -627,7 +687,7 @@ function deltaChip(cur, prev, hasBaseline, fmtAbs, higherIsGood) {
   const p = (cur - prev) / prev * 100;
   const cls = Math.abs(p) <= 0.5 ? "flat" : tone(p > 0);
   const arrow = p > 0.5 ? "▲" : (p < -0.5 ? "▼" : "·");
-  return `<span class="chip ${cls}" title="对比你自己的上一等长周期 (非预算) · 上一周期 ${esc(fmtAbs(prev))}">${arrow} ${esc(absTxt)} · ${(p >= 0 ? "+" : "") + p.toFixed(0)}%</span>`;
+  return `<span class="chip ${cls}" title="对比你自己的上一等长周期 (非预算) · 上一周期 ${esc(fmtPrev(prev))}">${arrow} ${esc(absTxt)} · ${(p >= 0 ? "+" : "") + p.toFixed(0)}%</span>`;
 }
 
 // ---------------------------------------------------------------- C1 · KPI + 迷你趋势
@@ -636,15 +696,15 @@ function bucketTotals(rows) {
   for (const r of rows) {
     const k = bkey(r);
     let t = m.get(k);
-    if (!t) { t = {vc: 0, vt: 0, n: 0, out: 0, cr: 0, cw: 0, in: 0}; m.set(k, t); }
-    t.vc += mval(r, "cost"); t.vt += mval(r, "tokens"); t.n += r.n; t.out += r.out; t.cr += r.cr; t.cw += r.cw; t.in += r.in;
+    if (!t) { t = {vc: 0, vt: 0, vpt: 0, n: 0, out: 0, cr: 0, cw: 0, in: 0}; m.set(k, t); }
+    t.vc += mval(r, "cost"); t.vt += mval(r, "tokens"); t.vpt += pricedTok(r); t.n += r.n; t.out += r.out; t.cr += r.cr; t.cw += r.cw; t.in += r.in;
   }
   return m;
 }
 function spark(axis, bt, fn, fmt, name, w) {
   const H = 20, P = 2, n = axis.length;
   if (!n) return "";
-  const vals = axis.map(a => { const t = bt.get(a.key); return t ? fn(t) : (fn({vc: 0, vt: 0, n: 0, out: 0, cr: 0, cw: 0, in: 0})); });
+  const vals = axis.map(a => { const t = bt.get(a.key); return t ? fn(t) : (fn({vc: 0, vt: 0, vpt: 0, n: 0, out: 0, cr: 0, cw: 0, in: 0})); });
   const have = vals.filter(v => v != null && isFinite(v));
   if (!have.length) return `<svg width="${w}" height="${H}"></svg>`;
   const hi = Math.max(...have) || 1;
@@ -670,7 +730,9 @@ function spark(axis, bt, fn, fmt, name, w) {
 function renderKPIs() {
   const cur = tot(view(R)), ok = baseOK(), prev = ok ? tot(view(B)) : tot([]);
   const kf = F.k.size ? ` <i title="已按成本成分筛选: 只算 ${esc([...F.k].map(k => COMP_BY[k].zh).join(" / "))}">按成分</i>` : "";
-  const unit = t => t.vt > 0 ? t.vc / t.vt * 1e6 : null;
+  const unit = unitOf;
+  const unitStar = cur.ut > 0 || (ok && prev.ut > 0)
+    ? `<span class="st" title="${esc("分母只算有单价的 token —— 不含 " + fmtTokens(cur.ut) + " 未知单价 token" + (ok ? " (上一周期 " + fmtTokens(prev.ut) + ")" : "") + ", 它们按 $0 计, 放进分母会把单价拉低")}">*</span>` : "";
   const zeroPrev = `<span class="chip flat" title="上一周期没有这项数据 (那段时间没用量), 比不出比例">上期为 0</span>`;
   const hr = hitRate(cur), hrp = ok ? hitRate(prev) : null;
   const unStar = cur.un > 0 || (ok && prev.un > 0);
@@ -685,12 +747,12 @@ function renderKPIs() {
      tip: "按公开单价 × 用量估算的等价价值, 不是账单 (订阅用户实际不按此扣费)"},
     {id: "k-tok", k: "总 Tokens" + kf, v: esc(fmtTokens(cur.vt)), chip: deltaChip(cur.vt, prev.vt, ok, fmtTokens, false),
      fn: t => t.vt, fmt: fmtTokens, name: "Tokens", tip: "输入 + 输出 + 缓存写 + 缓存读"},
-    {id: "k-unit", k: "单价 $/百万 token" + kf, v: unit(cur) == null ? "—" : esc("$" + unit(cur).toFixed(2)),
+    {id: "k-unit", k: "单价 $/百万 token" + kf, v: unit(cur) == null ? "—" + unitStar : esc("$" + unit(cur).toFixed(2)) + unitStar,
      chip: !ok ? deltaChip(0, 0, false, String, false) : ((unit(cur) != null && unit(prev) != null) ? deltaChip(unit(cur), unit(prev), true, x => "$" + x.toFixed(2), false) : zeroPrev),
      fn: unit, fmt: x => "$" + x.toFixed(2) + "/M", name: "单价",
-     tip: "等价成本 ÷ token 数。缓存读很便宜, 所以 token 多不等于钱多 —— 这个数每天能差好几倍"},
+     tip: "等价成本 ÷ 有单价的 token 数。缓存读很便宜, 所以 token 多不等于钱多 —— 这个数每天能差好几倍"},
     {id: "k-hit", k: "缓存命中率", v: hr === null ? "—" : esc((hr * 100).toFixed(0) + "%"),
-     chip: !ok ? deltaChip(0, 0, false, String, true) : ((hr !== null && hrp !== null) ? deltaChip(hr * 100, hrp * 100, true, x => x.toFixed(1) + "pp", true) : zeroPrev),
+     chip: !ok ? deltaChip(0, 0, false, String, true) : ((hr !== null && hrp !== null) ? deltaChip(hr * 100, hrp * 100, true, x => x.toFixed(1) + "pp", true, x => x.toFixed(1) + "%") : zeroPrev),
      fn: hitRate, fmt: x => (x * 100).toFixed(0) + "%", name: "命中率", tip: "缓存读 ÷ (缓存读 + 缓存写 + 输入)。不受「成分」筛选影响"},
     {id: "k-out", k: "Output", v: esc(fmtTokens(cur.out)), chip: deltaChip(cur.out, prev.out, ok, fmtTokens, null),
      fn: t => t.out, fmt: fmtTokens, name: "Output", tip: "模型输出的 token"},
@@ -750,22 +812,25 @@ function renderBurn() {
   const pts = cumPts(rows, lo, hi, 0);
   const curEnd = pts[pts.length - 1][1];
   let ppts = null, prevEnd = null;
-  if (CUBE.baseline) {
+  const noBase = towF();                    // 今天/24h 按星期筛: 上一周期是另一个星期几, 不画灰线、不写「同一时点」
+  if (CUBE.baseline && !noBase) {
     const bl = CUBE.baseline;
     ppts = cumPts(view(B, ["d", "e"]), bl.lo, bl.hi, lo - bl.lo);
     prevEnd = ppts[ppts.length - 1][1];
   }
   let proj = null;
   const elapsed = hi - lo;
-  if (today && elapsed >= 3600 && curEnd > 0) proj = curEnd / elapsed * 86400;   // 线性外推到 24:00
+  // 线性外推到 24:00 只在「不按时段筛」时成立: 按小时 / 星期 / 格筛时, 那一段可能早就结束了
+  const timeF = F.h.size > 0 || F.wd.size > 0 || F.c.size > 0;
+  if (today && elapsed >= 3600 && curEnd > 0 && !timeF) proj = curEnd / elapsed * 86400;
   const bud = budgetFor();
   const ymax = Math.max(curEnd, prevEnd || 0, proj || 0, bud && bud.clean ? bud.limit : 0) * 1.06 || 1;
-  const ticks = niceTicks(ymax, 4), top = ticks[ticks.length - 1];
+  const ticks = niceTicks(ymax, 4), top = ticks[ticks.length - 1], tf = axisFmt(ticks);
   const X = t => PL + (t - lo) / Math.max(1, x1 - lo) * pw;
   const Y = v => PT + ph - v / top * ph;
   const path = p => p.map((q, i) => (i ? "L" : "M") + X(q[0]).toFixed(1) + "," + Y(q[1]).toFixed(1)).join("");
   let g = "";
-  for (const t of ticks) g += `<line class="gl" x1="${PL}" x2="${W - PR}" y1="${Y(t).toFixed(1)}" y2="${Y(t).toFixed(1)}"></line><text x="${PL - 5}" y="${(Y(t) + 3.5).toFixed(1)}" text-anchor="end">${esc(fmtVS(t))}</text>`;
+  for (const t of ticks) g += `<line class="gl" x1="${PL}" x2="${W - PR}" y1="${Y(t).toFixed(1)}" y2="${Y(t).toFixed(1)}"></line><text x="${PL - 5}" y="${(Y(t) + 3.5).toFixed(1)}" text-anchor="end">${esc(tf(t))}</text>`;
   // x 刻度: 多天 -> 本地零点; 今天/24h -> 每 3/6 小时
   const off = sp.tz_offset_s || 0;
   let xt = "";
@@ -803,14 +868,19 @@ function renderBurn() {
   s += `<path d="${path(pts)}L${X(hi).toFixed(1)},${Y(0).toFixed(1)}L${X(lo).toFixed(1)},${Y(0).toFixed(1)}Z" fill="${ACCENT}" opacity=".1"></path>`;
   s += `<path d="${path(pts)}" fill="none" stroke="${ACCENT}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>`;
   s += `<circle cx="${X(hi).toFixed(1)}" cy="${Y(curEnd).toFixed(1)}" r="4" fill="${ACCENT}" stroke="#181b22" stroke-width="2"></circle>`;
-  let lab = `<text class="lab-hi" x="${Math.min(W - PR, X(hi) + 0).toFixed(1)}" y="${Math.max(PT + 9, Y(curEnd) - 8).toFixed(1)}" text-anchor="end">${esc(fmtVS(curEnd))}</text>`;
+  const budOn = bud && bud.clean && bud.limit > 0;
+  // 花费贴近预算时, 预算线会正好穿过终点金额 -> 把金额挪到点的下方; 文字都描一圈卡片底色, 压在线上也读得清
+  const halo = "paint-order:stroke;stroke:var(--panel);stroke-width:3px;stroke-linejoin:round";
+  const endBelow = budOn && Math.abs(Y(curEnd) - Y(bud.limit)) < 14;
+  const endY = endBelow ? Math.min(PT + ph - 3, Y(curEnd) + 16) : Math.max(PT + 9, Y(curEnd) - 8);
+  let lab = `<text class="lab-hi" x="${Math.min(W - PR, X(hi) + 0).toFixed(1)}" y="${endY.toFixed(1)}" text-anchor="end" style="${halo}">${esc(fmtVS(curEnd))}</text>`;
   if (proj != null) {
     s += `<path d="M${X(hi).toFixed(1)},${Y(curEnd).toFixed(1)}L${X(x1).toFixed(1)},${Y(proj).toFixed(1)}" fill="none" stroke="${ACCENT}" stroke-width="1.5" stroke-dasharray="4 4" opacity=".8"></path>`;
-    lab += `<text class="lab" x="${(X(x1) - 2).toFixed(1)}" y="${Math.max(PT + 9, Y(proj) - 6).toFixed(1)}" text-anchor="end">估算 ${esc(fmtVS(proj))}</text>`;
+    lab += `<text class="lab" x="${(X(x1) - 2).toFixed(1)}" y="${Math.max(PT + 9, Y(proj) - 6).toFixed(1)}" text-anchor="end" style="${halo}">估算 ${esc(fmtVS(proj))}</text>`;
   }
-  if (bud && bud.clean && bud.limit > 0) {
+  if (budOn) {
     s += `<line x1="${PL}" x2="${W - PR}" y1="${Y(bud.limit).toFixed(1)}" y2="${Y(bud.limit).toFixed(1)}" stroke="var(--warn)" stroke-width="1.5"></line>`;
-    lab += `<text x="${PL + 4}" y="${(Y(bud.limit) - 4).toFixed(1)}" style="fill:var(--warn)">${esc(bud.zh + " " + fmtUsdS(bud.limit))}</text>`;
+    lab += `<text x="${PL + 4}" y="${(Y(bud.limit) - 4).toFixed(1)}" style="fill:var(--warn);${halo}">${esc(bud.zh + " " + fmtUsdS(bud.limit))}</text>`;
   }
   s += lab;
   s += `<line id="burn-x" x1="0" x2="0" y1="${PT}" y2="${PT + ph}" stroke="#c0caf5" stroke-width="1" opacity="0"></line>`;
@@ -823,13 +893,22 @@ function renderBurn() {
   if (bud && bud.clean) lg.push(`<span><i style="display:inline-block;width:14px;height:2px;background:var(--warn)"></i>${esc(bud.zh)}</span>`);
   if (proj != null) lg.push(`<span title="估算 = 今天已花 ÷ 已过时长 × 24h (线性外推), 不是预测"><i style="display:inline-block;width:14px;border-top:2px dashed ${ACCENT}"></i>估算</span>`);
   $("#burn-lg").innerHTML = lg.join("");
-  let q = `本期 <b>${esc(fmtV(curEnd))}</b>`;
+  // 曲线本身不按日期/时段筛 (只打底色): 这时副标题写「窗口累计」+「选中时段」, 不跟 KPI 的「本期」抢同一个名字
+  const dsel = F.d.size > 0 || F.e.size > 0;
+  let q = dsel ? `窗口累计 <b>${esc(fmtV(curEnd))}</b> · 选中${grain() === "hour" ? "时段" : "日期"} <b>${esc(fmtV(view(R).reduce((a, r) => a + mval(r), 0)))}</b>`
+               : `本期 <b>${esc(fmtV(curEnd))}</b>`;
+  if (isCost()) {                           // 未知单价 token 按 $0 计: 曲线偏低, 在这里就标出来
+    const cu = rows.reduce((a, r) => a + r.ut, 0), bu = ppts ? view(B, ["d", "e"]).reduce((a, r) => a + r.ut, 0) : 0;
+    if (cu > 0 || bu > 0) q += `<span class="warn" title="${esc("含 " + fmtTokens(cu) + " 未知单价 token" + (ppts ? " (上一周期 " + fmtTokens(bu) + ")" : "") + ", 按 $0 计, 曲线偏低")}">*</span>`;
+  }
   if (ppts && prevEnd != null) {
     const d = prevEnd > 0 ? (curEnd - prevEnd) / prevEnd * 100 : null;
     q += ` · ${CUBE.baseline.kind === "prev-day-partial" ? "昨天同一时点" : "上一周期同一时点"} ${esc(fmtV(prevEnd))}` + (d == null ? "" : ` (${d >= 0 ? "+" : ""}${d.toFixed(0)}%)`);
     if (CUBE.baseline.partial) q += ` · <span class="warn" title="历史不足 2 个窗口长, 上一周期缺数据">⚠ 基线偏低</span>`;
   } else if (!CUBE.baseline) q += " · 此窗口无上一周期可比";
+  else if (noBase) q += ` · <span title="${esc(baseWhy())}">按星期筛选时不和上一周期比</span>`;
   if (proj != null) q += ` · <span title="估算 = 今天已花 ÷ 已过时长 × 24h (线性外推)。夜里也在跑的话会偏差很大">估算全天 ≈ ${esc(fmtV(proj))}</span>`;
+  else if (today && timeF && curEnd > 0) q += ` · <span title="「今天已花 ÷ 已过时长 × 24h」只在不按时段筛选时成立">按时段筛选时不外推</span>`;
   else if (today && elapsed < 3600) q += " · 今天刚开始, 不外推";
   if (bud && !bud.clean) q += ` · <span title="预算按全部来源、未筛选的 $ 计; 当前视图口径不同, 所以不画预算线">预算线已隐藏 (口径不同)</span>`;
   else if (!bud && BUDGET && (BUDGET.budgets || []).length && ST.since !== "today" && ST.since !== "7d") q += ` · <span title="日预算对应「今天」, 周预算对应「近 7 天」">预算线只在 今天 / 7 天 窗口画</span>`;
@@ -837,7 +916,8 @@ function renderBurn() {
 }
 function burnHover(clientX, rect) {
   if (!BURN) return null;
-  const t = BURN.lo + ((clientX - rect.left) - BURN.PL) / BURN.pw * (BURN.x1 - BURN.lo);
+  // rect 是 #burn-ov 的框, 它本身就从 x=PL 开始画 -> 这里不能再减一次 PL
+  const t = BURN.lo + (clientX - rect.left) / BURN.pw * (BURN.x1 - BURN.lo);
   const tt = Math.max(BURN.lo, Math.min(BURN.x1, t));
   const xl = $("#burn-x");
   if (xl) { const xx = BURN.X(tt).toFixed(1); xl.setAttribute("x1", xx); xl.setAttribute("x2", xx); xl.setAttribute("opacity", ".6"); }
@@ -896,7 +976,8 @@ function renderComp() {
     let msg = "";
     if (topT && topT.st - topT.s$ > 0.05) msg = `Tokens 里 <b>${fmtPct(topT.st)}</b> 是${esc(topT.p.zh)}, 但只占 <b>${fmtPct(topT.s$)}</b> 的钱`;
     if (lever && lever.s$ - lever.st > 0.05) msg += (msg ? "; " : "") + `${esc(lever.p.zh)}只有 ${fmtPct(lever.st)} 的 token, 却占 <b>${fmtPct(lever.s$)}</b> 的钱`;
-    if (msg) h = `<p class="callout">${msg} —— 所以默认按 $ 看。</p>` + h;
+    const cs = t.ut > 0 ? `<span class="warn" title="${esc("token 份额里含 " + fmtTokens(t.ut) + " 未知单价 token, 它们按 $0 计, 钱的份额里是 0")}">*</span>` : "";
+    if (msg) h = `<p class="callout">${msg}${cs} —— 所以默认按 $ 看。</p>` + h;
   }
   const M = CUBE.mult || {};
   const how = {in: "input 单价", cr: `input 单价 × ${M.cr ?? "?"}`, cw: `input 单价 × ${M.cw5 ?? "?"} (5m) / × ${M.cw1 ?? "?"} (1h)`,
@@ -919,13 +1000,21 @@ function renderDeltas() {
   const ok = baseOK();
   $("#pd-q").textContent = !CUBE.baseline ? "vs 上一周期" : (CUBE.baseline.kind === "prev-day-partial" ? (isCost() ? "成本" : "Tokens") + " vs 昨天同一时段" : (isCost() ? "成本" : "Tokens") + " vs 上一周期");
   if (!ok) { el.innerHTML = `<div class="empty">${esc(baseWhy())}</div>`; return; }
-  const cur = new Map(), prev = new Map(), unp = new Set();
-  for (const r of view(R, ["p"])) { cur.set(r.p, (cur.get(r.p) || 0) + mval(r)); if (r.ut) unp.add(r.p); }
-  for (const r of view(B, ["p"])) { prev.set(r.p, (prev.get(r.p) || 0) + mval(r)); if (r.ut) unp.add(r.p); }
+  const cur = new Map(), prev = new Map(), unp = new Set(), cu = new Map(), pu = new Map();
+  for (const r of view(R, ["p"])) { cur.set(r.p, (cur.get(r.p) || 0) + mval(r)); if (r.ut) { unp.add(r.p); cu.set(r.p, (cu.get(r.p) || 0) + r.ut); } }
+  for (const r of view(B, ["p"])) { prev.set(r.p, (prev.get(r.p) || 0) + mval(r)); if (r.ut) { unp.add(r.p); pu.set(r.p, (pu.get(r.p) || 0) + r.ut); } }
   const all = new Set([...cur.keys(), ...prev.keys()]);
   const rows = [...all].map(p => ({p, c: cur.get(p) || 0, v: prev.get(p) || 0})).filter(x => x.c > 0 || x.v > 0)
     .map(x => Object.assign(x, {diff: x.c - x.v})).sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff)).slice(0, 7);
-  if (!rows.length) { el.innerHTML = `<div class="empty">两个周期都没有数据</div>`; return; }
+  // $ 视图下两期都是 $0、却有未知单价 token 的项目: 不能悄悄消失, 单列一行 (带 *)
+  const ghosts = isCost() ? [...all].filter(p => !(cur.get(p) > 0) && !(prev.get(p) > 0) && ((cu.get(p) || 0) + (pu.get(p) || 0)) > 0)
+    .map(p => ({p, cu: cu.get(p) || 0, pu: pu.get(p) || 0})).sort((a, b) => (b.cu + b.pu) - (a.cu + a.pu)) : [];
+  if (!rows.length && !ghosts.length) { el.innerHTML = `<div class="empty">两个周期都没有数据</div>`; return; }
+  const ghostRow = x => {
+    const sel = F.p.size && !F.p.has(x.p) ? " dimm" : "";
+    return `<span class="nm${sel}" data-f="p" data-v="${esc(x.p)}" data-k="p:${esc(enc(x.p))}"${tipAttr([x.p + " *", "只有未知单价的 token: 本期 " + fmtTokens(x.cu) + " · 上一周期 " + fmtTokens(x.pu), "$ 视图按 0 计, 比不出 $ 的变化 —— 切到 Tokens 看"])}>${esc(x.p)}<span class="warn">*</span></span>`
+      + `<span class="v${sel}">${esc(fmtTokens(x.cu))} tok</span><span class="chip flat${sel}">单价未知</span>`;
+  };
   el.innerHTML = `<div class="pd">` + rows.map(x => {
     let status, cls;
     const absd = (x.diff >= 0 ? "+" : "−") + fmtV(Math.abs(x.diff));
@@ -940,20 +1029,24 @@ function renderDeltas() {
     const st = unp.has(x.p) ? '<span class="warn" title="含未知单价模型的 token, 按 $0 计, 成本偏低">*</span>' : "";
     return `<span class="nm${sel}" data-f="p" data-v="${esc(x.p)}" data-k="p:${esc(enc(x.p))}"${tipAttr([x.p, "本期 " + fmtV(x.c), "上一周期 " + fmtV(x.v), "点击筛选这个项目"])}>${esc(x.p)}${st}</span>`
       + `<span class="v${sel}">${esc(fmtV(x.c))}</span><span class="chip ${cls}${sel}" title="vs 上一周期 ${esc(absd)}">${status} · ${esc(absd)}</span>`;
-  }).join("") + `</div>`;
+  }).join("") + ghosts.slice(0, 3).map(ghostRow).join("") + `</div>`
+    + (ghosts.length ? `<div class="note warn" style="margin-top:4px">* ${ghosts.length} 个项目只有未知单价的 token, $ 视图按 0 计 —— <button class="lnk" data-metric="tokens">切到 Tokens</button> 看它们的变化</div>` : "");
 }
 
 // ---------------------------------------------------------------- C3 · 按天 (或按小时) 堆叠柱 + 单价条
+const STACK_DIM = {component: "k", model: "m", source: "s", project: "p"};
+// 系列用「不按堆叠维度自己筛」的行来建 (驾驶舱约定: 不按自己的维度筛自己, 没选中的变淡而不是消失),
+// 所以图例里始终是全部系列, 可以 Shift / Ctrl 多选。
 function stackSeries(rows) {              // 当前堆叠方式下的系列 [{key, zh, col, hatch, f, vs, val(r)}]
   const cost = isCost();
   if (ST.stack === "component") {
-    return COMPS.filter(c => (cost || c.tok) && (!F.k.size || F.k.has(c.k)))
+    return COMPS.filter(c => cost || c.tok)
       .map(c => ({key: c.k, zh: c.zh, col: c.col, f: "k", vs: [c.k], val: r => cost ? r[c.cost] : r[c.tok]}));
   }
   if (ST.stack === "model") {
     const ms = [...new Set(rows.map(r => r.m))].sort((a, b) => (MOD[a].rank - MOD[b].rank) || (a < b ? -1 : 1));
-    const own = ms.filter(m => MOD[m].rank < MODEL_COLS.length), rest = ms.filter(m => MOD[m].rank >= MODEL_COLS.length);
-    const out = own.map(m => ({key: m, zh: m, col: modelCol(m), hatch: unpriced(m), f: "m", vs: [m], val: r => r.m === m ? mval(r) : 0}));
+    const mine = ms.filter(m => MOD[m].rank < MODEL_COLS.length), rest = ms.filter(m => MOD[m].rank >= MODEL_COLS.length);
+    const out = mine.map(m => ({key: m, zh: m, col: modelCol(m), hatch: unpriced(m), f: "m", vs: [m], val: r => r.m === m ? mval(r) : 0}));
     if (rest.length) out.push({key: "__om", zh: "其他模型", col: OTHER_COL, hatch: rest.some(unpriced), f: "m", vs: rest, val: r => rest.indexOf(r.m) >= 0 ? mval(r) : 0});
     return out;
   }
@@ -969,6 +1062,7 @@ function stackSeries(rows) {              // 当前堆叠方式下的系列 [{ke
   if (rest.length) out.push({key: "__op", zh: `其他 ${rest.length} 个项目`, col: OTHER_COL, f: "p", vs: rest, val: r => rest.indexOf(r.p) >= 0 ? mval(r) : 0});
   return out;
 }
+const serOn = sr => { const S = F[sr.f]; return !S.size || sr.vs.some(v => S.has(v)); };
 function vsAttr(f, vs) { return vs.length === 1 ? `data-f="${f}" data-v="${esc(vs[0])}"` : `data-f="${f}" data-vs="${esc(vs.map(enc).join(" "))}"`; }
 function colGeom(W, n, PL, PR) {
   const pw = W - PL - PR, slot = pw / Math.max(1, n), bw = Math.max(1.5, Math.min(24, slot * 0.72));
@@ -979,29 +1073,39 @@ function renderDays() {
   const hour = grain() === "hour";
   $("#day-h").textContent = hour ? "按小时" : "按天";
   $("#day-q").textContent = hour ? "几点花得多 · 拖动框选时段" : "哪天花得多 · 拖动框选日期";
-  const rows = view(R, ["d", "e"]);
+  const sd = STACK_DIM[ST.stack];
+  const rows = view(R, ["d", "e"]);                              // 完整筛选: 合计、单价条
+  const srows = sd === "k" ? rows : view(R, ["d", "e", sd]);     // 画柱: 不按堆叠维度自己筛
   const axis = axisBuckets();
-  const ser = stackSeries(rows);
-  const data = new Map(), unp = new Map(), unt = new Map(), totals = new Map(), toks = new Map(), costs = new Map();
-  for (const r of rows) {
+  const ser = stackSeries(srows);
+  const anySel = F[sd].size > 0;
+  // 有选中的系列时把它们放到最底下 (从 0 起, 能对着轴读); 颜色跟实体走, 不跟位置走
+  const draw = anySel ? ser.filter(serOn).concat(ser.filter(sr => !serOn(sr))) : ser;
+  const data = new Map(), stackT = new Map(), unp = new Map(), unt = new Map();
+  for (const r of srows) {
     const k = bkey(r);
     let o = data.get(k);
     if (!o) { o = {}; data.set(k, o); }
-    for (const s of ser) { const v = s.val(r); if (v) o[s.key] = (o[s.key] || 0) + v; }
-    totals.set(k, (totals.get(k) || 0) + mval(r));
-    toks.set(k, (toks.get(k) || 0) + mval(r, "tokens"));
-    costs.set(k, (costs.get(k) || 0) + mval(r, "cost"));
+    for (const s of ser) { const v = s.val(r); if (v) { o[s.key] = (o[s.key] || 0) + v; stackT.set(k, (stackT.get(k) || 0) + v); } }
     if (r.un) unp.set(k, (unp.get(k) || 0) + r.un);
     if (r.ut) unt.set(k, (unt.get(k) || 0) + r.ut);
+  }
+  const totals = new Map(), toks = new Map(), costs = new Map(), runt = new Map();
+  for (const r of rows) {
+    const k = bkey(r);
+    totals.set(k, (totals.get(k) || 0) + mval(r));
+    toks.set(k, (toks.get(k) || 0) + pricedTok(r));             // 单价的分母: 只算有单价的 token
+    costs.set(k, (costs.get(k) || 0) + mval(r, "cost"));
+    if (r.ut) runt.set(k, (runt.get(k) || 0) + r.ut);
   }
   const W = widthOf("days", 460), H = 150, PL = 44, PR = 6, PT = 14, PB = 18;
   const ph = H - PT - PB;
   const G = colGeom(W, axis.length, PL, PR);
-  const max = Math.max(0, ...[...totals.values()]);
-  const ticks = niceTicks(max, 4), top = ticks[ticks.length - 1] || 1;
+  const max = Math.max(0, ...[...totals.values()], ...[...stackT.values()]);
+  const ticks = niceTicks(max, 4), top = ticks[ticks.length - 1] || 1, tf = axisFmt(ticks);
   const Y = v => PT + ph - v / top * ph;
   let s = "";
-  for (const t of ticks) s += `<line class="gl" x1="${PL}" x2="${W - PR}" y1="${Y(t).toFixed(1)}" y2="${Y(t).toFixed(1)}"></line><text x="${PL - 5}" y="${(Y(t) + 3.5).toFixed(1)}" text-anchor="end">${esc(fmtVS(t))}</text>`;
+  for (const t of ticks) s += `<line class="gl" x1="${PL}" x2="${W - PR}" y1="${Y(t).toFixed(1)}" y2="${Y(t).toFixed(1)}"></line><text x="${PL - 5}" y="${(Y(t) + 3.5).toFixed(1)}" text-anchor="end">${esc(tf(t))}</text>`;
   const sel = F[hour ? "e" : "d"];
   const every = Math.max(1, Math.ceil((hour ? 36 : 34) / G.slot));
   let maxI = -1, maxV = 0;
@@ -1009,59 +1113,75 @@ function renderDays() {
   axis.forEach((a, i) => {
     const o = data.get(a.key) || {}, x = G.x(i);
     let y0 = PT + ph, segs = "";
-    const live = ser.filter(sr => (o[sr.key] || 0) > 0);
+    const live = draw.filter(sr => (o[sr.key] || 0) > 0);
     live.forEach((sr, j) => {
       const h = o[sr.key] / top * ph;
       const isTop = j === live.length - 1;
       const gap = !isTop && h > 2.5 ? 1.5 : 0;
       const y = y0 - h;
       const rel = ` data-rel="${esc(sr.vs.map(v => sr.f + ":" + enc(v)).join(" "))}"`;
-      segs += isTop ? `<path d="${topRound(x, y, G.bw, h - gap, 3)}" fill="${sr.col}"${rel}></path>` : `<rect x="${x.toFixed(1)}" y="${(y + gap).toFixed(1)}" width="${G.bw.toFixed(1)}" height="${Math.max(0.5, h - gap).toFixed(1)}" fill="${sr.col}"${rel}></rect>`;
-      if (sr.hatch) segs += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${G.bw.toFixed(1)}" height="${h.toFixed(1)}" fill="url(#hatch)" pointer-events="none"></rect>`;
+      const dc = anySel && !serOn(sr) ? ' class="dimm"' : "";
+      segs += isTop ? `<path d="${topRound(x, y, G.bw, h - gap, 3)}" fill="${sr.col}"${dc}${rel}></path>` : `<rect x="${x.toFixed(1)}" y="${(y + gap).toFixed(1)}" width="${G.bw.toFixed(1)}" height="${Math.max(0.5, h - gap).toFixed(1)}" fill="${sr.col}"${dc}${rel}></rect>`;
+      if (sr.hatch) segs += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${G.bw.toFixed(1)}" height="${h.toFixed(1)}" fill="url(#hatch)" pointer-events="none"${dc}></rect>`;
       y0 = y;
     });
-    const tv = totals.get(a.key) || 0, un = unp.get(a.key) || 0, ut = unt.get(a.key) || 0;
-    const tip = [a.long + (ut ? " *" : ""), "合计 " + fmtV(tv)]
-      .concat(live.slice().reverse().map(sr => sr.col + "|" + fmtV(o[sr.key]) + " · " + fmtPct(tv > 0 ? o[sr.key] / tv : 0) + "  " + sr.zh + (sr.hatch ? " (未知单价)" : "")))
+    const tv = totals.get(a.key) || 0, st = stackT.get(a.key) || 0, un = unp.get(a.key) || 0, ut = unt.get(a.key) || 0;
+    const tip = [a.long + (ut ? " *" : ""), (anySel ? "选中合计 " : "合计 ") + fmtV(tv)]
+      .concat(live.slice().reverse().map(sr => sr.col + "|" + fmtV(o[sr.key]) + " · " + fmtPct(st > 0 ? o[sr.key] / st : 0) + "  " + sr.zh
+        + (sr.hatch ? " (未知单价)" : "") + (anySel && !serOn(sr) ? " (未选)" : "")))
       .concat(un ? [ut ? "* 含 " + un + " 条未知单价消息 (" + fmtTokens(ut) + " token), 按 $0 计, 成本偏低" : "含 " + un + " 条未知单价的 0 token 占位消息 (不影响金额)"] : [])
       .concat(["点击筛选这一" + (hour ? "小时" : "天") + " · 拖动框选一段 · Shift 多选"]);
     const dim = sel.size && !sel.has(a.key) ? ' class="dimm"' : "";
     const kk = `${a.dim}:${esc(enc(a.key))}`;
     s += `<g data-k="${kk}"${dim}>${segs}<rect class="hit" x="${(PL + i * G.slot).toFixed(1)}" y="${PT}" width="${G.slot.toFixed(1)}" height="${ph}" data-f="${a.dim}" data-v="${esc(a.key)}"${tipAttr(tip)}></rect></g>`;
-    if (ut && isCost()) s += `<text x="${(x + G.bw / 2).toFixed(1)}" y="${(Y(tv) - 3).toFixed(1)}" text-anchor="middle" style="fill:var(--warn)">*</text>`;
+    if (ut && isCost()) s += `<text x="${(x + G.bw / 2).toFixed(1)}" y="${(Y(Math.max(tv, st)) - 3).toFixed(1)}" text-anchor="middle" style="fill:var(--warn)">*</text>`;
     if (i % every === 0 || (every > 1 && i === axis.length - 1 && (axis.length - 1) % every >= every / 2))
       s += `<text x="${(x + G.bw / 2).toFixed(1)}" y="${H - 4}" text-anchor="middle">${esc(a.lab)}</text>`;
   });
-  if (maxI >= 0) s += `<text class="lab-hi" x="${Math.min(W - 16, Math.max(PL + 14, G.x(maxI) + G.bw / 2)).toFixed(1)}" y="${Math.max(9, Y(maxV) - (unt.get(axis[maxI].key) && isCost() ? 12 : 4)).toFixed(1)}" text-anchor="middle">${esc(fmtVS(maxV))}</text>`;
+  if (maxI >= 0) {
+    const mk = axis[maxI].key, mTop = Math.max(maxV, stackT.get(mk) || 0);
+    s += `<text class="lab-hi" x="${Math.min(W - 16, Math.max(PL + 14, G.x(maxI) + G.bw / 2)).toFixed(1)}" y="${Math.max(9, Y(mTop) - (unt.get(mk) && isCost() ? 12 : 4)).toFixed(1)}" text-anchor="middle">${esc(fmtVS(maxV))}</text>`;
+  }
   s += `<line class="bl" x1="${PL}" x2="${W - PR}" y1="${PT + ph}" y2="${PT + ph}"></line>`;
   s += `<rect id="brushr" x="0" y="${PT}" width="0" height="${ph}" fill="${ACCENT}" opacity=".18" pointer-events="none"></rect>`;
   let h = `<svg class="brush" data-dim="${hour ? "e" : "d"}" data-pl="${PL}" data-slot="${G.slot}" data-n="${axis.length}" width="${W}" height="${H}" style="touch-action:pan-y" role="img" aria-label="按${hour ? "小时" : "天"}的堆叠柱">${s}</svg>`;
-  h += legend(ser.map(sr => ({col: sr.col, zh: sr.zh + (sr.hatch ? " *" : ""), hatch: sr.hatch,
-    attrs: `${vsAttr(sr.f, sr.vs)} data-k="${sr.f}:${esc(enc(sr.vs[0]))}"` + tipAttr([sr.zh, "点击: 筛选" + DIM_ZH[sr.f] + (sr.vs.length > 1 ? " (" + sr.vs.length + " 个)" : "")])})));
-  // 单价条 (F1): 每百万 token 的等价 $ —— 同一 x 轴的小倍数, 不是第二根 y 轴。
-  // 只给「量够大」的格子画柱、比倍数 (token >= 最大一格的 1%): 几十条消息的零碎日子单价很极端 (样本太小),
-  // 拿它定比例尺会把其余柱压扁、拿它比倍数会夸大 —— 这些格子只画一个基线上的点, 真实单价照样在提示里。
+  h += legend(ser.map(sr => ({col: sr.col, zh: sr.zh + (sr.hatch ? " *" : ""), hatch: sr.hatch, dim: anySel && !serOn(sr),
+    attrs: `${vsAttr(sr.f, sr.vs)} data-k="${sr.f}:${esc(enc(sr.vs[0]))}"` + tipAttr([sr.zh, "点击: 筛选" + DIM_ZH[sr.f] + (sr.vs.length > 1 ? " (" + sr.vs.length + " 个)" : "") + " · Shift / Ctrl 多选"])})));
+  // 单价条 (F1): 每百万「有单价的」token 的等价 $ —— 同一 x 轴的小倍数, 不是第二根 y 轴。
+  // 只给「量够大」的格子画柱 (有单价 token >= 最大一格的 1%): 几十条消息的零碎日子单价很极端 (样本太小),
+  // 拿它定比例尺会把其余柱压扁 —— 这些格子画空心小圈 (超出比例尺的在顶上画空心小三角), 真实单价照样在提示里。
+  // 含未知单价 token 的格子画斜线纹, 不参与「最贵 / 最便宜」倍数比较。
   const SH = 46, sph = SH - 14;
   const units = axis.map(a => (toks.get(a.key) || 0) > 0 ? (costs.get(a.key) || 0) / toks.get(a.key) * 1e6 : null);
   const tmax = Math.max(0, ...axis.map(a => toks.get(a.key) || 0));
   const big = axis.map(a => (toks.get(a.key) || 0) >= 0.01 * tmax && tmax > 0);
+  const mixed = axis.map(a => (runt.get(a.key) || 0) > 0);
   const uv = units.filter(v => v != null);
   if (uv.length) {
-    const sig = units.map((v, i) => (v != null && big[i]) ? v : null), sv = sig.filter(v => v != null);
-    const umax = Math.max(...(sv.length ? sv : uv));
+    const scl = units.filter((v, i) => v != null && big[i]);
+    const sig = units.map((v, i) => (v != null && big[i] && !mixed[i]) ? v : null), sv = sig.filter(v => v != null);
+    const umax = Math.max(...(scl.length ? scl : uv));
     const uT = niceTicks(umax, 1), utop = uT[uT.length - 1] || 1;
     let u = `<text x="${PL - 5}" y="${sph - 2}" text-anchor="end">$/M</text><line class="bl" x1="${PL}" x2="${W - PR}" y1="${sph + 2}" y2="${sph + 2}"></line>`;
     axis.forEach((a, i) => {
       const v = units[i];
       if (v == null) return;
-      const hh = Math.max(1, v / utop * (sph - 4)), x = G.x(i);
+      const hh = Math.max(1, v / utop * (sph - 4)), x = G.x(i), cx = x + G.bw / 2;
       const dim = sel.size && !sel.has(a.key) ? ' class="dimm"' : "";
-      const mark = big[i] ? `<path d="${topRound(x, sph + 2 - hh, G.bw, hh, 2)}" fill="#8b93a7" opacity=".8"></path>`
-        : `<circle cx="${(x + G.bw / 2).toFixed(1)}" cy="${sph - 1}" r="1.8" fill="#8b93a7" opacity=".7"></circle>`;
+      let mark;
+      if (big[i]) {
+        mark = `<path d="${topRound(x, sph + 2 - hh, G.bw, hh, 2)}" fill="#8b93a7" opacity=".8"></path>`
+          + (mixed[i] ? `<rect x="${x.toFixed(1)}" y="${(sph + 2 - hh).toFixed(1)}" width="${G.bw.toFixed(1)}" height="${hh.toFixed(1)}" fill="url(#hatch)" pointer-events="none"></rect>` : "");
+      } else if (v <= utop) {
+        mark = `<circle cx="${cx.toFixed(1)}" cy="${(sph + 2 - hh).toFixed(1)}" r="2" fill="none" stroke="#8b93a7" stroke-width="1.2" opacity=".85"></circle>`;
+      } else {                                // 超出比例尺: 顶上一个空心小三角, 不画在代表 $0 的基线上
+        mark = `<path d="M${(cx - 2.6).toFixed(1)},5.5L${cx.toFixed(1)},1L${(cx + 2.6).toFixed(1)},5.5Z" fill="none" stroke="#8b93a7" stroke-width="1.2" opacity=".85"></path>`;
+      }
       u += `<g data-k="${a.dim}:${esc(enc(a.key))}"${dim}>${mark}`
         + `<rect class="hit" x="${(PL + i * G.slot).toFixed(1)}" y="0" width="${G.slot.toFixed(1)}" height="${sph + 2}" data-f="${a.dim}" data-v="${esc(a.key)}"`
-        + tipAttr([a.long, "$" + v.toFixed(2) + " / 百万 token", "等价成本 " + fmtUsd(costs.get(a.key)) + " ÷ " + fmtTokens(toks.get(a.key)) + " token",
-                   big[i] ? "" : "量太小 (不到最大一格的 1%), 单价不画柱、不参与倍数比较"]) + `></rect></g>`;
+        + tipAttr([a.long, "$" + v.toFixed(2) + " / 百万 token", "等价成本 " + fmtUsd(costs.get(a.key)) + " ÷ " + fmtTokens(toks.get(a.key)) + " 有单价的 token",
+                   mixed[i] ? "* 另有 " + fmtTokens(runt.get(a.key)) + " 未知单价 token (不计入分母), 不参与倍数比较" : "",
+                   big[i] ? "" : "量太小 (不到最大一格的 1%), 单价不画柱、不参与倍数比较" + (v > utop ? " · 超出比例尺, 画在顶上" : "")]) + `></rect></g>`;
     });
     let ratio = null;
     if (sv.length > 1) {
@@ -1072,12 +1192,27 @@ function renderDays() {
       if (iMin !== iMax) u += `<text class="lab" x="${(G.x(iMin) + G.bw / 2).toFixed(1)}" y="${ly(smin).toFixed(1)}" text-anchor="middle">$${smin.toFixed(1)}</text>`;
     }
     const tiny = axis.filter((a, i) => units[i] != null && !big[i]).length;
+    const nmix = axis.filter((a, i) => units[i] != null && big[i] && mixed[i]).length;
+    const unitZh = hour ? "时段" : "日子";
     h += `<div class="note" style="margin:6px 0 0">每百万 token 的等价 $${ratio && ratio >= 1.5 ? ` —— 最贵的${hour ? "一小时" : "一天"}是最便宜的 <b style="color:var(--fg)">${ratio.toFixed(1)}×</b>: token 多不等于钱多` : ""}`
-      + (tiny ? `<span title="这些${hour ? "时段" : "日子"}的 token 不到最大一格的 1%, 单价样本太小, 只画一个点 (真实值在提示里)"> · ${tiny} 个零碎${hour ? "时段" : "日子"}只画点</span>` : "") + `</div>`
+      + (tiny ? `<span title="这些${unitZh}的 token 不到最大一格的 1%, 单价样本太小: 只画空心小圈, 超出比例尺的在顶上画空心小三角 (真实值在提示里)"> · ${tiny} 个零碎${unitZh}只画空心标记</span>` : "")
+      + (nmix ? `<span class="warn" title="这些${unitZh}含未知单价 token: 分母只算有单价的 token, 画斜线纹, 不参与倍数比较"> · * ${nmix} 个${unitZh}含未知单价, 不比较</span>` : "") + `</div>`
       + `<svg width="${W}" height="${SH}" role="img" aria-label="每百万 token 的等价单价">${u}</svg>`;
   }
   if (!rows.length) h = `<div class="empty">当前筛选下没有数据</div>` + h;
   el.innerHTML = h;
+}
+
+// $ 视图下金额全是 0、却有未知单价 token: 不能写「没有数据」(真实优先 —— 不悄悄按 0 混掉)
+function unpricedEmpty(ut) {
+  return `<div class="empty">有 ${esc(fmtTokens(ut))} token, 但全是未知单价的, $ 视图按 0 计 —— <button class="lnk" data-metric="tokens">切到 Tokens</button> 看</div>`;
+}
+// 同上, 但只是其中几个实体 (项目 / 会话) 因为 $0 没画出来: 卡片底部一行 * 注记
+function ghostNote(list, noun) {          // list: [[名字, 未知单价 token]]
+  if (!list.length) return "";
+  const sum = list.reduce((a, e) => a + e[1], 0);
+  const names = list.slice(0, 3).map(e => fit(e[0], 150, 11.5)).join("、") + (list.length > 3 ? " …" : "");
+  return `<div class="note warn" title="${esc(list.map(e => e[0] + ": " + fmtTokens(e[1])).join("\n"))}">* ${list.length} 个${noun}只有未知单价的 token (${esc(names)} · 共 ${esc(fmtTokens(sum))}), $ 视图按 0 计, 这里画不出来 —— <button class="lnk" data-metric="tokens">切到 Tokens</button> 看</div>`;
 }
 
 // ---------------------------------------------------------------- C4 · 星期 × 小时 热力图
@@ -1086,9 +1221,11 @@ function renderHeat() {
   const rows = view(R, ["h", "wd", "c"]);
   const grid = [...Array(7)].map(() => new Array(24).fill(0)), n = [...Array(7)].map(() => new Array(24).fill(0));
   const hourT = new Array(24).fill(0), wdT = new Array(7).fill(0);
-  let total = 0;
-  for (const r of rows) { const v = mval(r); grid[r.wd][r.h] += v; n[r.wd][r.h] += r.n; hourT[r.h] += v; wdT[r.wd] += v; total += v; }
-  const W = widthOf("heat", 520), PL = 30, PR = 40, MT = 34, CH = 17, GAP = 2;
+  let total = 0, tut = 0;
+  for (const r of rows) { const v = mval(r); grid[r.wd][r.h] += v; n[r.wd][r.h] += r.n; hourT[r.h] += v; wdT[r.wd] += v; total += v; tut += r.ut; }
+  // 手机上格子只有 ~9px 宽 (24 列放不宽), 至少把行高加到 22px, 手指点得中
+  const CH = (window.innerWidth || 1440) <= 700 ? 22 : 17;
+  const W = widthOf("heat", 520), PL = 30, PR = 40, MT = 34, GAP = 2;
   const cw = (W - PL - PR) / 24;
   const H = MT + 7 * CH + 16;
   const mx = Math.max(0, ...grid.flat());
@@ -1127,12 +1264,14 @@ function renderHeat() {
     for (let x = 0; x < 7; x++) night += hourT[x];
     const top3 = hourT.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, 3).filter(x => x[0] > 0);
     h = `<p class="callout">凌晨 00:00–06:59 占 <b>${fmtPct(night / total)}</b> · ${isCost() ? "最贵" : "token 最多"}的一小时 <b>${pad2(peakH)}:00</b> (${esc(fmtV(hmax))}, ${fmtPct(hmax / total)})`
-      + (top3.length > 1 ? ` · 其次 ${top3.slice(1).map(x => pad2(x[1]) + ":00").join(" / ")}` : "") + `</p>`;
+      + (top3.length > 1 ? ` · 其次 ${top3.slice(1).map(x => pad2(x[1]) + ":00").join(" / ")}` : "")
+      + (isCost() && tut > 0 ? `<span class="warn" title="${esc("含 " + fmtTokens(tut) + " 未知单价 token, 按 $0 计, 这些格子偏暗")}">*</span>` : "") + `</p>`;
   }
   h += `<svg width="${W}" height="${H}" role="img" aria-label="星期 × 小时 热力图">${s}</svg>`;
   h += `<div class="lg" style="justify-content:space-between"><span style="cursor:default">颜色越亮 = 越多 · 0 <i style="display:inline-block;width:90px;height:8px;border-radius:2px;background:linear-gradient(90deg,${RAMP.join(",")})"></i> ${esc(fmtVS(mx))}/格</span>`
     + `<span style="cursor:default" title="时间按服务端本地时区分桶">UTC${(CUBE.span.tz_offset_s || 0) >= 0 ? "+" : "−"}${pad2(Math.floor(Math.abs(CUBE.span.tz_offset_s || 0) / 3600))}:${pad2(Math.floor(Math.abs(CUBE.span.tz_offset_s || 0) % 3600 / 60))}</span></div>`;
   if (!rows.length) h = `<div class="empty">当前筛选下没有数据</div>`;
+  else if (!(total > 0) && isCost() && tut > 0) h = unpricedEmpty(tut);
   el.innerHTML = h;
 }
 
@@ -1176,7 +1315,11 @@ function renderTree() {
   }
   const all = [...by.entries()].filter(e => e[1] > 0).sort((a, b) => b[1] - a[1]);
   const total = all.reduce((s, e) => s + e[1], 0);
-  if (!all.length) { el.innerHTML = `<div class="empty">当前筛选下没有数据</div>`; return; }
+  const ghosts = isCost() ? [...ut.entries()].filter(e => e[1] > 0 && !(by.get(e[0]) > 0)).sort((a, b) => b[1] - a[1]) : [];
+  if (!all.length) {
+    el.innerHTML = ghosts.length ? unpricedEmpty(ghosts.reduce((a, e) => a + e[1], 0)) : `<div class="empty">当前筛选下没有数据</div>`;
+    return;
+  }
   const N = 8;
   let items = all.slice(0, N).map(e => ({id: e[0], v: e[1], vs: [e[0]]}));
   const rest = all.slice(N);
@@ -1215,7 +1358,8 @@ function renderTree() {
       s += `<a href="${esc(wfLink(t.id))}"><text x="${(x + w - 6).toFixed(1)}" y="${(y + 15).toFixed(1)}" text-anchor="end" style="fill:${ACCENT};font-size:12px" data-tip="${esc("看 " + t.id + " 的任务回放 → /workflow")}">↗</text></a>`;
   }
   el.innerHTML = `<svg width="${W}" height="${H}" role="img" aria-label="项目矩形树图">${s}</svg>`
-    + `<div class="note">${all.length} 个项目 · 最大的 ${esc(fit(all[0][0], 160, 11.5))} 占 <b style="color:var(--fg)">${fmtPct(all[0][1] / total)}</b>${rest.length > 1 ? ` · 最小的 ${rest.length} 个合成「其他」` : ""}</div>`;
+    + `<div class="note">${all.length} 个项目 · 最大的 ${esc(fit(all[0][0], 160, 11.5))} 占 <b style="color:var(--fg)">${fmtPct(all[0][1] / total)}</b>${rest.length > 1 ? ` · 最小的 ${rest.length} 个合成「其他」` : ""}</div>`
+    + ghostNote(ghosts, "项目");
 }
 
 // ---------------------------------------------------------------- C6 · 会话帕累托
@@ -1236,12 +1380,17 @@ function renderPareto() {
   }
   const all = [...by.entries()].filter(e => e[1] > 0).sort((a, b) => b[1] - a[1]);
   const total = all.reduce((s, e) => s + e[1], 0);
-  if (!all.length) { el.innerHTML = `<div class="empty">当前筛选下没有数据</div>`; return; }
+  const ghosts = isCost() ? [...ut.entries()].filter(e => e[1] > 0 && !(by.get(e[0]) > 0)).sort((a, b) => b[1] - a[1])
+    .map(e => [e[0].slice(0, 8) + ((SESS[e[0]] || {}).p ? " · " + SESS[e[0]].p : ""), e[1]]) : [];
+  if (!all.length) {
+    el.innerHTML = ghosts.length ? unpricedEmpty(ghosts.reduce((a, e) => a + e[1], 0)) : `<div class="empty">当前筛选下没有数据</div>`;
+    return;
+  }
   const cum = [];
   all.reduce((s, e, i) => (cum[i] = s + e[1], cum[i]), 0);
   const at = k => cum[Math.min(k, all.length) - 1] / total;
-  let h = `<p class="callout">${all.length} 个会话 · 第 1 名 <b>${fmtPct(at(1))}</b>`
-    + (all.length >= 2 ? ` · 前 2 名 <b>${fmtPct(at(2))}</b>` : "") + (all.length >= 10 ? ` · 前 10 名 <b>${fmtPct(at(10))}</b>` : "") + `</p>`;
+  let h = `<p class="callout">${all.length} 个会话 · 第 1 名 <b>${fmtCum(at(1))}</b>`
+    + (all.length >= 2 ? ` · 前 2 名 <b>${fmtCum(at(2))}</b>` : "") + (all.length >= 10 ? ` · 前 10 名 <b>${fmtCum(at(10))}</b>` : "") + `</p>`;
   const W = widthOf("pareto", 440);
   const N = Math.min(W >= 560 ? 10 : 8, all.length);
   const RH = 24, PT = 2, AX = 14, H = PT + N * RH + AX;
@@ -1260,7 +1409,7 @@ function renderPareto() {
     const u = ut.get(sid) || 0, u0 = un.get(sid) || 0;
     const spanLong = meta.t0 ? fmtTime(meta.t0, true) + " → " + fmtTime(meta.t1, true) + " (" + fmtDur(meta.t1 - meta.t0) + ")" : "";
     const spanShort = meta.t0 ? fmtTime(meta.t0, true) + " · " + fmtDur(meta.t1 - meta.t0) : "";
-    const tip = [sid + (u ? " *" : ""), "项目 " + (meta.p || "?"), spanLong, ACCENT + "|" + fmtV(v) + " · 占 " + fmtPct(share) + " · 累计 " + fmtPct(c),
+    const tip = [sid + (u ? " *" : ""), "项目 " + (meta.p || "?"), spanLong, ACCENT + "|" + fmtV(v) + " · 占 " + fmtPct(share) + " · 累计 " + fmtCum(c),
                  nm.get(sid) + " 条消息", u0 ? (u ? "* 含 " + u0 + " 条未知单价消息, 成本偏低" : "含 " + u0 + " 条 0 token 占位消息 (不影响金额)") : "",
                  "点击筛选这个会话 · 行尾 ↗ 看该项目的任务回放"];
     const head = `${i + 1}  ${sid.slice(0, 8)}${u ? "*" : ""}`;
@@ -1271,7 +1420,7 @@ function renderPareto() {
       + `<text x="${textW(String(i + 1), 10.5) + 12}" y="${y + 21}" style="pointer-events:none;font-size:9.5px;opacity:.85">${esc(fit(spanShort, TW - 20, 9.5))}</text>`
       + `<rect x="${X(0)}" y="${y + 6}" width="${Math.max(0, c * bw).toFixed(1)}" height="12" rx="2" fill="${ACCENT}" opacity=".16" pointer-events="none"></rect>`
       + `<path d="M${X(0)},${y + 6}h${Math.max(1, share * bw).toFixed(1)}v12h${-Math.max(1, share * bw).toFixed(1)}Z" fill="${ACCENT}" pointer-events="none"></path>`
-      + `<text x="${(X(1) + 6).toFixed(1)}" y="${y + 15.5}" style="pointer-events:none"><tspan class="lab-hi">${fmtPct(share)}</tspan><tspan> · ${fmtPct(c)}</tspan></text>`
+      + `<text x="${(X(1) + 6).toFixed(1)}" y="${y + 15.5}" style="pointer-events:none"><tspan class="lab-hi">${fmtCum(share)}</tspan><tspan> · ${fmtCum(c)}</tspan></text>`
       + (meta.p ? `<a href="${esc(wfLink(meta.p))}"><text x="${W - 2}" y="${y + 15.5}" text-anchor="end" style="fill:${ACCENT};font-size:12px" data-tip="${esc("看 " + meta.p + " 的任务回放 → /workflow")}">↗</text></a>` : "")
       + `</g>`;
     line += (i ? "L" : "M") + X(c).toFixed(1) + "," + (y + 12).toFixed(1);
@@ -1280,6 +1429,7 @@ function renderPareto() {
   h += `<svg width="${W}" height="${H}" role="img" aria-label="会话帕累托">${s}</svg>`;
   h += `<div class="lg"><span style="cursor:default"><i class="sw" style="background:${ACCENT}"></i>单个会话占比</span><span style="cursor:default"><i class="sw" style="background:${ACCENT};opacity:.3"></i>累计占比 (浅色条 + 折线)</span>`
     + (all.length > N ? `<span style="cursor:default" class="muted">其余 ${all.length - N} 个见「明细」</span>` : "") + `</div>`;
+  h += ghostNote(ghosts, "会话");
   el.innerHTML = h;
 }
 
@@ -1435,8 +1585,9 @@ function safe(id, fn) {
 function render() {
   renderBar();
   syncUrl();
-  if (!CUBE) return;
+  if (!CUBE || !cubeMatches()) return;     // 新数据回来前保持旧图 (body.busy 变暗), 回来后 load() 再画
   HOVER = "";
+  applyLink("");                            // 重画后鼠标没动也不能停在「联动变淡」的状态
   safe("k-cost", renderKPIs);
   safe("burn", renderBurn);
   safe("comp", renderComp);
@@ -1451,15 +1602,26 @@ function render() {
   stamp();
 }
 function showError(msg) {
+  if (CUBE && !cubeMatches()) {
+    // 切换窗口 / 范围的请求失败: 退回到图上正在显示的那份数据的设置, 免得顶栏高亮「24h」而数字还是「今天」的
+    const was = (WINS.find(w => w[0] === CUBE.window) || [CUBE.window, CUBE.window])[1];
+    if (WINS.some(w => w[0] === CUBE.window)) ST.since = CUBE.window;
+    ST.scope = CUBE.scope === "main" ? "main" : "all";
+    ST.vs = !!CUBE.vscode_only;
+    render();
+    msg += " —— 切换没成功, 仍显示「" + was + (ST.scope === "main" ? " · 仅主会话" : "") + (ST.vs ? " · 仅 .vscode" : "") + "」的数据";
+  }
   $("#foot").innerHTML = `<span class="err">${esc(msg)}</span>`;
   if (!CUBE) for (const id of ["burn", "comp", "days", "heat", "tree", "pareto", "models", "pdelta"]) { const el = document.getElementById(id); if (el) el.innerHTML = `<div class="empty">${esc(msg)}</div>`; }
 }
 
 // ---------------------------------------------------------------- 加载 (reqId: 只让最新一次请求作数)
+let INFLIGHT = 0;                          // 在途请求数: 冷启动一次全量扫描要好几秒, 自动刷新不能每 5s 再叠一个
 async function load(manual) {
   const my = ++reqId;
   const q = `since=${enc(ST.since)}&scope=${enc(ST.scope)}&vscode_only=${ST.vs ? "1" : "0"}`;
   if (manual) document.body.classList.add("busy");
+  INFLIGHT++;
   try {
     const r = await fetch("/api/tokens/cube?" + q);
     const d = await r.json();
@@ -1474,6 +1636,8 @@ async function load(manual) {
     render();
   } catch (e) {
     if (my === reqId) { document.body.classList.remove("busy"); showError("请求失败: " + e); }
+  } finally {
+    INFLIGHT--;
   }
 }
 
@@ -1494,7 +1658,7 @@ async function loadBudget() {
         + `<b style="color:${col}">${pct}%</b><span class="muted">${esc(fmtUsdS(b.spend))} / ${esc(fmtUsdS(b.limit))}</span></span>`;
     }).join("") : `<span class="muted">未设预算 —— 设个日 / 周上限, 越线主动提醒, 并在曲线上画预算线</span>`;
     const sig = JSON.stringify(bs);
-    if (sig !== BUDGET_SIG) { BUDGET_SIG = sig; if (CUBE) safe("burn", renderBurn); }
+    if (sig !== BUDGET_SIG) { BUDGET_SIG = sig; if (cubeMatches()) safe("burn", renderBurn); }
   } catch (e) { /* 预算拿不到不影响主看板 */ }
 }
 async function saveBudget() {
@@ -1518,12 +1682,13 @@ async function saveBudget() {
 // ---------------------------------------------------------------- 交互: 点击 / 悬停联动 / 框选
 function setAuto() {
   if (timer) { clearInterval(timer); timer = null; }
-  if (ST.auto) timer = setInterval(() => { load(false); loadBudget(); }, 5000);
+  if (ST.auto) timer = setInterval(() => { if (INFLIGHT) return; load(false); loadBudget(); }, 5000);
 }
-function setWindow(v) { if (WINS.some(w => w[0] === v) && v !== ST.since) { ST.since = v; F.d.clear(); F.e.clear(); render(); load(true); } }
+// 切窗口 / 范围: 只更新顶栏和 URL, 图等新数据回来再画 (旧立方按新设置画会编出「估算全天」这种假数)
+function setWindow(v) { if (WINS.some(w => w[0] === v) && v !== ST.since) { ST.since = v; F.d.clear(); F.e.clear(); renderBar(); syncUrl(); load(true); } }
 function setMetric(v) { if ((v === "cost" || v === "tokens") && v !== ST.metric) { ST.metric = v; render(); } }
 function setStack(v) { if (STACKS.indexOf(v) >= 0 && v !== ST.stack) { ST.stack = v; render(); } }
-function toggleModel(m) { if (HIDE_M.has(m)) HIDE_M.delete(m); else HIDE_M.add(m); safe("models", renderModels); }
+function toggleModel(m) { if (HIDE_M.has(m)) HIDE_M.delete(m); else HIDE_M.add(m); if (cubeMatches()) safe("models", renderModels); }
 function onClick(e) {
   const t = e.target;
   if (!t || !t.closest) return;
@@ -1534,7 +1699,8 @@ function onClick(e) {
   if ((b = t.closest("[data-metric]"))) return setMetric(b.getAttribute("data-metric"));
   if ((b = t.closest("[data-stack]"))) return setStack(b.getAttribute("data-stack"));
   if ((b = t.closest("[data-hidem]"))) return toggleModel(b.getAttribute("data-hidem"));
-  if (t.closest("#fclear")) return clearFilters();
+  if (t.closest("#fclear") || t.closest("[data-fclear]")) return clearFilters();
+  if (t.closest("[data-totop]")) { try { window.scrollTo(0, 0); } catch (err) { /* 没有也无妨 */ } return; }
   if ((b = t.closest("[data-rm]"))) {
     const dim = b.getAttribute("data-rm");
     for (const raw of (b.getAttribute("data-rvs") || "").split(" ").filter(Boolean)) {
@@ -1614,6 +1780,8 @@ function brushIdx(b, clientX) {
   return Math.max(0, Math.min(b.n - 1, Math.floor((x - b.pl) / b.slot)));
 }
 function onDown(e) {
+  BRUSH = null;                                  // 上一次没收尾的框选 (比如被滚动打断) 一律作废
+  if (e.pointerType && e.pointerType !== "mouse") moveNow(e);   // 触屏没有悬停: 按下时就给提示 (数值) 和联动
   const svg = e.target && e.target.closest && e.target.closest("svg.brush");
   if (!svg || e.button > 0) return;
   BRUSH = {svg, dim: svg.getAttribute("data-dim"), pl: +svg.getAttribute("data-pl"), slot: +svg.getAttribute("data-slot"),
@@ -1651,14 +1819,17 @@ document.addEventListener("click", onClick);
 document.addEventListener("pointermove", onMove);
 document.addEventListener("pointerdown", onDown);
 document.addEventListener("pointerup", onUp);
+document.addEventListener("pointercancel", () => {   // 触屏上的滑动变成了滚动: 不留半截框选, 也不留按下时给的提示 / 联动
+  BRUSH = null; hideTip(); if (HOVER) { HOVER = ""; applyLink(""); }
+});
 document.documentElement.addEventListener("mouseleave", () => { hideTip(); burnLeave(); applyLink(""); HOVER = ""; });
 window.addEventListener("resize", (() => { let t = 0; return () => { clearTimeout(t); t = setTimeout(render, 150); }; })());
-$("#scope").addEventListener("change", () => { ST.scope = $("#scope").value === "main" ? "main" : "all"; render(); load(true); });
-$("#vscode").addEventListener("change", () => { ST.vs = !!$("#vscode").checked; render(); load(true); });
+$("#scope").addEventListener("change", () => { ST.scope = $("#scope").value === "main" ? "main" : "all"; renderBar(); syncUrl(); load(true); });
+$("#vscode").addEventListener("change", () => { ST.vs = !!$("#vscode").checked; renderBar(); syncUrl(); load(true); });
 $("#auto").addEventListener("change", () => { ST.auto = !!$("#auto").checked; syncUrl(); setAuto(); });
 $("#refresh").addEventListener("click", () => { load(true); loadBudget(); });
 $("#bsave").addEventListener("click", saveBudget);
-$("#more").addEventListener("toggle", () => safe("tables", renderTables));
+$("#more").addEventListener("toggle", () => { if (cubeMatches()) safe("tables", renderTables); });
 renderBar();
 setAuto();
 load(true);
