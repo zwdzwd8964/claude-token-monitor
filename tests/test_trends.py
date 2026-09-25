@@ -289,15 +289,73 @@ def test_sessions_api_joins_briefs_without_mutating_shared_snapshot(brief_env, m
               "counts": {"AWAITING_USER": 1}}
     monkeypatch.setattr(activity, "snapshot", lambda base=None, live=None: shared)
     monkeypatch.setattr(procmon, "live_claude_index", lambda: {})
+    monkeypatch.setattr(serve, "_spend_today", lambda base: {"tokens": 7, "cost": 0.5, "unpriced": False})
+    assert not trace.baseline_ready()
     out = serve._sessions_with_briefs(None)
-    assert "workflow" not in out["sessions"][0]                            # 基线还没热好: 先不挂 (不让高频接口触发冷启动)
-    trace.baseline(main.parent.parent, ttl=0)
+    assert "workflow" not in out["sessions"][0] and out["briefs_pending"] == 1   # 请求不当场解析: 交给后台线程
+    serve._BRIEF_Q.join()
     out = serve._sessions_with_briefs(None)
-    wf = out["sessions"][0]["workflow"]
+    assert out["briefs_pending"] == 0
+    wf = out["sessions"][0]["workflow"]                                   # 基线没热好也照样算 (重启后角标不空窗)
+    assert not trace.baseline_ready()                                     # 而且没有顺手触发全量基线 (那要十几秒)
     assert wf["risks"] == [{"rule": "destructive", "label": "破坏性操作：rm -rf", "n": 1}] and wf["changes"] == 1
-    assert "workflow" not in out["sessions"][1]                            # 一天没动静的老会话不算
+    full = trace.get_task(wf["task"], main.parent.parent)["summary"]
+    assert wf["tokens"] == full["tokens"]["total"] > 0                   # 会话驾驶舱 S1 判据①: 与回放页头同一个数
+    assert wf["cost"] == serve._wf_price(full["tokens"]["by_model"])[0] and wf["partial"] is False
+    assert wf["active"] == full["time"]["active"] and wf["burn"] == 0    # 夹具是很久以前的数据: 近 10 分钟没烧
+    assert "usage_ts" not in wf and "by_model" not in wf                 # 原始序列不下发
+    assert out["spend_today"] == {"tokens": 7, "cost": 0.5, "unpriced": False} and out["burn_window_s"] == 600
+    assert "workflow" not in out["sessions"][1]                           # 一天没动静的老会话不算
     assert all("workflow" not in r for r in shared["sessions"]) and out is not shared   # 共享缓存原样不动
     assert out["counts"] == shared["counts"]
+
+
+def test_brief_peek_and_one_parse_per_file(brief_env, monkeypatch):
+    import threading
+    main, _ = brief_env
+    assert trace.brief_peek(main) == (None, False)                       # 没算过: 不新鲜, 也不当场算
+    calls = []
+    real = trace.session_tasks
+    monkeypatch.setattr(trace, "session_tasks", lambda p: calls.append(1) or real(p))
+    ths = [threading.Thread(target=trace.session_brief, args=(main,)) for _ in range(4)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+    assert len(calls) == 1                                                # 四个线程同时要, 只解析一次
+    b, fresh = trace.brief_peek(main)
+    assert fresh and b["task"] and b is trace.session_brief(main)
+    assert trace.brief_peek(main.parent / "gone.jsonl") == (None, True)  # 文件没了: 没什么可算的
+
+
+def test_recent_tokens_window():
+    ts = [(100.0, 5), (200.0, 7), (300.0, 11)]
+    assert trace.recent_tokens(ts, 150.0) == 18 and trace.recent_tokens(ts, 200.0) == 18
+    assert trace.recent_tokens(ts, 301.0) == 0 and trace.recent_tokens(ts, 0.0) == 23 and trace.recent_tokens([], 0) == 0
+
+
+def test_brief_usage_series_adds_up_to_task_tokens(brief_env):
+    main, lines = brief_env
+    write_jsonl(main, lines + _spike_lines())
+    b = trace.session_brief(main)
+    assert b["usage_ts"] == sorted(b["usage_ts"]) and len(b["usage_ts"]) == 4
+    assert sum(t for _, t in b["usage_ts"]) == b["tokens"]               # 每次响应的 token 相加 == 任务合计
+
+
+def test_spend_today_same_basis_as_tokens_page(tmp_path, monkeypatch):
+    from datetime import timezone
+    proj = tmp_path / "c--Users-u--vscode-demo"
+    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    msg = asst(0, "m1", "r1", {"type": "text", "text": "hi"}, usage(inp=100, out=50, cread=2000, c1h=10))
+    msg["timestamp"] = now_iso
+    write_jsonl(proj / f"{SID}.jsonl", [msg])
+    monkeypatch.setattr(serve, "_TODAY", {"t": 0.0, "key": None, "v": None})
+    got = serve._spend_today(tmp_path)
+    want = serve.build_summary(tmp_path, "today", "all", False)["total"]
+    assert got["tokens"] == want["tokens"] > 0 and got["cost"] == want["cost"]
+    calls = []
+    monkeypatch.setattr(serve, "load_records", lambda *a, **k: calls.append(1) or [])
+    assert serve._spend_today(tmp_path) == got and calls == []             # 30 秒内复用, 不重扫
 
 
 def test_nav_centralized_with_more_menu():

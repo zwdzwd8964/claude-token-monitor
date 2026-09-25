@@ -2173,6 +2173,7 @@ class _Ctx:
         self.now = now
         self.running = running
         self.usage: dict = {}                # resp key -> (usage 元组, model)  —— 整个任务的去重登记簿
+        self.resp_ts: dict = {}              # resp key -> 第一次出现的时刻 (「近 10 分钟烧了多少」用)
         self.synthetic: set = set()          # 占位消息的 resp key (0 token, 不算 API 响应次数)
         self.call_loc: dict = {}             # tool_use_id -> (path, call_off, result_off)
         self.text_loc: dict = {}             # say/think 节点 id -> (path, off, block_index, kind)
@@ -2285,6 +2286,8 @@ def _timeline(rows: list[dict], ft: FileTrace, ctx: _Ctx, depth: int) -> tuple[l
             key = r["key"]
             keys.add(key)
             ctx.usage[key] = (ft.resp.get(key), ft.resp_model.get(key, "unknown"))
+            if r.get("ts") is not None:
+                ctx.resp_ts.setdefault(key, r["ts"])
             if r.get("synthetic"):
                 ctx.synthetic.add(key)
             elif r.get("cwd"):
@@ -2689,8 +2692,11 @@ def build_task(task: dict, now: float | None = None, running: bool = False,
         c["meta"].pop("out_sig", None)                       # 只在判打转时用
     root = {"id": f"task:{task['id']}", "kind": "task", "label": short(task["prompt"]["text"], 120),
             "t0": t0, "t1": t1, "tokens": total, "children": children}
+    # 每次 API 响应的 (时刻, token 合计), 按时刻排好: 「近 N 分钟烧了多少」在请求时现算 (窗口会滑, 不能缓存成一个数)
+    usage_ts = sorted((ctx.resp_ts[k], sum(ctx.usage[k][0])) for k in task_keys
+                      if k in ctx.resp_ts and ctx.usage.get(k) and ctx.usage[k][0])
     return {"summary": summary, "tree": root, "call_loc": ctx.call_loc, "text_loc": ctx.text_loc,
-            "script_loc": ctx.script_loc, "keys": task_keys, "errs": ctx.errs}
+            "script_loc": ctx.script_loc, "keys": task_keys, "errs": ctx.errs, "usage_ts": usage_ts}
 
 
 def _used_glossary(ctx: _Ctx, nodes: list[dict]) -> dict:
@@ -3479,29 +3485,58 @@ def stats_refs(stamp: str, ref: str, flag: str | None = None, sort: str = "time"
 
 _BRIEF: dict = {}                                 # 主会话文件 -> ((mtime, size, running), 简报, 算的时刻)
 BRIEF_MIN_AGE = 5.0                               # 正在跑的会话文件每秒都在变: 5 秒内复用上一份, 大会话一次要 ~0.5s
+_BRIEF_LOCKS: dict = {}                           # 主会话文件 -> 锁: 风险 pump 与 /sessions 的后台线程不重复解析同一个文件
+_BRIEF_LOCKS_GUARD = threading.Lock()
 
 
 def session_brief(main_path, running: bool = False) -> dict | None:
-    """一个会话「当前 (最后一个) 任务」的简报: 任务 id、提问开头、风险标记 (不带路径与命令)、改动计数。
-    /sessions 的角标与风险事件源共用; 按文件 (mtime, size) 缓存, 文件没变就不重算。"""
+    """一个会话「当前 (最后一个) 任务」的简报: 任务 id、提问开头、风险标记 (不带路径与命令)、改动计数、
+    token 真值 (与回放页头同一个数) + 按模型拆分 (serve 换算 $)、活跃时长、每次响应的 (时刻, token)。
+    /sessions 与风险事件源共用; 按文件 (mtime, size) 缓存, 文件没变就不重算。
+    不等耗时基线: 简报里的数都用不到「偏慢」, 基线没热好时照样算 (服务重启后角标不再空窗十几秒)。"""
     mp = Path(main_path)
     try:
         st = mp.stat()
     except OSError:
         return None
     sig = (st.st_mtime, st.st_size, running)
-    hit = _BRIEF.get(str(mp))
     now = time.time()
-    if hit and (hit[0] == sig or (hit[0][2] == running and now - hit[2] < BRIEF_MIN_AGE)):
-        return hit[1]
+    if _brief_fresh(_BRIEF.get(str(mp)), sig, now):
+        return _BRIEF[str(mp)][1]
+    with _BRIEF_LOCKS_GUARD:
+        lock = _BRIEF_LOCKS.setdefault(str(mp), threading.Lock())
+    with lock:
+        hit = _BRIEF.get(str(mp))
+        if _brief_fresh(hit, sig, now):                  # 等锁的时候别的线程已经算好了
+            return hit[1]
+        return _session_brief(mp, running, sig, now)
+
+
+def _brief_fresh(hit, sig, now) -> bool:
+    return bool(hit) and (hit[0] == sig or (hit[0][2] == sig[2] and now - hit[2] < BRIEF_MIN_AGE))
+
+
+def brief_peek(main_path, running: bool = False) -> tuple:
+    """只看缓存, 不算: -> (简报或 None, 是否新鲜)。高频接口用它, 不新鲜的交给后台线程去算 (session_brief)。"""
+    mp = Path(main_path)
+    try:
+        st = mp.stat()
+    except OSError:
+        return None, True                                # 文件没了: 没什么可算的
+    hit = _BRIEF.get(str(mp))
+    return (hit[1] if hit else None), _brief_fresh(hit, (st.st_mtime, st.st_size, running), time.time())
+
+
+def _session_brief(mp: Path, running: bool, sig: tuple, now: float) -> dict | None:
     tasks, _ = session_tasks(mp)
     if not tasks:
         return None
     t = tasks[-1]
     _TASK_INDEX[t["id"]] = mp
-    built = build_task(t, running=running, baseline=baseline(mp.parent.parent, ttl=300))
+    built = build_task(t, running=running, baseline=baseline(mp.parent.parent, ttl=300) if baseline_ready() else None)
     sm = built["summary"]
     L = sm.get("changes") or {}
+    tk = sm.get("tokens") or {}
     ct: dict = {}                                        # 调用 id -> 结束时刻: 事件时间 = 标记最后一个证据发生的时刻
     stack = [built["tree"]]
     while stack:
@@ -3518,7 +3553,9 @@ def session_brief(main_path, running: bool = False) -> dict | None:
     brief = {"task": sm["id"], "prompt": short(sm.get("prompt"), 60), "t0": sm.get("t0"), "running": running,
              "risks": [{"rule": x["rule"], "level": x["level"], "label": x["label"], "n": x.get("n"), "at": at(x),
                         "key": f"{x['rule']}:{_norm_hash(x['label'])}"} for x in sm.get("risks") or []],
-             "changes": (L.get("totals") or {}).get("changes", 0), "files": (L.get("totals") or {}).get("files", 0)}
+             "changes": (L.get("totals") or {}).get("changes", 0), "files": (L.get("totals") or {}).get("files", 0),
+             "tokens": tk.get("total"), "by_model": tk.get("by_model") or {}, "partial": bool(sm.get("partial")),
+             "active": (sm.get("time") or {}).get("active"), "usage_ts": built.get("usage_ts") or []}
     _BRIEF[str(mp)] = (sig, brief, now)
     if len(_BRIEF) > 200:
         _BRIEF.pop(next(iter(_BRIEF)))
@@ -3656,6 +3693,12 @@ def baseline(base: Path | None = None, ttl: float = 300) -> dict:
     data = {name: {"n": len(v), "p90": p90(v), "slow_at": _pct_at(v, SLOW_PCTL)} for name, v in durs.items()}
     _BASELINE.update(t=now, data=data)
     return data
+
+
+def recent_tokens(usage_ts: list, since: float) -> int:
+    """(时刻, token) 序列里时刻 >= since 的 token 之和 (序列按时刻排好)。"""
+    i = bisect.bisect_left(usage_ts, (since, -1))
+    return sum(t for _, t in usage_ts[i:])
 
 
 def baseline_ready() -> bool:

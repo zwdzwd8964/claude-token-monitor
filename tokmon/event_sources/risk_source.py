@@ -78,9 +78,7 @@ def tick(base=None, live_factory=None) -> int:
 
 
 def _loop(base, tick_s: float, live_factory=None):
-    # 播种 (冷启动静默) 放在线程里: 第一次算简报要等耗时基线 (冷启动十几秒), 不能卡住服务启动
-    while not trace.baseline_ready() and not _pump_stop.wait(2.0):
-        pass
+    # 播种 (冷启动静默) 放在线程里: 第一帧要把开着的会话都解析一遍, 不能卡住服务启动
     try:
         tick(base, live_factory)
     except Exception:
@@ -93,7 +91,7 @@ def _loop(base, tick_s: float, live_factory=None):
 
 
 def start_pump(base=None, tick_s: float = 15.0, live_factory=None):
-    """懒启动风险事件 pump (serve.run_serve 调一次)。线程里等基线热好 -> 播种一帧 -> 每 tick_s 秒一帧。"""
+    """懒启动风险事件 pump (serve.run_serve 调一次)。线程里先播种一帧 -> 每 tick_s 秒一帧。"""
     global _pump_thread
     if _pump_thread and _pump_thread.is_alive():
         return _pump_thread

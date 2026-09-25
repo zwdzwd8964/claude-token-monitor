@@ -17,7 +17,9 @@ from __future__ import annotations
 import copy
 import json
 import math
+import queue
 import re
+import threading
 import time
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -624,27 +626,96 @@ def _wf_drill(base, q) -> dict:
 _BRIEF_MAX_AGE = 86400                 # 一天没动静的会话不算简报 (列表里可能有几十个老会话)
 
 
+BURN_WINDOW_S = 600                    # 「正在烧」= 近 10 分钟新增的 token
+_TODAY_TTL = 30.0
+_TODAY: dict = {"t": 0.0, "key": None, "v": None}
+
+
+def _spend_today(base) -> dict | None:
+    """今天 (本地 00:00 起) 全部会话的 token 真值与等价 $ —— 与 /tokens「今天 · 全部」同一套 load_records / summarize
+    口径 (scope=all, 不限 .vscode)。要扫全部记录, 所以 30 秒内复用。拿不到 -> None (页面不显示, 不瞎估)。"""
+    now = time.time()
+    key = str(base)
+    if _TODAY["v"] is not None and _TODAY["key"] == key and now - _TODAY["t"] < _TODAY_TTL:
+        return _TODAY["v"]
+    try:
+        agg = summarize(filter_since(load_records(base, SCOPE_KINDS["all"], False), parse_since("today")))
+        v = {"tokens": agg.total_tokens, "cost": round(agg.cost, 4), "unpriced": bool(agg.any_unpriced)}
+    except Exception:
+        v = None
+    _TODAY.update(t=now, key=key, v=v)
+    return v
+
+
+# 会话简报的后台线程: /api/sessions 绝不当场解析会话 (冷启动时十几个会话一起算要近一分钟, 页面会白等);
+# 只读缓存 (可以旧一点), 没有或过期的排队交给这一个线程, 算好了下一次刷新就带上。正在跑的会话排在前面。
+_BRIEF_Q: "queue.PriorityQueue" = queue.PriorityQueue()
+_BRIEF_PENDING: set = set()
+_BRIEF_GUARD = threading.Lock()
+_BRIEF_THREAD: list = [None]
+_BRIEF_SEQ = [0]
+
+
+def _brief_worker():
+    while True:
+        _pri, _seq, path, running = _BRIEF_Q.get()
+        try:
+            trace.session_brief(path, running=running)
+        except Exception:
+            pass                                          # 单个会话算不出来不拖垮别的
+        finally:
+            with _BRIEF_GUARD:
+                _BRIEF_PENDING.discard(path)
+            _BRIEF_Q.task_done()
+
+
+def _brief_nowait(path: str, running: bool):
+    """缓存里的简报 (可能是旧的; 还没有 -> None)。不新鲜就排队让后台线程重算, 本次请求不等。"""
+    brief, fresh = trace.brief_peek(path, running=running)
+    if not fresh:
+        with _BRIEF_GUARD:
+            if path not in _BRIEF_PENDING:
+                _BRIEF_PENDING.add(path)
+                _BRIEF_SEQ[0] += 1
+                _BRIEF_Q.put((0 if running else 1, _BRIEF_SEQ[0], path, running))
+            if _BRIEF_THREAD[0] is None or not _BRIEF_THREAD[0].is_alive():
+                _BRIEF_THREAD[0] = threading.Thread(target=_brief_worker, name="mc-brief", daemon=True)
+                _BRIEF_THREAD[0].start()
+    return brief
+
+
 def _sessions_with_briefs(base) -> dict:
-    """/api/sessions = activity 快照 + 每个会话当前任务的简报 (风险标记 / 改动计数 / 回放入口)。
+    """/api/sessions = activity 快照 + 每个会话当前任务的简报 (风险标记 / 改动计数 / 回放入口 / token 与等价 $ /
+    近 10 分钟 / 活跃时长) + 今天全部会话已烧多少。
     activity.snapshot 有 2 秒的**共享**缓存 (事件 pump 也在用): 只拷贝、绝不原地改。"""
     snap = activity.snapshot(base, live=procmon.live_claude_index())
     out = dict(snap)
     rows = []
-    ready = trace.baseline_ready()      # 冷启动基线还没热好: 先不挂简报 (页面照常出, 十几秒后角标自己出现)
+    now = time.time()
+    pending = 0
     for row in snap.get("sessions", []):
         r = dict(row)
         age = row.get("last_activity_age_s")
-        if ready and row.get("file") and (age is None or age < _BRIEF_MAX_AGE):
+        if row.get("file") and (age is None or age < _BRIEF_MAX_AGE):
             try:
-                b = trace.session_brief(row["file"], running=row.get("state") in ("WORKING", "PROCESSING", "BLOCKED_ON_USER"))
+                b = _brief_nowait(row["file"], row.get("state") in ("WORKING", "PROCESSING", "BLOCKED_ON_USER"))
             except Exception:
                 b = None
+            if b is None:
+                pending += 1
             if b:
+                cost, unpriced = _wf_price(b.get("by_model"))
                 r["workflow"] = {"task": b["task"], "changes": b["changes"], "files": b["files"],
                                  "risks": [{"rule": x["rule"], "label": _wf_red(x["label"]), "n": x.get("n")}
-                                           for x in b["risks"]]}
+                                           for x in b["risks"]],
+                                 "tokens": b.get("tokens"), "cost": cost, "unpriced": unpriced, "partial": b.get("partial"),
+                                 "active": b.get("active"),
+                                 "burn": trace.recent_tokens(b.get("usage_ts") or [], now - BURN_WINDOW_S)}
         rows.append(r)
     out["sessions"] = rows
+    out["spend_today"] = _spend_today(base)
+    out["burn_window_s"] = BURN_WINDOW_S
+    out["briefs_pending"] = pending                      # 还没算出当前任务的会话数 (服务刚启动时会有)
     return out
 
 
@@ -994,11 +1065,11 @@ _BASE_CSS = """
            display:flex; flex-wrap:wrap; gap:16px; align-items:center; }
   h1 { font-size:18px; margin:0; font-weight:600; }
   h1 span { color:var(--dim); font-weight:400; font-size:13px; margin-left:8px; }
-  .nav { display:flex; gap:14px; margin-left:auto; align-items:center; font-size:13px; }
-  .nav a { color:var(--dim); text-decoration:none; padding:4px 8px; border-radius:7px; }
+  .nav { display:flex; flex-wrap:wrap; gap:6px 14px; margin-left:auto; align-items:center; font-size:13px; }
+  .nav a { color:var(--dim); text-decoration:none; padding:4px 8px; border-radius:7px; white-space:nowrap; }
   .nav a:hover, .nav a.active { color:var(--fg); background:var(--panel); }
   .nav details.more { position:relative; }
-  .nav details.more summary { list-style:none; cursor:pointer; color:var(--dim); padding:4px 8px; border-radius:7px; }
+  .nav details.more summary { list-style:none; cursor:pointer; color:var(--dim); padding:4px 8px; border-radius:7px; white-space:nowrap; }
   .nav details.more summary::-webkit-details-marker { display:none; }
   .nav details.more summary:hover, .nav details.more summary.active, .nav details.more[open] summary { color:var(--fg); background:var(--panel); }
   .nav details.more .menu { position:absolute; right:0; top:calc(100% + 4px); display:flex; flex-direction:column; gap:2px;
