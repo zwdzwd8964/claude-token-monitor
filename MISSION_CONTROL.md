@@ -99,7 +99,7 @@ agentic coding 工具最大的痛点不是不够聪明，而是：
 | | `SESSION_IDLE` | Warning | 空闲超过阈值（如 10min 无新动作） |
 | | `SESSION_STUCK` | Warning→Critical | 标称"运行中"却长时间无输出（疑似卡住） |
 | | `PERMISSION_NEEDED` | Critical | 在等你点 permission，**进度被你阻塞** |
-| | `QUESTION_PENDING` | Critical | 在等你答 AskUserQuestion 选择题，**进度被你阻塞**（PERMISSION_NEEDED 的亲兄弟；Type B 可远程答，Type A 仅通知，见 §9 Fleet Cockpit v0） |
+| | `QUESTION_PENDING` | Critical（**当前 Warning**） | 在等你答 AskUserQuestion 选择题，**进度被你阻塞**（PERMISSION_NEEDED 的亲兄弟；Type B 可远程答，Type A 仅通知，见 §9 Fleet Cockpit v0）· ✅ 0.15.1：Claude Code 进程自报 waiting 持续 60s 发一次 |
 | | `LONG_RUNNING_TASK` | Info→Warning | 单任务超长 |
 | | `POSSIBLE_LOOP` | Critical | 疑似循环（反复同类动作） |
 | **成本** | `TOKEN_BUDGET_WARNING` | Warning(70%)→Critical(90/95%) | 接近/越过预算阈值 |
@@ -127,6 +127,7 @@ agentic coding 工具最大的痛点不是不够聪明，而是：
 |------|------|-----------|------|
 | 成本 | `~/.claude/projects/**/*.jsonl` 的 `usage` | budget/burn rate | 依赖未公开格式（tokmon §5 的头号风险） |
 | 对话活动 | 同上 transcript：最后一条消息时间戳、`tool_result` 错误、permission 行、文件编辑动作 | idle/stuck/error/permission/repeated-edit/large-diff/sensitive-touch | **高**：idle/stuck/permission 检测强依赖 transcript 结构，格式漂移会让判断失灵 |
+| 对话活动（0.15.1 起优先） | `~/.claude/sessions/<pid>.json`：Claude Code 自己写的 pid→会话归属 + 回合状态（busy/idle/waiting）| 在跑/等你/等授权/已关闭 | 中：未公开格式；目录不存在或字段不认识 → 退回 transcript 推断（行为同 0.15.0） |
 | 进程 | psutil（procmon） | crash / cloudflared down | 中：跨平台进程语义差异 |
 
 **护栏：**
@@ -216,6 +217,11 @@ agentic coding 工具最大的痛点不是不够聪明，而是：
   - `classify_state` 是纯函数, 13 个单测钉住每个状态与诚实边界。经对抗式 review（11 agent）确认并修复 7 项
     （含实测发现的「list 形态打断被误判为活跃」honesty bug）。
   - **完成判据**：开着 `/sessions`, 一眼看出每个 session 在推进/久未返回/等我。✅
+  - **0.15.1 修正（进程自报优先）**：Claude Code 自己在 `~/.claude/sessions/<pid>.json` 写着「进程承载哪个会话 + 这一轮
+    忙/空闲/等授权」。procmon 读它（校验 pid 活着、防 PID 复用），activity 有它就以它为准，transcript 只补细节：
+    新增状态 `BLOCKED_ON_USER`（等你授权/回答，**进程自报，不是推断**）；「久未返回」只在拿不到自报时出现；
+    同项目的活进程都登记了别的会话 → 可证已关闭。卡在你身上持续 60s → `PERMISSION_NEEDED` / `QUESTION_PENDING`（来自进程
+    自报，transcript 仍不合成）；进程重启杀掉的上一轮转「等你」不算 TASK_COMPLETED。见 CHANGELOG 0.15.1。
 
 - **M2 · 事件总线** ✅ **已交付**（按用户要求：3 个子版本竞争 → 评审留最优 + 嫁接）
   - `tokmon/events.py`（**支柱无关**：Event + 严重度表 + §6 payload allow-list + EventBus；import 任何 pillar 都不允许）

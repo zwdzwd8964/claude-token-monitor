@@ -20,7 +20,7 @@ from ..events import Event, bus
 
 RULE_EVENT = {"destructive": "DESTRUCTIVE_OP", "error-spike": "ERROR_SPIKE", "thrash": "REPEATED_FILE_EDIT",
               "large-edit": "LARGE_DIFF", "large-task": "LARGE_DIFF"}
-OPEN_STATES = frozenset({"WORKING", "PROCESSING", "AMBIGUOUS_PENDING", "AWAITING_USER"})
+OPEN_STATES = frozenset({"WORKING", "PROCESSING", "BLOCKED_ON_USER", "AMBIGUOUS_PENDING", "AWAITING_USER"})
 _SEEN_CAP = 5000
 
 _seen: "OrderedDict[str, None]" = OrderedDict()
@@ -59,7 +59,7 @@ def tick(base=None, live_factory=None) -> int:
             if row.get("state") not in OPEN_STATES or not row.get("file"):
                 continue
             try:
-                brief = trace.session_brief(row["file"], running=row.get("state") in ("WORKING", "PROCESSING"))
+                brief = trace.session_brief(row["file"], running=row.get("state") in ("WORKING", "PROCESSING", "BLOCKED_ON_USER"))
             except Exception:
                 continue                                      # 单个会话算不出来不拖垮整帧
             if not brief:

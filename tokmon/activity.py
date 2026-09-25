@@ -12,6 +12,9 @@ Mission Control 的 M1「先看见」切片: 只读、本地、不通知。它�
   会在 resume/UI 改动时刷新 mtime, 让一个 79h 没动的 session 看起来"刚活动过"。mtime 只当读缓存键。
 - **挂起判定只看尾部位置**, 不做 tool_use<->tool_result 全局配对(已验证脆弱: Agent/Workflow/AskUserQuestion
   的 tool_use id 不会回写 tool_result)。
+- **进程自报优先**: transcript 只记"发生过什么", 看不见"现在卡在哪" (等授权 / 进程重启后上一轮已死 / 后台子代理在跑)。
+  Claude Code 自己在会话注册表里写了回合状态 (busy/idle/waiting), 由 serve 层经 `live` 注入 (`proc`); 有它就以它为准,
+  transcript 只补细节 (在跑哪个工具)。没有它 (老版本 / 缺 psutil) -> 退回纯 transcript 推断, 行为与以前一致。
 - **渐进降级**: 单个文件坏/格式漂移 -> 该行降级 UNKNOWN, 不拖垮整页或其它支柱。
 
 classify_state 是**纯函数**(无 I/O), 便于单测 (参照 project.py 的 I2 精神)。
@@ -36,6 +39,7 @@ class ActivityConfig:
     idle_after_s: int = 600      # AWAITING_USER 超过这个算 idle (仅 UI 排序标记, 不是告警, 不改状态)
     stuck_after_s: int = 120     # 挂起超过这个 -> 进入 AMBIGUOUS_PENDING (唯一门控不确定标签的阈值, 故意保守)
     snapshot_ttl_s: float = 2.0  # 整次扫描的短 TTL 记忆 (并发/自动刷新共享一帧), 同 procmon
+    closed_grace_s: int = 30     # 最后活动在这之内的会话不判 CLOSED: 活性帧 (~3s 缓存) 可能早于它刚写下的消息 (如面板里刚 /clear 换会话)
 
 
 _LOCK = threading.Lock()
@@ -48,6 +52,7 @@ _tail_cache: dict[str, tuple] = {}   # path -> (mtime, size, objs); (mtime,size)
 # 元数据行类型: 定位「最后一条消息」时要跳过它们。
 _META_TYPES = {"mode", "last-prompt", "queue-operation", "file-history-snapshot", "ai-title", "attachment"}
 _INTERRUPT = "[Request interrupted by user]"
+_LOCAL_CMD_OUT = "<local-command-stdout>"
 
 
 def _parse_ts(s) -> float | None:
@@ -65,14 +70,21 @@ def _parse_ts(s) -> float | None:
 # ---- 纯函数: 状态机 (无 I/O, 易测) ----
 
 def classify_state(last_msg: dict | None, now: float, cfg: ActivityConfig,
-                   liveness: bool | None = None, bg_open: bool = False) -> dict:
+                   liveness: bool | None = None, bg_open: bool = False, proc: dict | None = None) -> dict:
     """判定 session 状态。纯函数 (hint 也是入参)。
 
-    先只用 transcript 判 (`_classify_transcript`), 再叠加两个可选提示 (默认关闭, 不改历史回测/doctor 行为):
+    先只用 transcript 判 (`_classify_transcript`), 再叠加可选提示 (默认关闭, 不改历史回测/doctor 行为):
+      - proc: 进程自报的回合状态 (procmon 读 Claude Code 会话注册表, 见 LiveIndex.session_status)。
+        有已知 status 时它说了算 (`_apply_proc`), 下面两条启发式不再参与判定。
       - bg_open=True: 有未收口的后台 Workflow/子任务在跑 -> 覆盖"已完成/久未"为「后台运行中」(Bug1: 后台跑却显示已完成)。
       - liveness: 进程活性 (procmon 注入)。True=会话进程还活着 -> 把 AMBIGUOUS 消歧为「长任务运行中」(Bug2: 长推理被误判没响应);
         False=进程已退出 -> 判「会话已关闭」(不再挂"等你输入"/"可能卡住"); None=未知 -> 保持 transcript 判断。"""
     out = _classify_transcript(last_msg, now, cfg)
+    out["state_source"] = "transcript"
+    if proc and proc.get("status") in _PROC_STATUSES:
+        _apply_proc(out, proc, cfg, bg_open)
+        out["liveness"] = True if liveness is None else liveness
+        return out
     # Bug1 — 后台任务在飞: 前台回合虽然结束/久未, 但后台 workflow/子任务确实在跑 -> 会话仍在推进。
     if bg_open and out["state"] in ("AWAITING_USER", "AMBIGUOUS_PENDING"):
         out["state"] = "WORKING"
@@ -86,8 +98,10 @@ def classify_state(last_msg: dict | None, now: float, cfg: ActivityConfig,
             out["state"] = "WORKING"
             out["state_label"] = "运行中 · 长任务（进程在跑）"
             out["ambiguous"] = False
-    elif liveness is False:
+    elif liveness is False and not (out["last_activity_age_s"] is not None
+                                    and out["last_activity_age_s"] < cfg.closed_grace_s):
         # 进程已退出 = 这个会话不在活动了。不管 transcript 尾巴长什么样, 都不是"在跑/等你", 而是已关闭。
+        # (刚写过消息的不判: 活性帧可能比这条消息旧, 证据不够新就不下"已关闭" —— P6)
         out["state"] = "CLOSED"
         out["state_label"] = "会话已关闭 · 进程已退出"
         out["ambiguous"] = False
@@ -97,13 +111,85 @@ def classify_state(last_msg: dict | None, now: float, cfg: ActivityConfig,
     return out
 
 
+# 注册表 status 的取值 (claude 二进制: SDK 会话态 running->busy / requires_action->waiting / idle->idle;
+# 终端 UI 空闲但有后台 shell -> shell)。busy 会一直持续到后台子代理也跑完 ("idle ... 是权威的回合结束信号")。
+_PROC_STATUSES = ("busy", "idle", "waiting", "shell")
+_REG_LAG_S = 20          # 注册表落后 transcript 的最长容忍 (活性帧缓存 ~3s + 快照 2s, 留足余量); 超过就信进程自报
+_WAITING_LABELS = {
+    "permission prompt": "等你授权 · 权限弹窗开着",
+    "input needed": "等你回答 · Claude 在问你",
+    "dialog open": "等你处理 · 有对话框开着",
+    "sandbox request": "等你授权 · 沙箱要联网",
+    "worker request": "等你处理 · 子任务在请示",
+}
+
+
+def _apply_proc(out: dict, proc: dict, cfg: ActivityConfig, bg_open: bool) -> None:
+    """用进程自报的回合状态改写 transcript 判定 (原地)。transcript 只保留它独有的细节 (在跑哪个工具 / 最后一句话)。
+
+    唯一的保留: 进程说 idle, 但 transcript 里有一条**比这个 idle 更新**、还很新鲜 (< _REG_LAG_S) 的"在飞"消息 -> 注册表
+    还没跟上 (你刚发了话, busy 还没落盘), 这一帧先信 transcript, 不把刚开始的回合说成"等你"。
+
+    进程说 idle 而 transcript 停在回合中途 (进程重启杀掉了上一轮 / 未知的本地动作) -> 改判"等你", 并标 turn_unfinished:
+    这不是"任务完成", 事件层据此不发 TASK_COMPLETED、不补发空闲台阶。"""
+    st = proc.get("status")
+    t_state = out["state"]
+    out["state_source"] = "registry"
+    out["ambiguous"] = False
+    if st == "waiting":
+        wf = proc.get("waiting_for")
+        out["state"] = "BLOCKED_ON_USER"
+        out["state_label"] = _WAITING_LABELS.get(wf) or (f"等你操作 · {wf}" if wf else "等你操作")
+        out["idle"] = False
+        out["background"] = False
+        return
+    if st == "busy":
+        out["idle"] = False
+        if t_state == "AWAITING_USER":
+            # 前台这轮说完了, 进程却还在忙 = 后台子代理/Workflow 在跑 (SDK 要等它们跑完才报 idle)
+            out["state"] = "WORKING"
+            out["state_label"] = "后台运行中 · Workflow/子任务在跑"
+            out["background"] = True
+        elif t_state == "AMBIGUOUS_PENDING":
+            out["state"] = "WORKING"
+            out["state_label"] = "运行中 · 长任务（Claude Code 自报在忙）"
+        elif t_state not in ("WORKING", "PROCESSING"):
+            out["state"] = "WORKING"
+            out["state_label"] = "运行中"
+        return
+    # idle / shell: 回合已结束, 球在你这边
+    la, age = out["last_activity_epoch"], out["last_activity_age_s"]
+    sa = proc.get("status_at")
+    if (t_state in ("WORKING", "PROCESSING") and la is not None and sa is not None
+            and la > sa and age is not None and age < _REG_LAG_S):
+        out["state_source"] = "transcript"      # 注册表还没跟上刚开始的回合
+        return
+    if bg_open:
+        # 本进程里启动的后台 Workflow/子任务还没收口 (调用方已滤掉进程启动前的那些 —— 它们随旧进程死了)。
+        # 只实测确认了后台 Agent 会让 SDK 保持 busy, Workflow 未证实 -> 保守算在跑, 不回退 Bug1。
+        out["state"] = "WORKING"
+        out["state_label"] = "后台运行中 · Workflow/子任务在跑"
+        out["background"] = True
+        out["idle"] = False
+        return
+    if t_state != "AWAITING_USER":
+        out["state"] = "AWAITING_USER"
+        out["state_label"] = ("等你输入 · 已空闲（上一轮没有正常收尾）" if la is not None else "等你输入 · 已空闲")
+        out["tool_pending"] = False
+        out["pending_tool_name"] = None
+        out["turn_unfinished"] = True
+    out["idle"] = age is not None and age >= cfg.idle_after_s
+    if st == "shell":
+        out["state_label"] += " · 有后台 shell 在跑"
+
+
 def _classify_transcript(last_msg: dict | None, now: float, cfg: ActivityConfig) -> dict:
     """只凭「最后一条消息」判定 session 状态 (纯 transcript, 无进程/后台信息)。缺字段/读不出 -> UNKNOWN。"""
     out = {
         "state": "UNKNOWN", "state_label": "无法判断 · 记录读不出",
         "ambiguous": True, "idle": False, "synthetic": False,
         "tool_pending": False, "pending_tool_name": None, "last_text": None,
-        "last_activity_epoch": None, "last_activity_age_s": None,
+        "last_activity_epoch": None, "last_activity_age_s": None, "turn_unfinished": False,
     }
     if not last_msg:
         out["state_label"] = "无法判断 · transcript 里没有对话消息"
@@ -203,6 +289,12 @@ def _classify_transcript(last_msg: dict | None, now: float, cfg: ActivityConfig)
             out["state_label"] = "等你输入 · 你打断了上一轮"
             out["idle"] = age >= cfg.idle_after_s
             return out
+        if lead.startswith(_LOCAL_CMD_OUT):
+            # /model 这类本地命令: 输出直接记进 transcript, 不开启模型回合 (语料 17 次 /model, 其后都没有 Claude 回应)
+            out["state"] = "AWAITING_USER"
+            out["state_label"] = "等你输入 · 本地命令已执行"
+            out["idle"] = age >= cfg.idle_after_s
+            return out
         # 续接型 / 新提问型, 都意味着 Claude 接下来该动; 久了则进入 ambiguous
         if age >= cfg.stuck_after_s:
             out["state"] = "AMBIGUOUS_PENDING"
@@ -267,6 +359,10 @@ def _read_tail(path: Path) -> list[dict] | None:
 def _last_message(objs: list[dict]) -> dict | None:
     for o in reversed(objs):
         if o.get("type") in ("assistant", "user"):
+            # queueTranscriptOnly: 只记进 transcript、**从不发给模型**的排队消息 (如 resume 时补记"上个进程没跑完的后台
+            # shell")。它不开启回合, 没人会回它 —— 当成最后一条会把会话误判成"处理中/久未返回"。实测语料 4 条, 0 条被回复。
+            if o.get("type") == "user" and o.get("queueTranscriptOnly") is True:
+                continue
             return o
     return None
 
@@ -368,7 +464,8 @@ def _current_step(objs: list[dict], limit: int = 240):
 _BG_TOOLS = {"Workflow", "Agent", "Task"}
 _TASK_CLOSE_RE = re.compile(r"<tool-use-id>(toolu_[0-9A-Za-z]+)</tool-use-id>")
 # "已在后台启动"的回执 —— 它只是确认 launch, 不代表任务结束, 不能当收口 (真收口是之后的 task-notification)。
-_BG_ACK_MARKERS = ("launched in background", "running in background")
+# 后台 Agent 的回执是 "Async agent launched successfully." (语料 16/16), 不含前两个短语 —— 漏了它, 后台子代理一启动就被当成已结束。
+_BG_ACK_MARKERS = ("launched in background", "running in background", "async agent launched")
 
 
 def _lead_text(content) -> str:
@@ -390,20 +487,34 @@ def _is_bg_launch(block: dict) -> bool:
 
 
 def _open_bg_tasks(objs: list[dict]) -> set:
-    """尾巴里"已启动但还没收到完成信号"的后台任务 (toolu_id 集合)。非空 = 有后台工作在飞。
+    """尾巴里"已启动但还没收到完成信号"的后台任务 (toolu_id 集合)。非空 = 有后台工作在飞。"""
+    return set(_open_bg(objs))
+
+
+def _open_bg(objs: list[dict]) -> dict:
+    """同 _open_bg_tasks, 但带名字与启动时刻: {toolu_id: {"name", "epoch"}}。
+
+    Agent/Task 没写 run_in_background 也可能被异步启动 (回执同样是 "Async agent launched", 语料 19 条回执只有 17 条带 flag):
+    这类只在见到 async 回执时才算后台 —— 没回执的仍当同步调用 (评审 high#3: 别把同步子 Agent 当成后台)。
 
     收口信号有两种: (a) <task-notification>...<tool-use-id> (真后台任务完成/失败);
     (b) 该 toolu 的 tool_result —— 同步返回或启动失败都会带 tool_result, 唯"已在后台启动"的回执除外 (它不算结束)。
     只看 tail (够覆盖"刚起了 workflow、前台回合结束还在跑"主场景); 启动早于 tail 的极端情况会漏, 可接受。"""
     launched: dict = {}
+    maybe: dict = {}                     # 没写 flag 的 Agent/Task: 等 async 回执确认
     closed: set = set()
     for o in objs:
         t = o.get("type")
         c = (o.get("message") or {}).get("content")
         if t == "assistant" and isinstance(c, list):
             for b in c:
-                if _is_bg_launch(b) and b.get("id"):
-                    launched[b["id"]] = b.get("name")
+                if not (isinstance(b, dict) and b.get("id")):
+                    continue
+                info = {"name": b.get("name"), "epoch": _parse_ts(o.get("timestamp"))}
+                if _is_bg_launch(b):
+                    launched[b["id"]] = info
+                elif b.get("type") == "tool_use" and b.get("name") in ("Agent", "Task"):
+                    maybe[b["id"]] = info
         elif t == "user":
             lead = _lead_text(c)
             if lead.startswith("<task-notification>"):
@@ -417,7 +528,9 @@ def _open_bg_tasks(objs: list[dict]) -> set:
                         s = (rc if isinstance(rc, str) else _lead_text(rc)).lower()
                         if not any(mk in s for mk in _BG_ACK_MARKERS):   # 非"已在后台启动"回执 = 收口
                             closed.add(b["tool_use_id"])
-    return set(launched) - closed
+                        elif b["tool_use_id"] in maybe:
+                            launched[b["tool_use_id"]] = maybe.pop(b["tool_use_id"])
+    return {k: v for k, v in launched.items() if k not in closed}
 
 
 def _session_row(path: Path, raw_dir: str, now: float, cfg: ActivityConfig,
@@ -440,9 +553,18 @@ def _session_row(path: Path, raw_dir: str, now: float, cfg: ActivityConfig,
     last = _last_message(objs)
     cwd = (last or {}).get("cwd")
     sid = (last or {}).get("sessionId") or path.stem
-    bg_open = bool(_open_bg_tasks(objs))
     liveness = live.status(sid, cwd) if live is not None else None
-    st = classify_state(last, now, cfg, liveness=liveness, bg_open=bg_open)
+    ss = getattr(live, "session_status", None)
+    proc = (ss(sid) or ss(path.stem)) if ss is not None else None
+    open_bg = _open_bg(objs)
+    if proc and proc.get("started_at"):
+        # 后台任务活不过启动它的进程: 进程重启前启动、至今没收口的那些已随旧进程死掉, 不算"后台在跑"
+        cut = proc["started_at"] - 1
+        open_bg = {k: v for k, v in open_bg.items() if v["epoch"] is None or v["epoch"] >= cut}
+    if proc and proc.get("status") in _PROC_STATUSES:
+        # 后台 Agent 在跑时 SDK 保持 busy (实测), 它的 idle 就是权威结论; 只有未证实的 Workflow 还需要 transcript 兜底
+        open_bg = {k: v for k, v in open_bg.items() if v["name"] == "Workflow"}
+    st = classify_state(last, now, cfg, liveness=liveness, bg_open=bool(open_bg), proc=proc)
     step_text, step_kind = _current_step(objs)
     wid = workspace_identity(cwd) if cwd else None
     row = {
@@ -459,12 +581,16 @@ def _session_row(path: Path, raw_dir: str, now: float, cfg: ActivityConfig,
         "file_mtime_epoch": mtime,
         "recent_events": _recent_events(objs),
         "file": str(path),
+        "proc_status": (proc or {}).get("status"),          # 进程自报的原始状态 (无注册表 -> None), 供页面标注来源
+        "waiting_for": (proc or {}).get("waiting_for"),
+        "proc_status_at": (proc or {}).get("status_at"),     # 进入这个自报状态的时刻 (事件层: 等你多久了)
     }
     row.update(st)
     return row
 
 
-_STATE_ORDER = {"WORKING": 0, "PROCESSING": 0, "AMBIGUOUS_PENDING": 1,
+# BLOCKED_ON_USER 排最前: 回合卡在你身上 (授权/回答), 是整页最该先看的一行。
+_STATE_ORDER = {"BLOCKED_ON_USER": -1, "WORKING": 0, "PROCESSING": 0, "AMBIGUOUS_PENDING": 1,
                 "AWAITING_USER": 2, "CLOSED": 3, "UNKNOWN": 4}
 
 
@@ -522,6 +648,7 @@ def snapshot(base: Path | None = None, cfg: ActivityConfig | None = None, live=N
                 "background": bg_n,
                 "ambiguous": counts.get("AMBIGUOUS_PENDING", 0),
                 "awaiting": counts.get("AWAITING_USER", 0),
+                "blocked": counts.get("BLOCKED_ON_USER", 0),
                 "idle": idle_n,
                 "closed": counts.get("CLOSED", 0),
                 "unknown": counts.get("UNKNOWN", 0),

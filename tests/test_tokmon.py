@@ -793,7 +793,8 @@ def test_patch_bug2_liveness_resolves_ambiguous():
 
 
 def test_patch_liveness_false_closes_any_state():
-    await_msg = _amsg([{"type": "text", "text": "done"}], stop="end_turn")
+    # age 超过 closed_grace_s: 刚写过消息的会话不判关闭 (活性帧可能比消息旧), 见 test_session_registry
+    await_msg = _amsg([{"type": "text", "text": "done"}], stop="end_turn", age=_ACFG.closed_grace_s + 30)
     assert classify_state(await_msg, _NOW, _ACFG, liveness=False)["state"] == "CLOSED"   # 连"等你"也判已关闭
     assert classify_state(await_msg, _NOW, _ACFG, liveness=True)["state"] == "AWAITING_USER"  # True 不动确凿的等你
 
@@ -812,7 +813,7 @@ def test_patch_liveindex_three_valued():
 
 
 def test_patch_closed_resets_background():
-    m = _amsg([{"type": "text", "text": "done"}], stop="end_turn")
+    m = _amsg([{"type": "text", "text": "done"}], stop="end_turn", age=_ACFG.closed_grace_s + 30)
     st = classify_state(m, _NOW, _ACFG, liveness=False, bg_open=True)
     assert st["state"] == "CLOSED" and st.get("background") is False   # 死会话不算"后台在跑" (评审 low#6)
 

@@ -5,7 +5,11 @@ activity.py 保持纯只读快照, 永不 import 本模块 —— 状态只活�
 
 诚实纪律 (P6 误报零容忍):
 - UNKNOWN / 读不出 -> 不产生任何事件。
-- 绝不合成 PERMISSION_NEEDED (transcript 证明不了)。SESSION_STUCK 带 activity 的原话对冲 + unresolved。
+- 绝不从 transcript 合成 PERMISSION_NEEDED (transcript 证明不了)。只在 Claude Code **进程自报** waiting (BLOCKED_ON_USER)
+  持续 BLOCKED_ALERT_S 后发一次 PERMISSION_NEEDED / QUESTION_PENDING —— 那是它自己的状态, 不是推断。
+- 进程自报 idle 而 transcript 停在回合中途 (turn_unfinished: 重启杀掉了上一轮) -> 转"等你", 但**不是任务完成**: 不发
+  TASK_COMPLETED, 空闲台阶静默播种到当前 (不补发)。
+- SESSION_STUCK 带 activity 的原话对冲 + unresolved。
 - 边沿触发 + 单调台阶: 同一逻辑事件只发一次; 叠加总线 dedup_key, 重复要两层同时失效。
 - 冷启动基线静默: 第一次 tick 只播种记忆、不补发历史 (no backfill storm)。
 - 时钟 = 消息 ts (事实) 或 跨阈那一刻 = since_epoch+阈值 (时间事件), 绝不是 now()/mtime。
@@ -24,6 +28,9 @@ from ..events import Event, bus
 IDLE_STEPS = (600, 1800, 7200)
 # 久未返回(stuck)升级台阶: 进入即 warning(step1); 更久升一级(step2, 仍 warning, 不 critical —— M1 诚实纪律)。
 STUCK_STEPS = (0, 1800)   # 进入(0s)=1, 再过 30min=2
+# 回合卡在你身上 (授权/回答) 持续这么久才提醒: 你在键盘前几秒内就点掉的, 不值得推到手机 (§7 有用且不烦)
+BLOCKED_ALERT_S = 60
+_PERMISSION_WAITS = ("permission prompt", "sandbox request")
 
 # 不产生任何事件的状态: UNKNOWN(读不出) 和 CLOSED(进程已退出 —— 会话不再活动, 别为死会话补发 TASK_COMPLETED/STUCK)。
 _DEAD_STATES = ("UNKNOWN", "CLOSED")
@@ -37,6 +44,7 @@ class SessionMemo:
     last_idle_step: int
     last_stuck_step: int
     seen: bool = True
+    blocked_alerted: float | None = None   # 已为哪一段"卡在你身上"提醒过 (= 那段的开始时刻); 每段只提醒一次
 
 
 def _step(value: float, ladder) -> int:
@@ -63,6 +71,8 @@ def derive_events(prev: SessionMemo | None, row: dict, now: float, cfg=None):
     max_fact = max(fact_eps) if fact_eps else int(la or 0)
     cur_idle = _step(age, IDLE_STEPS) if state == "AWAITING_USER" else 0
     cur_stuck = _step(age, STUCK_STEPS) if state == "AMBIGUOUS_PENDING" else 0
+    blocked_at = row.get("proc_status_at") if state == "BLOCKED_ON_USER" else None
+    blocked_due = bool(blocked_at) and now - blocked_at >= BLOCKED_ALERT_S
 
     # UNKNOWN / 读不出 / CLOSED: 不报警; **保留**游标与台阶记忆 (别在抖动里清零, 否则恢复时会重新触发)
     if state in _DEAD_STATES:
@@ -90,7 +100,8 @@ def derive_events(prev: SessionMemo | None, row: dict, now: float, cfg=None):
     # 只有真正的新 session 发 SESSION_STARTED; 从 UNKNOWN 恢复不算新会话, 静默重播种。
     if prev is None or prev.last_state in _DEAD_STATES:
         seeded = SessionMemo(last_state=state, since_epoch=la, last_fact_cursor=max_fact,
-                             last_idle_step=cur_idle, last_stuck_step=cur_stuck)
+                             last_idle_step=cur_idle, last_stuck_step=cur_stuck,
+                             blocked_alerted=blocked_at if blocked_due else None)
         started = ([Event.make("SESSION_STARTED", session=sid, project=proj, timestamp=la,
                                detected_at=now, dedup_key=f"SESSION_STARTED:{sid}:{int(la or 0)}")]
                    if prev is None and la else [])
@@ -102,7 +113,8 @@ def derive_events(prev: SessionMemo | None, row: dict, now: float, cfg=None):
     # --- 状态边沿 ---
     if state != prev.last_state:
         since = la
-        if state == "AWAITING_USER" and prev.last_state in ("WORKING", "PROCESSING") and la:
+        if (state == "AWAITING_USER" and prev.last_state in ("WORKING", "PROCESSING") and la
+                and not row.get("turn_unfinished")):
             evs.append(Event.make("TASK_COMPLETED", session=sid, project=proj, timestamp=la,
                                   detected_at=now, dedup_key=f"TASK_COMPLETED:{sid}:{int(la)}",
                                   state_from=prev.last_state, state_to=state))
@@ -129,7 +141,9 @@ def derive_events(prev: SessionMemo | None, row: dict, now: float, cfg=None):
 
     # --- 时间台阶: 空闲 ---
     new_idle = prev.last_idle_step if state == "AWAITING_USER" else 0
-    if state == "AWAITING_USER" and la and cur_idle > prev.last_idle_step:
+    if state == "AWAITING_USER" and row.get("turn_unfinished") and prev.last_state != "AWAITING_USER":
+        new_idle = cur_idle             # 刚从"死掉的回合"转过来: 时钟是那条旧消息, 台阶早过了 —— 静默播种, 不补发
+    if state == "AWAITING_USER" and la and cur_idle > new_idle:
         th = IDLE_STEPS[cur_idle - 1]
         evs.append(Event.make("SESSION_IDLE", session=sid, project=proj, severity="warning",
                               timestamp=la + th, detected_at=now,
@@ -149,8 +163,19 @@ def derive_events(prev: SessionMemo | None, row: dict, now: float, cfg=None):
     elif state == "AMBIGUOUS_PENDING":
         new_stuck = max(prev.last_stuck_step, cur_stuck, 1)
 
+    # --- 回合卡在你身上 (进程自报 waiting): 持续 BLOCKED_ALERT_S 提醒一次, 每段等待一次 ---
+    new_blocked = prev.blocked_alerted if state == "BLOCKED_ON_USER" else None
+    if blocked_due and prev.blocked_alerted != blocked_at:
+        et = "PERMISSION_NEEDED" if row.get("waiting_for") in _PERMISSION_WAITS else "QUESTION_PENDING"
+        evs.append(Event.make(et, session=sid, project=proj, severity="warning",
+                              timestamp=blocked_at + BLOCKED_ALERT_S, detected_at=now,
+                              dedup_key=f"{et}:{sid}:reg:{int(blocked_at)}",
+                              tool_name=row.get("pending_tool_name"), state_label=row.get("state_label"),
+                              age_s=int(now - blocked_at)))
+        new_blocked = blocked_at
+
     memo = SessionMemo(last_state=state, since_epoch=since, last_fact_cursor=new_cursor,
-                       last_idle_step=new_idle, last_stuck_step=new_stuck)
+                       last_idle_step=new_idle, last_stuck_step=new_stuck, blocked_alerted=new_blocked)
     return evs, memo
 
 

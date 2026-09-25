@@ -26,7 +26,8 @@ _DEFAULT_SEVERITY = {
     "TOOL_ERROR": "info",
     "SESSION_IDLE": "warning",
     "SESSION_STUCK": "warning",
-    "PERMISSION_NEEDED": "warning",   # M4: 真实检测到"正在等授权" (经 PermissionRequest hook)
+    "PERMISSION_NEEDED": "warning",   # M4: 真实检测到"正在等授权" (经 PermissionRequest hook, 或 Claude Code 进程自报 waiting)
+    "QUESTION_PENDING": "warning",    # 进程自报 waiting 且不是授权: Claude 在问你 / 有对话框等你 (PERMISSION_NEEDED 的亲兄弟)
     # 预留 (此处仅登记默认严重度):
     "TOKEN_BUDGET_WARNING": "warning",
     "PROCESS_CRASHED": "critical",

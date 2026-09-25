@@ -12,4 +12,5 @@
 # 所以**还不是 1.0**。见 CHANGELOG.md 的「未记录期」条目。
 # 0.10.0: /workflow 工作流回放 S1 (见 WORKFLOW_TAB_PLAN.md)。
 # 0.11.0: S2 学习层 (阶段标注 / 数据依赖 / 名词说明 / 脚本对照)。
-__version__ = "0.15.0"
+# 0.15.1: /sessions 状态以 Claude Code 会话注册表 (进程自报) 为准, 修重启残留/死会话/后台 Agent/等授权误判。
+__version__ = "0.15.1"

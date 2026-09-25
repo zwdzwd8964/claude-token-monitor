@@ -303,8 +303,10 @@ def _do_steer(body: dict, base) -> dict:
         row = tg["by_sid"].get(sid)
         if not row:
             return {"ok": False, "reason": "unknown-session"}
-        if row.get("state") in ("WORKING", "PROCESSING") or row.get("tool_pending"):
+        if row.get("state") in ("WORKING", "PROCESSING", "BLOCKED_ON_USER") or row.get("tool_pending"):
             return {"ok": False, "reason": "session-busy"}   # 失败安全: 不 resume 活会话
+        if row.get("liveness") is True:
+            return {"ok": False, "reason": "session-open"}   # 空闲但还开在某个进程里 (如 VS Code 面板): resume = 两个进程写同一 transcript
         cwd, project, resume = row.get("cwd") or "", row.get("project"), True
     else:                                      # 新 spawn: cwd 必须是已知项目根
         cwd = body.get("cwd") or ""
@@ -381,7 +383,7 @@ def _wf_since(key: str):
 
 
 def _wf_running(base) -> set:
-    """正在跑的会话: WORKING / PROCESSING, 或挂着一个等你的调用 (AskUserQuestion / ExitPlanMode)。"""
+    """正在跑的会话: WORKING / PROCESSING / BLOCKED_ON_USER (回合卡在等你授权/回答), 或挂着一个等你的调用 (AskUserQuestion / ExitPlanMode)。"""
     try:
         snap = activity.snapshot(base, live=procmon.live_claude_index())
     except Exception:
@@ -389,7 +391,7 @@ def _wf_running(base) -> set:
     out = set()
     for x in snap.get("sessions", []):
         st = x.get("state")
-        if st in ("WORKING", "PROCESSING") or (
+        if st in ("WORKING", "PROCESSING", "BLOCKED_ON_USER") or (
                 st == "AMBIGUOUS_PENDING" and x.get("pending_tool_name") in trace.HUMAN_WAIT_TOOLS):
             out.add(x.get("session_id"))
     return out
@@ -634,7 +636,7 @@ def _sessions_with_briefs(base) -> dict:
         age = row.get("last_activity_age_s")
         if ready and row.get("file") and (age is None or age < _BRIEF_MAX_AGE):
             try:
-                b = trace.session_brief(row["file"], running=row.get("state") in ("WORKING", "PROCESSING"))
+                b = trace.session_brief(row["file"], running=row.get("state") in ("WORKING", "PROCESSING", "BLOCKED_ON_USER"))
             except Exception:
                 b = None
             if b:
@@ -1446,6 +1448,7 @@ SESS_PAGE = r"""<!doctype html>
   .row { background:var(--panel); border:1px solid var(--line); border-left-width:3px; border-radius:11px; padding:12px 14px; }
   .row.live { border-left-color:var(--good); } .row.amb { border-left-color:var(--warn); }
   .row.wait { border-left-color:#3a4256; } .row.unk { border-left-color:#33384a; } .row.closed { border-left-color:#33384a; opacity:.72; }
+  .row.blk { border-left-color:var(--warn); }
   .r1 { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
   .title { font-weight:600; font-size:14px; } .proj { font-weight:600; } .meta { color:var(--dim); font-size:12px; }
   .meta2 { color:var(--dim); font-size:12px; margin-top:2px; }
@@ -1458,6 +1461,7 @@ SESS_PAGE = r"""<!doctype html>
   .sb.amb  { color:var(--warn); border-color:#3a3320; background:#1d1a12; }
   .sb.unk  { color:var(--dim); border-color:#33384a; }
   .sb.closed { color:var(--dim); border-color:#33384a; }
+  .sb.blk { color:var(--warn); border-color:#3a3320; background:#1d1a12; }
   .idle { color:var(--dim); font-size:11px; border:1px solid var(--line); border-radius:6px; padding:1px 6px; }
   .rkb { color:var(--warn); font-size:11px; border:1px solid #4a3d22; border-radius:6px; padding:1px 6px; text-decoration:none;
          max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -1511,13 +1515,15 @@ const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&
 function fmtAgo(s){ if(s==null)return '—'; s=+s; if(s<60)return s+'s 前'; if(s<3600)return Math.floor(s/60)+'m 前'; if(s<86400)return Math.floor(s/3600)+'h 前'; return Math.floor(s/86400)+'d 前'; }
 function fmtClock(epoch){ if(!epoch) return '—'; try { return new Date(epoch*1000).toLocaleTimeString(); } catch(e){ return '—'; } }
 const EVT_LABEL = {SESSION_STARTED:'会话开始', TASK_COMPLETED:'任务完成', TOOL_ERROR:'工具出错',
-  SESSION_IDLE:'空闲', SESSION_STUCK:'久未返回', TOKEN_BUDGET_WARNING:'预算告警', PROCESS_CRASHED:'进程崩溃', COMMAND_ISSUED:'已下指令',
+  SESSION_IDLE:'空闲', SESSION_STUCK:'久未返回', PERMISSION_NEEDED:'等待授权', QUESTION_PENDING:'等你回答', TOKEN_BUDGET_WARNING:'预算告警', PROCESS_CRASHED:'进程崩溃', COMMAND_ISSUED:'已下指令',
   DESTRUCTIVE_OP:'破坏性操作', ERROR_SPIKE:'连续失败', REPEATED_FILE_EDIT:'改了又改没通过', LARGE_DIFF:'大改动'};
 let EVENTS=[], evCursor=0, evDropped=0;
 function evDetail(e){   // 返回纯文本; 转义由唯一的外层 esc(evDetail(e)) 负责, 这里不再 esc 以免双重转义
   const p=e.payload||{};
   if(e.type==='SESSION_IDLE') return '空闲已 '+(p.idle_step||1)+' 级 ('+(Math.round((p.age_s||0)/60))+'m)';
   if(e.type==='SESSION_STUCK') return p.state_label||'久未返回';
+  if(e.type==='PERMISSION_NEEDED') return '等你授权 · '+(p.tool_name||'?');
+  if(e.type==='QUESTION_PENDING') return p.state_label||'等你回答';
   if(e.type==='TOOL_ERROR') return '工具 '+(p.tool_name||'?')+' 报错';
   if(e.type==='TASK_COMPLETED') return p.state_from?('从 '+p.state_from+' 完成一轮'):'完成一轮';
   if(e.type==='DESTRUCTIVE_OP') return (p.kind||'?')+'（规则判断，只标不拦）';
@@ -1551,7 +1557,7 @@ async function loadEvents(){
   }catch(e){}
 }
 function matches(t,q){ return !q || String(t==null?'':t).toLowerCase().includes(q); }
-const CLS = {WORKING:'live',PROCESSING:'live',AWAITING_USER:'wait',AMBIGUOUS_PENDING:'amb',CLOSED:'closed',UNKNOWN:'unk'};
+const CLS = {WORKING:'live',PROCESSING:'live',BLOCKED_ON_USER:'wait',AWAITING_USER:'wait',AMBIGUOUS_PENDING:'amb',CLOSED:'closed',UNKNOWN:'unk'};
 
 // ---- 过滤器: FILTERS 是唯一真相源, DOM 只是它的投影 (§1)。持久化到 localStorage, 坏数据回退默认。----
 const FKEY='mc_sess_filters';
@@ -1610,7 +1616,8 @@ function render(){
     ${spill('活跃', c.working, 'live', 'live')}
     ${c.background?`<span class="pill live">后台在跑 <b>${c.background}</b></span>`:''}
     ${spill('久未返回', c.ambiguous, 'amb', 'amb')}
-    ${spill('等你', c.awaiting, 'wait', '')}
+    ${spill('等你', c.awaiting+(c.blocked||0), 'wait', '')}
+    ${c.blocked?`<span class="pill amb" title="「等你」的子集: 回合卡在你身上 —— 权限弹窗 / Claude 在问你 (Claude Code 进程自报)">其中等你授权/回答 <b>${c.blocked}</b></span>`:''}
     <span class="pill" title="「等你」的子集: Claude 已回复你且 >10min 无人接话 (不是并列状态)">其中等你已久 <b>${c.idle}</b></span>
     ${spill('已关闭', c.closed, 'closed', 'unk')}
     ${spill('读不出', c.unknown, 'unk', 'unk')}
@@ -1647,7 +1654,9 @@ function render(){
   const body = rows.map(s=>{
     const cls=CLS[s.state]||'unk';
     const idleBadge = (s.state==='AWAITING_USER'&&s.idle) ? '<span class="idle" title="Claude 已回复你, 超过 10min 没人接话 —— 你欠它一句话">等你已久</span>' : '';
-    const wf = s.workflow, live = s.state==='WORKING'||s.state==='PROCESSING';
+    const wf = s.workflow, live = s.state==='WORKING'||s.state==='PROCESSING'||s.state==='BLOCKED_ON_USER';
+    const blk = s.state==='BLOCKED_ON_USER' ? ' blk' : '';
+    const src = s.state_source==='registry' ? '来源: Claude Code 进程自报' : '来源: 据 transcript 推断';
     const wfHref = wf ? '/workflow?task='+encodeURIComponent(wf.task) : '';
     const riskBadge = (wf && wf.risks.length) ? `<a class="rkb" href="${wfHref}" title="${esc('风险（规则判断，推断；只标不拦）\n'+wf.risks.map(r=>'· '+r.label).join('\n')+'\n点击看当前任务的回放')}">⚠ ${esc(wf.risks[0].label)}${wf.risks.length>1?' 等 '+wf.risks.length+' 条':''}</a>` : '';
     const wfLink = wf ? `<a class="wfl" href="${wfHref}" title="${live?'打开当前任务的实时回放（每 5 秒自动刷新）':'打开这个会话最后一个任务的回放'}">${live?'实时回放 →':'回放 →'}</a>` : '';
@@ -1662,10 +1671,10 @@ function render(){
     const narr = s.current_step || (s.state==='AWAITING_USER'&&!s.synthetic ? s.last_text : null);
     if(narr){ const mark = s.step_kind==='thinking' ? '💭 ' : ''; step += `<span class="snippet">${mark}${esc(narr)}</span>`; }
     const evs = (s.recent_events||[]).slice(-6).map(evChip).join('');
-    return `<div class="row ${cls}">
+    return `<div class="row ${cls}${blk}">
       <div class="r1">
         <span class="title" title="${esc(s.title||'')}">${esc(titleText)}</span>
-        <span class="sb ${cls}" title="${esc(s.state_label)}">${esc(s.state_label)}</span>
+        <span class="sb ${cls}${blk}" title="${esc(s.state_label+' · '+src)}">${esc(s.state_label)}</span>
         ${idleBadge}${riskBadge}${wfLink}
         <span class="age">${fmtAgo(s.last_activity_age_s)}</span>
       </div>
@@ -1682,7 +1691,8 @@ function render(){
   const th=d.thresholds;
   $('#foot').innerHTML=`采样于 ${ts} · 状态据每个 session 最后一条<b>消息</b>的时间戳(非文件 mtime) · `
     +`「等你已久」阈值 ${Math.round(th.idle_after_s/60)}min · 久未返回阈值 ${Math.round(th.stuck_after_s/60)}min · `
-    +`<span class="warn">久未返回=无法从 transcript 区分「长任务/等授权/会话已关闭」</span> · 纯本地只读, 不通知不外发`;
+    +`状态优先用 Claude Code 自己写的会话注册表 (~/.claude/sessions, 进程自报 忙/空闲/等授权), 没有才据 transcript 推断 · `
+    +`<span class="warn">久未返回=只在拿不到进程自报时出现: transcript 无法区分「长任务/等授权/会话已关闭」</span> · 纯本地只读, 不通知不外发`;
 }
 
 let timer=null;

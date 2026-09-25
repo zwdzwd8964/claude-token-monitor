@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import http.client
+import json
 import os
 import re
 import socket
@@ -66,14 +67,19 @@ def available() -> bool:
 
 
 # ---- Claude Code 会话活性索引 (给 activity 支柱当"进程还活着吗"的可选提示) ----
-# 每个活着的 Claude Code 会话 = 一个 claude.exe 进程。恢复的会话在 cmdline 里带 `--resume <uuid>` (精确到会话);
-# 新开的会话拿不到 uuid, 只能靠 cwd 认到"项目级"。据此给三值活性 (见 LiveIndex.status)。缺 psutil -> 空索引 (全 None)。
+# 每个活着的 Claude Code 会话 = 一个 claude 进程。两路证据, 精确的优先:
+#   1) 会话注册表 `~/.claude/sessions/<pid>.json` —— Claude Code 自己写的: 精确 pid->sessionId, 外加进程自报的
+#      回合状态 status (busy / idle / waiting / shell) 与 waitingFor。只读、只本机; pid 必须活着且早于登记时刻 (防 PID 复用)。
+#   2) 旧路径兜底 (没登记的进程 / 老版本): cmdline 里的 `--resume <uuid>` 精确到会话; 新开的会话只能靠 cwd 认到"项目级"。
+# 据此给三值活性 (见 LiveIndex.status) 与回合状态 (LiveIndex.session_status)。缺 psutil -> 空索引 (全 None)。
 _LIVE_TTL = 3.0
 _LIVE_DECAY = 3            # OR 衰减: 把最近几帧活性做并集, 一次瞬时 cmdline 漏读不至于把"活"误翻成"未知/已结束"(评审 high#2)
 _LIVE_CACHE: "LiveIndex | None" = None
 _LIVE_CACHE_T = 0.0
-_LIVE_HISTORY: list = []   # 最近 _LIVE_DECAY 帧的原始 (resume_cwds, live_cwds)
+_LIVE_HISTORY: list = []   # 最近 _LIVE_DECAY 帧的原始 (resume_cwds, live_cwds, open_cwds, registry)
 _LIVE_LOCK = threading.Lock()
+_REG_SLACK_S = 5.0         # 进程创建时刻最多可晚于登记时刻这么多秒 (时钟抖动); 再晚 = 登记它的是先前同 pid 的死进程
+_REG_STATUSES = ("busy", "idle", "waiting", "shell")   # 注册表 status 的已知取值 (claude 二进制里的枚举)
 
 
 def _norm_path(p: str | None) -> str | None:
@@ -92,32 +98,128 @@ def _resume_uuid(arg: str, nxt: str | None):
 
 
 class LiveIndex:
-    """一帧 Claude Code 活性快照。resume_cwds: {会话uuid -> 进程cwd}; live_cwds: 所有活 claude.exe 的 cwd。"""
+    """一帧 Claude Code 活性快照。
 
-    __slots__ = ("resume_cwds", "live_cwds")
+    resume_cwds: {会话uuid -> 进程cwd} (cmdline --resume, 仅没登记的进程); live_cwds: 所有活 claude 进程的 cwd;
+    registry: {会话uuid -> 进程自报的回合状态} (注册表, 已校验 pid); open_cwds: **没登记**的活进程的 cwd
+    (它们可能承载任何同项目会话)。open_cwds=None = 没有注册表可用, 退回旧口径 (用 live_cwds)。"""
 
-    def __init__(self, resume_cwds: dict, live_cwds: set):
+    __slots__ = ("resume_cwds", "live_cwds", "registry", "open_cwds")
+
+    def __init__(self, resume_cwds: dict, live_cwds: set, registry: dict | None = None,
+                 open_cwds: set | None = None):
         self.resume_cwds = resume_cwds
         self.live_cwds = live_cwds
+        self.registry = registry or {}
+        self.open_cwds = open_cwds
 
     def status(self, session_id: str | None, cwd: str | None):
-        """三值活性: True=该会话确有活进程 (--resume 精确命中); False=确定已结束; None=未知 (不应据此覆盖 transcript)。
+        """三值活性: True=该会话确有活进程 (注册表 / --resume 精确命中); False=确定已结束; None=未知 (不应据此覆盖 transcript)。
 
-        False 只在 cwd 与所有活进程 cwd 都**无祖先/后代关系**时才敢下 —— 进程在项目根、会话 cd 进子目录 (反之亦然)
-        都会 exact-mismatch, 若据此判 CLOSED 会把活着的会话误杀 (评审 critical#1)。cwd 缺失 -> None (认不到项目, 别妄断)。"""
-        if session_id and session_id in self.resume_cwds:
+        False 只在 cwd 与所有**可能承载它**的活进程 cwd 都**无祖先/后代关系**时才敢下 —— 进程在项目根、会话 cd 进子目录
+        (反之亦然) 都会 exact-mismatch, 若据此判 CLOSED 会把活着的会话误杀 (评审 critical#1)。cwd 缺失 -> None。
+        已在注册表登记的进程只承载它登记的那个会话, 所以不算"可能承载": 同项目里所有活进程都登记了别的会话 -> 这个会话已关闭。"""
+        if session_id and (session_id in self.registry or session_id in self.resume_cwds):
             return True
-        if not self.live_cwds:          # 缺 psutil 或一个活 claude.exe 都没有 -> 无法证伪, 保守 None
+        if not self.live_cwds:          # 缺 psutil 或一个活 claude 进程都没有 -> 无法证伪, 保守 None
             return None
         n = _norm_path(cwd)
         if n is None:                   # 这条消息没记 cwd -> 认不到项目, 别妄下"已结束"
             return None
+        cands = self.live_cwds if self.open_cwds is None else self.open_cwds
         sep = os.sep
-        related = any(n == r or n.startswith(r + sep) or r.startswith(n + sep) for r in self.live_cwds)
+        related = any(n == r or n.startswith(r + sep) or r.startswith(n + sep) for r in cands)
         return None if related else False   # P6: 宁可 None 也不误判 CLOSED
+
+    def session_status(self, session_id: str | None) -> dict | None:
+        """进程自报的回合状态 {status, waiting_for, status_at, started_at} (注册表); 没登记 -> None。"""
+        return self.registry.get(session_id) if session_id else None
 
 
 _EMPTY_LIVE = LiveIndex({}, set())
+
+
+def _registry_dir():
+    """Claude Code 会话注册表目录: $CLAUDE_CONFIG_DIR/sessions, 缺省 ~/.claude/sessions。"""
+    root = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    return os.path.join(root, "sessions")
+
+
+def _is_claude_proc(name: str, cmdline: list) -> bool:
+    """claude 原生二进制 (claude.exe / claude), 或 npm 装的 node 跑 claude-code —— 都算可能承载会话的进程。"""
+    n = (name or "").lower()
+    if n in ("claude.exe", "claude"):
+        return True
+    return n.startswith("node") and any("claude-code" in (a or "") for a in cmdline[:4])
+
+
+def _registry_entry(raw: dict, create_time: float | None) -> dict | None:
+    """校验并摘取一条注册表记录。纯函数 (create_time 由调用方从 psutil 取), 便于单测。
+
+    PID 复用防护: 登记是进程启动后才写的, 所以真进程的 create_time 必然 <= startedAt (+抖动)。
+    若同 pid 的进程比登记时刻还晚出生, 这条记录属于一个已死的先前进程 -> 丢弃。
+    Windows 上还有精确校验: procStart 是进程创建时刻的 FILETIME (实测与 psutil create_time 逐一相差 0.000s)。"""
+    if not isinstance(raw, dict) or create_time is None:
+        return None
+    sid = raw.get("sessionId")
+    started = raw.get("startedAt")
+    if not isinstance(sid, str) or not sid or not isinstance(started, (int, float)):
+        return None
+    started_s = started / 1000.0
+    if create_time > started_s + _REG_SLACK_S:
+        return None
+    ps = raw.get("procStart")
+    if str(raw.get("pidDomain") or "").startswith("win32") and isinstance(ps, str) and ps.isdigit():
+        if abs(create_time - (int(ps) / 1e7 - 11644473600)) > 1.0:
+            return None                      # 同 pid, 但不是登记它的那个进程
+    st = raw.get("status")
+    at = raw.get("statusUpdatedAt")
+    wf = raw.get("waitingFor")
+    return {
+        "status": st if st in _REG_STATUSES else None,
+        "waiting_for": wf if isinstance(wf, str) and wf else None,
+        "status_at": at / 1000.0 if isinstance(at, (int, float)) else None,
+        "started_at": started_s,
+    }
+
+
+def _read_registry(claude_pids: dict) -> tuple[dict, set] | None:
+    """读注册表 -> ({sessionId: entry}, 已登记的 pid 集合)。目录不存在 (老版本 / 非默认布局) -> None (退回旧口径)。
+
+    claude_pids: 本帧扫到的 {pid: create_time}; 不在其中的 pid (非 claude 进程名) 现场向 psutil 要 create_time。"""
+    d = _registry_dir()
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return None
+    reg: dict = {}
+    pids: set = set()
+    for fn in names:
+        stem, ext = os.path.splitext(fn)
+        if ext != ".json" or not stem.isdigit():
+            continue
+        pid = int(stem)
+        ct = claude_pids.get(pid)
+        if ct is None:
+            try:
+                ct = psutil.Process(pid).create_time()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, ValueError):
+                continue                     # 进程已退出: 这是崩溃留下的陈旧登记, 不算
+        try:
+            with open(os.path.join(d, fn), encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, ValueError):
+            continue                         # 正在被重写 / 坏文件: 本帧跳过, OR 衰减兜住
+        e = _registry_entry(raw, ct)
+        if e is None:
+            continue
+        e["pid"] = pid
+        pids.add(pid)
+        cur = reg.get(raw["sessionId"])
+        # 两个活进程登记同一会话 (重载交接的重叠窗口): 以状态更新得最晚的那个为准, 不看 listdir 顺序
+        if cur is None or (e["status_at"] or 0, e["started_at"]) > (cur["status_at"] or 0, cur["started_at"]):
+            reg[raw["sessionId"]] = e
+    return reg, pids
 
 
 def live_claude_index() -> LiveIndex:
@@ -129,31 +231,44 @@ def live_claude_index() -> LiveIndex:
     with _LIVE_LOCK:
         if _LIVE_CACHE is not None and (now - _LIVE_CACHE_T) < _LIVE_TTL:
             return _LIVE_CACHE
-    resume_cwds: dict = {}
-    live_cwds: set = set()
-    for p in psutil.process_iter(["name", "cmdline", "cwd"]):
+    procs: dict = {}                         # pid -> (cwd, cmdline, create_time)
+    for p in psutil.process_iter(["name", "cmdline", "cwd", "create_time"]):
         try:
-            if (p.info["name"] or "").lower() != "claude.exe":
-                continue
             cl = p.info["cmdline"] or []
+            if not _is_claude_proc(p.info["name"], cl):
+                continue
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
-        cwd = _norm_path(p.info.get("cwd"))
+        procs[p.pid] = (_norm_path(p.info.get("cwd")), cl, p.info.get("create_time"))
+    got = _read_registry({pid: v[2] for pid, v in procs.items()})
+    registry, reg_pids = got if got is not None else ({}, set())
+    resume_cwds: dict = {}
+    live_cwds: set = set()
+    open_cwds: set | None = set() if got is not None else None
+    for pid, (cwd, cl, _ct) in procs.items():
         if cwd:
             live_cwds.add(cwd)
+        if pid in reg_pids:
+            continue                         # 已登记: 它承载哪个会话以注册表为准 (cmdline --resume 可能已过时)
+        if cwd and open_cwds is not None:
+            open_cwds.add(cwd)
         for i, a in enumerate(cl):
             uid = _resume_uuid(a, cl[i + 1] if i + 1 < len(cl) else None)
             if uid:
                 resume_cwds[uid] = cwd
     with _LIVE_LOCK:
-        _LIVE_HISTORY.append((resume_cwds, live_cwds))
+        _LIVE_HISTORY.append((resume_cwds, live_cwds, open_cwds, registry))
         del _LIVE_HISTORY[:-_LIVE_DECAY]
         u_resume: dict = {}
         u_live: set = set()
-        for rc, lc in _LIVE_HISTORY:      # 并集最近几帧: 单帧漏读不塌陷 True->None (评审 high#2)
+        u_open: set | None = set()
+        u_reg: dict = {}
+        for rc, lc, oc, rg in _LIVE_HISTORY:  # 并集最近几帧: 单帧漏读不塌陷 True->None (评审 high#2)
             u_resume.update(rc)
             u_live |= lc
-        idx = LiveIndex(u_resume, u_live)
+            u_open = None if (u_open is None or oc is None) else (u_open | oc)   # 任一帧没注册表 -> 旧口径
+            u_reg.update(rg)                  # 从旧到新: 回合状态以最新一帧为准
+        idx = LiveIndex(u_resume, u_live, u_reg, u_open)
         _LIVE_CACHE, _LIVE_CACHE_T = idx, time.time()
         return idx
 

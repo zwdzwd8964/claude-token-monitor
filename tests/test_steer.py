@@ -15,6 +15,8 @@ def env(monkeypatch):
          "state": "AWAITING_USER", "tool_pending": False, "title": "t"},
         {"session_id": "s-busy", "cwd": "C:/proj/B", "project": "B",
          "state": "WORKING", "tool_pending": True, "title": "t"},
+        {"session_id": "s-open", "cwd": "C:/proj/C", "project": "C",        # 空闲, 但还开在 VS Code 面板里
+         "state": "AWAITING_USER", "tool_pending": False, "liveness": True, "title": "t"},
     ]
     monkeypatch.setattr(serve.activity, "snapshot", lambda base, live=None: {"sessions": sessions})
     monkeypatch.setattr(serve.procmon, "live_claude_index", lambda: None)
@@ -62,6 +64,13 @@ def test_spawn_known_cwd_ok_and_audited(env):
 def test_resume_rejects_busy_session(env):
     r = serve._do_steer({"session_id": "s-busy", "prompt": "hi"}, base=".")
     assert not r["ok"] and r["reason"] == "session-busy"   # 拒绝 resume 活会话 (防双写)
+    assert env["calls"] == []
+
+
+def test_resume_rejects_session_still_open_in_a_process(env):
+    # 进程重启残留的回合现在判"等你"(tool_pending=False), 但进程还持有它: resume = 两个进程写同一 transcript
+    r = serve._do_steer({"session_id": "s-open", "prompt": "hi"}, base=".")
+    assert not r["ok"] and r["reason"] == "session-open"
     assert env["calls"] == []
 
 
