@@ -48,6 +48,7 @@
   .sb.unk  { color:var(--dim); border-color:#33384a; }
   .sb.closed { color:var(--dim); border-color:#33384a; }
   .sb.blk { color:var(--warn); border-color:#3a3320; background:#1d1a12; }
+  .row.flash { box-shadow:0 0 0 2px var(--warn); transition:box-shadow .3s; }
   .idle { color:var(--dim); font-size:11px; border:1px solid var(--line); border-radius:6px; padding:1px 6px; }
   .rkb { color:var(--warn); font-size:11px; border:1px solid #4a3d22; border-radius:6px; padding:1px 6px; text-decoration:none;
          max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -280,7 +281,7 @@ function render(){
     const narr = s.current_step || (s.state==='AWAITING_USER'&&!s.synthetic ? s.last_text : null);
     if(narr){ const mark = s.step_kind==='thinking' ? '💭 ' : ''; step += `<span class="snippet">${mark}${esc(narr)}</span>`; }
     const evs = (s.recent_events||[]).slice(-6).map(evChip).join('');
-    return `<div class="row ${cls}${blk}">
+    return `<div class="row ${cls}${blk}" id="s-${esc(s.session_id||'')}">
       <div class="r1">
         <span class="title" title="${esc(s.title||'')}">${esc(titleText)}</span>
         <span class="sb ${cls}${blk}" title="${esc(s.state_label+' · '+src)}">${esc(s.state_label)}</span>
@@ -296,6 +297,7 @@ function render(){
   const pendNote = d.briefs_pending ? `<div class="meta" style="margin:6px 0">⏳ 还有 ${d.briefs_pending} 个会话的当前任务在后台计算（服务刚启动时会这样，大会话要多等一会儿），算好后下次刷新就出现花费与风险角标。</div>` : '';
   const shownNote = (!bits.length && rows.length<d.sessions.length) ? `<span class="meta">（显示 ${rows.length}/${d.sessions.length}，已隐藏「等你已久」/不匹配）</span>` : '';
   $('#app').innerHTML = fbar + counts + pendNote + `<div class="sess">${body||'<div class="muted">无匹配会话</div>'}</div>` + (shownNote?`<div style="margin-top:6px">${shownNote}</div>`:'');
+  focusHash();
 
   const ts=new Date(d.generated_at_epoch*1000).toLocaleTimeString();
   const th=d.thresholds;
@@ -305,6 +307,17 @@ function render(){
     +`<span class="warn">久未返回=只在拿不到进程自报时出现: transcript 无法区分「长任务/等授权/会话已关闭」</span> · 纯本地只读, 不通知不外发`;
 }
 
+// 从「等你」通知点进来 (/sessions#s-<会话>): 滚到那一行并闪一下。每个 hash 只处理一次 (30 秒刷新不反复跳)
+let hashDone='';
+function focusHash(){
+  const h=decodeURIComponent((location.hash||'').slice(1));
+  if(!h.startsWith('s-') || h===hashDone) return;
+  const el=document.getElementById(h);
+  if(!el) return;
+  hashDone=h; el.scrollIntoView({block:'center'}); el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'), 2400);
+}
+window.addEventListener('hashchange', focusHash);
+window.addEventListener('mc:attention', () => load());   // 导航铃铛发现「等你」的会话数变了: 立刻刷新, 不等 30 秒
 let timer=null;
 function tickAll(){ load(); loadEvents(); }
 function setAuto(){ if(timer){clearInterval(timer);timer=null;} if($('#auto').checked) timer=setInterval(tickAll,30000); }

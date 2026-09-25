@@ -15,11 +15,12 @@
 
 | | |
 |---|---|
-| 代码 / 测试 | 约 15k 行 · **486 个测试全过**（`python -m pytest -q`；含 Node 跑的页面冒烟测试） |
+| 代码 / 测试 | 约 15k 行 · **490 个测试全过**（`python -m pytest -q`；含 Node 跑的页面冒烟测试） |
 | 会话状态 | 0.15.1 起以 Claude Code **进程自报**为准（`~/.claude/sessions` 注册表，只读）：运行中 / 等你 / **等你授权或回答** / 已关闭不再靠猜；拿不到自报时才退回 transcript 推断 |
 | 工作流回放 | `/workflow`：近 7 天 98 个任务可回放，token 与 /tokens **逐 token 对账 98/98**；S2 学习层：流程条、数据依赖、名词说明、脚本对照（43/43 次 workflow 的阶段都对上了脚本）；S3 统计：工具 / skill 排行、MCP 健康、跨任务对照，**每个数字点开都是同样条数的明细**（真实数据 323/323） |
 | 状态推断可信度 | 回测 **97.0% 准确率 / 1343 个评估点**（`python -m tokmon backtest`） |
 | 数据契约 | `tokmon doctor` 全绿（覆盖 ≈100%、0 跨来源碰撞） |
+| 本机提醒 | ✅ 0.18.0：导航铃铛（默认关）—— 会话卡在你身上（等授权 / 等你回答）≥ 60 秒，本机浏览器弹通知；真机验证过 |
 | 手机环 | ⏸ 已搁置（2026-09-21 你的决定）：通道就绪但从未用真账号验证过 |
 
 全景评估与逐条侧批见 [docs/RECAP_2026-09-20.md](docs/RECAP_2026-09-20.md)（或浏览器打开
@@ -117,7 +118,7 @@ python -m tokmon serve
 | [docs/atlas.html](docs/atlas.html) | 系统图谱（离线 Mermaid） | 📜 停在 07-01，不含 billing/steer |
 | [WORKFLOW_TAB_PLAN.md](WORKFLOW_TAB_PLAN.md) | **`/workflow` 工作流追踪器一页规格** | ✅ S1–S3 全部验收（0.10.0 → 0.12.0） |
 | [CHANGE_RISK_PLAN.md](CHANGE_RISK_PLAN.md) | **改动与风险一页规格**（当前优先级：它改了什么 / 有没有乱改 / 在变好吗） | ✅ S1–S3 全部验收（0.13.0 → 0.15.0） |
-| [SESSIONS_COCKPIT_PLAN.md](SESSIONS_COCKPIT_PLAN.md) | **会话驾驶舱一页规格**（当前优先级：`/sessions` 一行看全四件事 + 等你时叫你） | 🟡 S0 ✅ · S1 ✅ 已交付（0.17.0）· S2 进行中 |
+| [SESSIONS_COCKPIT_PLAN.md](SESSIONS_COCKPIT_PLAN.md) | **会话驾驶舱一页规格**（当前优先级：`/sessions` 一行看全四件事 + 等你时叫你） | 🟡 S0 ✅ · S1 ✅（0.17.0）· S2 ✅（0.18.0）；待你验收，S2 的权限弹窗与一周实测待补 |
 | [RUNNER_SDK_PLAN.md](RUNNER_SDK_PLAN.md) | steer 改用 Agent SDK | ✅ 已实施 |
 | [SESSIONS_FILTER_PLAN.md](SESSIONS_FILTER_PLAN.md) | `/sessions` 过滤器 V1 | ✅ 已实施 |
 | [REMOTE_CONTROL_PLAN.md](REMOTE_CONTROL_PLAN.md) | 远程 steer + 上手机 | 🟡 S1/S0 已实施，S2/S3 未做 |
@@ -161,5 +162,5 @@ tokmon/
   pages/*.html                 全部页面 (独立文件; serve.py 只留路由与数据, 测试守着不许再内联)
   inference_doctor / inference_backtest   推断层的体检与回测
   serve                        驾驶舱外壳 (路由 + 数据接口 + 公共皮肤 / 导航)
-tests/                         486 例: pytest -q (tests/js/workflow_smoke.js: 页面 JS 的 Node 冒烟脚手架)
+tests/                         490 例: pytest -q (tests/js/workflow_smoke.js: 页面 JS 的 Node 冒烟脚手架)
 ```

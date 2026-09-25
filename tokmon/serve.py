@@ -684,6 +684,22 @@ def _brief_nowait(path: str, running: bool):
     return brief
 
 
+_ATTN_TYPES = ["PERMISSION_NEEDED", "QUESTION_PENDING"]
+
+
+def _attention(base, since: int) -> dict:
+    """「等你」的轻量轮询 (各页导航里的提醒开关, 每 5 秒): 此刻卡在你身上的会话 + 游标之后新的「等你」事件。
+    只读 activity 快照 (2 秒共享缓存) 与事件总线, 不解析会话、不扫记录。since < 0 = 刚打开页面: 只给游标, 不补旧事件。"""
+    snap = activity.snapshot(base, live=procmon.live_claude_index())
+    blocked = [{"session_id": r.get("session_id"), "project": r.get("project"), "title": r.get("title"),
+                "state_label": r.get("state_label")}
+               for r in snap.get("sessions", []) if r.get("state") == "BLOCKED_ON_USER"]
+    if since < 0:
+        return {"blocked": blocked, "events": [], "seq": event_bus.snapshot_meta()["last_seq"]}
+    ev = event_bus.since(since, types=_ATTN_TYPES)
+    return {"blocked": blocked, "events": ev["events"], "seq": ev["last_seq"]}
+
+
 def _sessions_with_briefs(base) -> dict:
     """/api/sessions = activity 快照 + 每个会话当前任务的简报 (风险标记 / 改动计数 / 回放入口 / token 与等价 $ /
     近 10 分钟 / 活跃时长) + 今天全部会话已烧多少。
@@ -786,7 +802,7 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
             known = {"/", "/tokens", "/processes", "/sessions", "/notify", "/control", "/doctor", "/backtest",
                      "/billing", "/workflow", "/api/workflow/tasks", "/api/workflow/task", "/api/workflow/call",
                      "/api/workflow/text", "/api/workflow/script", "/api/workflow/stats", "/api/workflow/drill",
-                     "/api/summary", "/api/tokens/cube", "/api/processes", "/api/health", "/api/sessions", "/api/events",
+                     "/api/summary", "/api/tokens/cube", "/api/processes", "/api/health", "/api/sessions", "/api/attention", "/api/events",
                      "/api/notifications", "/api/notify-test", "/api/control", "/api/budget", "/api/doctor",
                      "/api/backtest", "/api/billing"}
             p = urlparse(self.path).path
@@ -886,6 +902,14 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
                 # 组合层在这里把 process 支柱的活性索引注入 activity —— activity 本身不 import procmon;
                 # 再把 trace 支柱的「当前任务简报」挂上 (角标 + 实时回放入口)。
                 self._json(lambda: _sessions_with_briefs(base))
+                return
+            if path == "/api/attention":
+                q = parse_qs(parsed.query)
+                try:
+                    since = int(q.get("since", ["-1"])[0] or -1)
+                except ValueError:
+                    since = -1
+                self._json(lambda: _attention(base, since))
                 return
             if path == "/api/events":
                 q = parse_qs(parsed.query)
@@ -1075,6 +1099,10 @@ _BASE_CSS = """
   .nav details.more .menu { position:absolute; right:0; top:calc(100% + 4px); display:flex; flex-direction:column; gap:2px;
       min-width:120px; background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:4px; z-index:60;
       box-shadow:0 8px 24px rgba(0,0,0,.45); }
+  .nav .bell { background:none; border:1px solid var(--line); color:var(--dim); border-radius:7px; padding:2px 8px;
+      cursor:pointer; font-size:13px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .nav .bell:hover { border-color:var(--accent); } .nav .bell.on { color:var(--fg); }
+  .nav .bell.hot { color:var(--warn); border-color:#4a3d22; background:#1d1a12; }
   .muted { color:var(--dim); } .warn { color:var(--warn); }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
 """
@@ -1092,7 +1120,80 @@ def _nav_html(active: str = "") -> str:
     return ("".join(a(h, t) for h, t in _NAV_MAIN)
             + f'<details class="more"><summary' + (' class="active"' if cur else "") + ">"
             + (f"更多 · {cur}" if cur else "更多") + ' ▾</summary><div class="menu">'
-            + "".join(a(h, t) for h, t in _NAV_MORE) + "</div></details>")
+            + "".join(a(h, t) for h, t in _NAV_MORE) + "</div></details>" + _BELL)
+
+
+# 会话驾驶舱 S2: 导航里的「等你时提醒」开关 + 轮询 (/api/attention, 每 5 秒)。浏览器通知, 只在本机, 默认关。
+_BELL = r"""<button type="button" class="bell" id="mcbell" title="等你时提醒（已关）">🔕</button><script id="mc-bell-js">
+(function () {   // 会话驾驶舱 S2: 会话卡在你身上 ≥ 60 秒 -> 浏览器通知。只在本机, 零外发; 默认关, 开关存在浏览器本地。
+  var KEY = "mc.notify.on", STATS = "mc.notify.stats", PFX = /^\(\d+\) 等你 · /;
+  var bell = document.getElementById("mcbell"), seq = -1, lastN = 0;
+  function ls(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }
+  function on() { return ls(KEY) === "1"; }
+  function stats() {   // 近 7 天弹了几次 / 点开几次 (一周打扰预算的实测, 存在本浏览器)
+    var s; try { s = JSON.parse(ls(STATS) || "{}"); } catch (e) { s = {}; }
+    var cut = Date.now() - 7 * 86400e3;
+    s.shown = (s.shown || []).filter(function (t) { return t > cut; });
+    s.clicked = (s.clicked || []).filter(function (t) { return t > cut; });
+    return s;
+  }
+  function bump(k) { var s = stats(); s[k].push(Date.now()); ls(STATS, JSON.stringify(s)); }
+  function paint(n) {
+    if (n !== lastN) {   // 等你的会话数变了: 告诉页面 (/sessions 立刻刷新列表, 不等 30 秒), 列表和铃铛说的一致
+      try { window.dispatchEvent(new CustomEvent("mc:attention", {detail: {blocked: n}})); } catch (e) {}
+    }
+    lastN = n;
+    var s = stats(), perm = ("Notification" in window) ? Notification.permission : "unsupported";
+    bell.textContent = (on() ? "🔔" : "🔕") + (n ? " " + n : "");
+    bell.classList.toggle("on", on());
+    bell.classList.toggle("hot", n > 0);
+    bell.title = (n ? "此刻有 " + n + " 个会话在等你授权 / 回答\n" : "")
+      + (on() ? "等你时提醒：开（再点一下关掉）\n会话卡在你身上超过 60 秒时弹一条通知；这个页面要开着，在后台时浏览器可能最多晚一分钟"
+              : (perm === "denied" ? "等你时提醒：浏览器没给通知权限 —— 点地址栏左边的站点设置，把「通知」改成允许，再点一下"
+                                   : (perm === "unsupported" ? "这个浏览器不支持通知" : "等你时提醒：关（点一下打开）")))
+      + "\n近 7 天弹了 " + s.shown.length + " 次，点开 " + s.clicked.length + " 次";
+    document.title = (n ? "(" + n + ") 等你 · " : "") + document.title.replace(PFX, "");
+  }
+  function fire(e, blocked) {
+    if (!on() || !("Notification" in window) || Notification.permission !== "granted") return;
+    var mark = "mc.notified." + e.dedup_key;
+    if (ls(mark)) return;                          // 别的标签页已经弹过这一段等待
+    ls(mark, String(Date.now()));
+    var b = null;
+    for (var i = 0; i < blocked.length; i++) if (blocked[i].session_id === e.session) b = blocked[i];
+    var p = e.payload || {}, what = e.type === "PERMISSION_NEEDED" ? "等你授权" : "等你回答";
+    var n = new Notification(what + " · " + ((b && b.project) || e.project || "Claude Code"), {
+      body: ((b && b.title) ? b.title + "\n" : "") + (p.state_label || what) + "（已等 " + Math.max(1, Math.round((p.age_s || 60) / 60)) + " 分钟）",
+      tag: e.dedup_key, renotify: false});
+    bump("shown");
+    n.onclick = function () { bump("clicked"); window.focus(); location.href = "/sessions#s-" + encodeURIComponent(e.session || ""); n.close(); };
+  }
+  function poll() {
+    fetch("/api/attention?since=" + seq).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      if (!d) return;
+      var first = seq < 0;
+      seq = d.seq;
+      paint(d.blocked.length);
+      if (!first) d.events.forEach(function (e) { fire(e, d.blocked); });   // 打开页面前的旧事件不补弹
+    }).catch(function () {});
+  }
+  bell.addEventListener("click", function () {
+    if (on()) { ls(KEY, "0"); paint(lastN); return; }
+    if (!("Notification" in window)) { paint(lastN); return; }
+    var go = function (p) {
+      if (p !== "granted") { ls(KEY, "0"); paint(lastN); return; }
+      ls(KEY, "1"); paint(lastN);
+      new Notification("Mission Control · 等你时提醒已打开", {body: "会话卡在你身上超过 60 秒（等授权 / 等你回答）时，这里会弹一条。页面要开着。", tag: "mc-hello"});
+    };
+    if (Notification.permission === "default") Notification.requestPermission().then(go, function () { go("denied"); });
+    else go(Notification.permission);
+  });
+  window.addEventListener("storage", function (e) { if (e.key === KEY) paint(lastN); });
+  try { for (var i = localStorage.length - 1; i >= 0; i--) { var k = localStorage.key(i);   // 两天前的「已弹过」标记清掉
+    if (k && k.indexOf("mc.notified.") === 0 && Date.now() - (+localStorage.getItem(k) || 0) > 2 * 86400e3) localStorage.removeItem(k); } } catch (e) {}
+  paint(0); poll(); setInterval(poll, 5000);
+})();
+</script>"""
 
 
 # ---- 页面载入 (不再往本文件里内联, RECAP 侧批 #6; 会话驾驶舱 S0 把其余页面也搬了出去) ----

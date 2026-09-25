@@ -241,6 +241,9 @@ agentic coding 工具最大的痛点不是不够聪明，而是：
   - `/notify` 页：状态 + **推送/抑制双记的 feed**（看为什么被抑制, 方便调"不烦"）+ 发送测试 + BotFather 配置指引。`MC_TELEGRAM_TOKEN`/`MC_TELEGRAM_CHAT_ID` 开启。
   - 7 个策略单测；经对抗式 review（安全/线程/解耦三维）修复 4 项（含 critical 被限流淹没）。
   - **完成判据**：重要时刻**主动**找到我、无关紧要时**安静**；默认安全、可在 feed 里调参。✅（手机实推待你配 token 验证）
+  - **0.18.0 本机浏览器通道**（会话驾驶舱 S2，见 [SESSIONS_COCKPIT_PLAN.md](SESSIONS_COCKPIT_PLAN.md)）：导航铃铛，默认关；只对进程自报的
+    `PERMISSION_NEEDED` / `QUESTION_PENDING`（卡在你身上 ≥ 60 秒，每段等待一次）弹浏览器通知，**零外发**，不经 `notify.py` 的外发通道。
+    09-21「通知搁置」只为这一条部分推翻；手机推送与远程控制仍搁置。真机验证过（66 秒弹出、只弹一次）。
 
 - **M3.5 · 成本预算 / 阈值告警** ✅ **已交付**
   - `tokmon/event_sources/cost_source.py`（成本支柱适配器, 只 import token 内核 + events, P4）: 算今日/近7天滚动/每项目等价花费,
