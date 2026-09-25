@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mission Control · 需要令牌</title>
+<style>
+  :root { --bg:#0f1115; --panel:#181b22; --line:#262b36; --fg:#e6e9ef; --dim:#8b93a7;
+          --accent:#7aa2f7; --warn:#e0af68; --bad:#f7768e; }
+  * { box-sizing:border-box }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--fg);
+         font-family:"Segoe UI",system-ui,-apple-system,"Microsoft YaHei",sans-serif; font-size:15px; padding:20px; }
+  .box { width:100%; max-width:390px; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:26px 24px; }
+  h1 { font-size:18px; margin:0 0 6px; }
+  p.sub { color:var(--dim); font-size:13px; margin:0 0 18px; line-height:1.6; }
+  input { width:100%; padding:11px 13px; font-size:15px; border-radius:9px; border:1px solid var(--line);
+          background:#11141a; color:var(--fg); }
+  input:focus { outline:none; border-color:var(--accent); }
+  button { width:100%; margin-top:11px; padding:11px; font-size:15px; border-radius:9px; border:0; cursor:pointer;
+           background:var(--accent); color:#0f1115; font-weight:600; }
+  button:disabled { opacity:.55; cursor:default; }
+  .msg { margin-top:12px; font-size:13px; min-height:18px; }
+  .msg.err { color:var(--bad); }
+  .note { margin-top:18px; padding-top:14px; border-top:1px solid var(--line); color:var(--dim); font-size:12px; line-height:1.65; }
+  .note b { color:var(--warn); font-weight:600; }
+</style></head>
+<body>
+<div class="box">
+  <h1>需要控制令牌</h1>
+  <p class="sub">这台机器开了远程模式，所有页面与接口都要令牌。<br>
+     令牌在启动 <code>tokmon serve</code> 的终端里，或 <code>~/.tokmon/control_token</code>。</p>
+  <form id="f" autocomplete="off">
+    <input type="password" id="t" placeholder="control token" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button id="b" type="submit">进入</button>
+  </form>
+  <div class="msg" id="m"></div>
+  <div class="note">
+    <b>token-only 是唯一的闸</b>，所以：隧道 URL 当秘密、用完即关隧道、泄露就轮换令牌。<br>
+    令牌只存在这台浏览器的 HttpOnly Cookie 里（12 小时过期），不进 URL、不进 localStorage。
+  </div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+$('#f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const tok = $('#t').value.trim();
+  if(!tok) return;
+  $('#b').disabled = true; $('#m').className='msg'; $('#m').textContent='校验中…';
+  try {
+    const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'},
+                                         body: JSON.stringify({token: tok})});
+    if (r.ok) { $('#m').textContent='通过，正在进入…'; location.reload(); return; }
+    $('#m').className='msg err'; $('#m').textContent='令牌不对（服务端会拖慢重试，并在终端记一笔）';
+  } catch (err) {
+    $('#m').className='msg err'; $('#m').textContent='请求失败: ' + err;
+  }
+  $('#t').value=''; $('#b').disabled=false;
+});
+$('#t').focus();
+</script>
+</body></html>

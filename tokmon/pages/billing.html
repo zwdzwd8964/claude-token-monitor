@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>厂商账单 · Mission Control</title>
+<style>__BASE__
+  main { padding:18px 24px; display:flex; flex-direction:column; gap:16px; max-width:1150px; }
+  button { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:7px 14px; font-size:13px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  input { background:#0e0e11; color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:7px 10px; font-size:13px; }
+  .sec { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .sec h2 { font-size:14px; margin:0 0 10px; font-weight:600; display:flex; align-items:center; gap:10px; }
+  .badge { font-size:12px; padding:2px 9px; border-radius:7px; border:1px solid var(--line); }
+  .badge.ok { color:var(--good); border-color:#2c3a23; background:#151d12; }
+  .badge.warn { color:var(--warn); border-color:#3a3320; background:#1d1a12; }
+  .badge.off { color:var(--dim); }
+  .note { background:#131318; border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:8px; padding:11px 14px; color:var(--dim); font-size:12.5px; line-height:1.6; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th,td { text-align:right; padding:6px 9px; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--dim); font-weight:500; }
+  .na { color:var(--dim); }
+  .cost { color:var(--good); }
+  .reason { color:var(--dim); font-size:12.5px; line-height:1.6; margin-top:4px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  footer { padding:14px 24px; color:var(--dim); font-size:12px; border-top:1px solid var(--line); }
+</style></head>
+<body>
+<header>
+  <h1>厂商账单 / billing <span>OpenAI · Anthropic 的真实 API 平台开销 (官方 usage/cost API)</span></h1>
+  <div class="nav">
+    __NAV__
+  </div>
+</header>
+<main>
+  <div class="note">
+    <b>这一页和 /tokens 是两个不同的计费池, 数字本就不该相等。</b><br>
+    · <b>本页</b> = 你的 <b>API 平台</b>开销 (app 调 API 的钱) —— 厂商官方账单, <b>真实</b>。<br>
+    · <b>/tokens</b> = Claude Code 的 token 用量 <b>等价估算</b> —— 且你的 Claude Code 走<b>订阅</b>计费, 其用量<b>根本不进 API 账单</b>。<br>
+    · 所以两边对不上是<b>正确的</b>, 不是 bug。(见 PROVIDER_BILLING_PLAN.md §0.3)
+  </div>
+
+  <div class="sec">
+    <h2>密钥 <span id="egress" class="badge off"></span></h2>
+    <div class="row">
+      <input id="anth" type="password" placeholder="Anthropic admin key (sk-ant-admin01-…)" style="min-width:320px">
+      <input id="oai" type="password" placeholder="OpenAI admin key (sk-admin-…)" style="min-width:320px">
+      <button id="save">保存</button>
+      <span id="msg" class="muted" style="font-size:12px"></span>
+    </div>
+    <div class="reason">
+      存到 <code>~/.tokmon/providers.json</code> (0600) 或用环境变量 <code>ANTHROPIC_ADMIN_KEY</code>/<code>OPENAI_ADMIN_KEY</code>。
+      <b>密钥永不回显</b>, 只报「已配置/未配置」。未配置 → <b>一个字节都不出本机</b>。<br>
+      ⚠️ 这些是 <b>org-admin 级</b>凭据 (Anthropic 无只读档: 同一把 key 也能踢组织成员、停用别人的 API key)。妥善保管。
+    </div>
+  </div>
+
+  <div id="out"><div class="muted">加载中…</div></div>
+</main>
+<footer>数据每 5 分钟刷新 · 费用只有日粒度 (两家 API 都只给 1d) · 拿不到就显式标「不可得」, 绝不瞎估</footer>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const NAMES = {anthropic:'Anthropic', openai:'OpenAI', google:'Google (Gemini)'};
+const n = v => v==null ? '<span class="na">—</span>' : Number(v).toLocaleString();
+const usd = v => v==null ? '<span class="na">—</span>' : '<span class="cost">$'+Number(v).toFixed(2)+'</span>';
+
+function card(p){
+  const title = esc(NAMES[p.name]||p.name);
+  if(!p.available){
+    const b = p.name==='google' ? '<span class="badge warn">不可得</span>'
+            : (p.configured ? '<span class="badge warn">暂不可得</span>' : '<span class="badge off">未配置</span>');
+    return `<div class="sec"><h2>${title} ${b}</h2><div class="reason">${esc(p.reason||'')}</div></div>`;
+  }
+  const days = (p.days||[]).map(d=>`<tr><td>${esc(d.date)}</td><td>${usd(d.cost_usd)}</td>
+      <td>${n(d.input)}</td><td>${n(d.cached_input)}</td><td>${n(d.output)}</td><td>${n(d.requests)}</td></tr>`).join('');
+  const models = (p.by_model||[]).map(m=>`<tr><td>${esc(m.model)}</td><td>${usd(m.cost_usd)}</td>
+      <td>${n(m.input)}</td><td>${n(m.cached_input)}</td><td>${n(m.output)}</td><td>${n(m.requests)}</td></tr>`).join('');
+  const note = p.name==='anthropic'
+    ? '<div class="reason">注: Anthropic 的用量 API <b>不提供请求数</b>, 费用也<b>没有 per-model 分组</b> —— 故显示「—」而非 0。</div>' : '';
+  return `<div class="sec"><h2>${title} <span class="badge ok">可用</span>
+      <span class="muted" style="font-size:12px;font-weight:400">近 ${'${DAYS}'} 天合计 ${usd(p.total_cost_usd).replace(/<[^>]+>/g,'')}</span></h2>
+    <table><thead><tr><th>日期</th><th>费用</th><th>输入</th><th>缓存读</th><th>输出</th><th>请求数</th></tr></thead>
+      <tbody>${days||'<tr><td colspan=6 class="na">窗口内无用量</td></tr>'}</tbody></table>
+    <h2 style="margin-top:14px">按模型</h2>
+    <table><thead><tr><th>模型</th><th>费用</th><th>输入</th><th>缓存读</th><th>输出</th><th>请求数</th></tr></thead>
+      <tbody>${models||'<tr><td colspan=6 class="na">无</td></tr>'}</tbody></table>
+    ${note}</div>`;
+}
+
+async function load(){
+  try{
+    const d = await (await fetch('/api/billing')).json();
+    $('#egress').textContent = d.egress || '';
+    $('#out').innerHTML = (d.providers||[]).map(p=>card(p).split('${DAYS}').join(d.window_days)).join('');
+  }catch(e){ $('#out').innerHTML = '<div class="sec">加载失败: '+esc(e)+'</div>'; }
+}
+
+function token(){
+  let t = localStorage.getItem('mc_ctl_token');
+  if(!t){ t = prompt('粘贴控制令牌 (启动 tokmon serve 时控制台打印的那个):') || ''; if(t) localStorage.setItem('mc_ctl_token', t); }
+  return t;
+}
+$('#save').addEventListener('click', async ()=>{
+  const t = token(); if(!t){ $('#msg').textContent='需要控制令牌'; return; }
+  const body = {};
+  if($('#anth').value) body.anthropic = $('#anth').value;
+  if($('#oai').value) body.openai = $('#oai').value;
+  if(!Object.keys(body).length){ $('#msg').textContent='没填任何 key'; return; }
+  $('#msg').textContent='保存中…';
+  try{
+    const r = await fetch('/api/billing/keys', {method:'POST',
+      headers:{'Content-Type':'application/json','X-Control-Token':t}, body:JSON.stringify(body)});
+    if(r.status===403){ $('#msg').textContent='令牌无效 (403)'; localStorage.removeItem('mc_ctl_token'); return; }
+    const d = await r.json();
+    $('#anth').value=''; $('#oai').value='';                 // 立刻清掉输入框, 不留在 DOM
+    $('#msg').textContent = d.ok ? '已保存 (拉取中…)' : '保存失败';
+    setTimeout(load, 1500);
+  }catch(e){ $('#msg').textContent='保存失败: '+e; }
+});
+load();
+setInterval(load, 60000);
+</script>
+</body></html>

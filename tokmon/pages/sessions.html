@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session 状态 · Mission Control</title>
+<style>__BASE__
+  .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  input[type=text], button { background:var(--panel); color:var(--fg); border:1px solid var(--line);
+      border-radius:8px; padding:6px 10px; font-size:13px; }
+  button { cursor:pointer; } button:hover { border-color:var(--accent); }
+  label.chk { display:inline-flex; gap:6px; align-items:center; cursor:pointer; font-size:13px; }
+  main { padding:18px 24px; display:flex; flex-direction:column; gap:14px; max-width:1100px; }
+  .counts { display:flex; gap:10px; flex-wrap:wrap; }
+  .pill { background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:5px 12px; font-size:13px; }
+  .pill b { font-weight:600; } .pill.live b { color:var(--good); } .pill.amb b { color:var(--warn); } .pill.unk b { color:var(--dim); }
+  .pill.clk { cursor:pointer; } .pill.clk:hover { border-color:var(--accent); }
+  .pill.on { border-color:var(--accent); background:#14212e; box-shadow:inset 0 0 0 1px var(--accent); }
+  select { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 8px; font-size:13px; }
+  .chips { display:flex; gap:7px; flex-wrap:wrap; }
+  .chip { background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:4px 11px; font-size:12.5px; cursor:pointer; white-space:nowrap; }
+  .chip:hover { border-color:var(--accent); } .chip b { color:var(--dim); font-weight:600; margin-left:3px; }
+  .chip.on { border-color:var(--accent); background:#14212e; box-shadow:inset 0 0 0 1px var(--accent); }
+  .chip.zero { opacity:.5; } .chip.zero.on { opacity:.85; }
+  .fbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; background:#14212e; border:1px solid var(--accent);
+      border-radius:10px; padding:8px 12px; font-size:13px; }
+  .fbar .warn { color:var(--warn); } .fbar .muted { color:var(--dim); }
+  .clearbtn { font-size:12px; padding:3px 10px; border-radius:7px; cursor:pointer; }
+  .sess { display:flex; flex-direction:column; gap:7px; }
+  .row { background:var(--panel); border:1px solid var(--line); border-left-width:3px; border-radius:11px; padding:12px 14px; }
+  .row.live { border-left-color:var(--good); } .row.amb { border-left-color:var(--warn); }
+  .row.wait { border-left-color:#3a4256; } .row.unk { border-left-color:#33384a; } .row.closed { border-left-color:#33384a; opacity:.72; }
+  .row.blk { border-left-color:var(--warn); }
+  .r1 { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .title { font-weight:600; font-size:14px; } .proj { font-weight:600; } .meta { color:var(--dim); font-size:12px; }
+  .meta2 { color:var(--dim); font-size:12px; margin-top:2px; }
+  .step { color:var(--fg); opacity:.82; font-size:12.5px; margin-top:5px; line-height:1.5; }
+  .step .tool { color:var(--good); font-weight:600; }
+  .age { margin-left:auto; color:var(--dim); font-size:12px; white-space:nowrap; }
+  .sb { font-size:12px; padding:2px 9px; border-radius:7px; border:1px solid var(--line); white-space:nowrap; }
+  .sb.live { color:var(--good); border-color:#2c3a23; background:#151d12; }
+  .sb.wait { color:var(--dim); }
+  .sb.amb  { color:var(--warn); border-color:#3a3320; background:#1d1a12; }
+  .sb.unk  { color:var(--dim); border-color:#33384a; }
+  .sb.closed { color:var(--dim); border-color:#33384a; }
+  .sb.blk { color:var(--warn); border-color:#3a3320; background:#1d1a12; }
+  .idle { color:var(--dim); font-size:11px; border:1px solid var(--line); border-radius:6px; padding:1px 6px; }
+  .rkb { color:var(--warn); font-size:11px; border:1px solid #4a3d22; border-radius:6px; padding:1px 6px; text-decoration:none;
+         max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rkb:hover { border-color:var(--warn); }
+  .wfl { font-size:11.5px; color:var(--accent); text-decoration:none; white-space:nowrap; }
+  .wfl:hover { text-decoration:underline; }
+  .detail { color:var(--dim); font-size:12.5px; margin-top:2px; }
+  .snippet { color:var(--fg); opacity:.8; font-style:italic; }
+  .events { display:flex; gap:6px; flex-wrap:wrap; margin-top:7px; }
+  .ev { font-size:11px; color:var(--dim); border:1px solid var(--line); border-radius:5px; padding:1px 6px; }
+  .ev.err { color:var(--warn); border-color:#3a3320; }
+  h2.sec { font-size:14px; margin:6px 0 6px; font-weight:600; }
+  .tl { display:flex; flex-direction:column; max-height:320px; overflow:auto; border:1px solid var(--line); border-radius:11px; background:var(--panel); }
+  .evrow { display:grid; grid-template-columns:62px 96px 1fr; gap:10px; align-items:baseline; font-size:12.5px; padding:5px 12px; border-bottom:1px solid #20242e; }
+  .evrow:last-child { border-bottom:0; }
+  .evrow .evt { font-weight:600; }
+  .evrow.info .evt { color:var(--dim); } .evrow.warning .evt { color:var(--warn); } .evrow.critical .evt { color:var(--bad); }
+  .evtime { color:var(--dim); } .evdet { color:var(--dim); } .evproj { opacity:.85; }
+  footer { padding:14px 24px; color:var(--dim); font-size:12px; border-top:1px solid var(--line); }
+</style></head>
+<body>
+<header>
+  <h1>Session 状态 <span>Mission Control · M1 先看见, 不通知</span></h1>
+  <div class="nav">
+    __NAV__
+  </div>
+</header>
+<main>
+  <div class="controls">
+    <input type="text" id="filter" placeholder="过滤: 标题 / 项目 / 步骤 / 工具…" style="min-width:260px">
+    <!-- 默认**不勾**: 实测 71 个「等你」里 70 个都 >10min, 默认勾上等于把这一页唯一的存在理由藏掉 71 分之 70
+         (SESSIONS_V3_PLAN §0/§186 审计)。原则 1「真实优先」+ P6「误报零容忍」同样适用于 UI 的默认值:
+         **默认静默**说的是通知, 不是看板。未来若想改回 checked, 先回答"用户打开这一页是为了看什么"。 -->
+    <label class="chk"><input type="checkbox" id="hideidle" title="「等你已久」= Claude 已经回复你、超过 10min 没人接话 —— 是你欠它一句话, 不是它闲着"> 隐藏「等你已久」</label>
+    <span class="muted" style="font-size:12px">活跃时间窗</span>
+    <select id="agewin"><option value="">全部</option><option value="3600">近 1h</option><option value="86400">近 24h</option><option value="604800">近 7d</option></select>
+    <label class="chk"><input type="checkbox" id="auto" checked> 自动刷新 30s</label>
+    <button id="refresh">刷新</button>
+  </div>
+  <div id="projchips" class="chips"></div>
+  <div id="app"><div class="muted">加载中…</div></div>
+  <div>
+    <h2 class="sec">事件流 <span class="meta" style="font-weight:400">M2 · 本机事件总线, 零通知 (后台每 5s 推进, 不依赖你开没开页面)</span></h2>
+    <div class="tl" id="timeline"><div class="muted" style="padding:10px">暂无事件 (新事件会随会话状态变化出现)</div></div>
+  </div>
+</main>
+<footer id="foot"></footer>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function fmtAgo(s){ if(s==null)return '—'; s=+s; if(s<60)return s+'s 前'; if(s<3600)return Math.floor(s/60)+'m 前'; if(s<86400)return Math.floor(s/3600)+'h 前'; return Math.floor(s/86400)+'d 前'; }
+function fmtClock(epoch){ if(!epoch) return '—'; try { return new Date(epoch*1000).toLocaleTimeString(); } catch(e){ return '—'; } }
+const EVT_LABEL = {SESSION_STARTED:'会话开始', TASK_COMPLETED:'任务完成', TOOL_ERROR:'工具出错',
+  SESSION_IDLE:'空闲', SESSION_STUCK:'久未返回', PERMISSION_NEEDED:'等待授权', QUESTION_PENDING:'等你回答', TOKEN_BUDGET_WARNING:'预算告警', PROCESS_CRASHED:'进程崩溃', COMMAND_ISSUED:'已下指令',
+  DESTRUCTIVE_OP:'破坏性操作', ERROR_SPIKE:'连续失败', REPEATED_FILE_EDIT:'改了又改没通过', LARGE_DIFF:'大改动'};
+let EVENTS=[], evCursor=0, evDropped=0;
+function evDetail(e){   // 返回纯文本; 转义由唯一的外层 esc(evDetail(e)) 负责, 这里不再 esc 以免双重转义
+  const p=e.payload||{};
+  if(e.type==='SESSION_IDLE') return '空闲已 '+(p.idle_step||1)+' 级 ('+(Math.round((p.age_s||0)/60))+'m)';
+  if(e.type==='SESSION_STUCK') return p.state_label||'久未返回';
+  if(e.type==='PERMISSION_NEEDED') return '等你授权 · '+(p.tool_name||'?');
+  if(e.type==='QUESTION_PENDING') return p.state_label||'等你回答';
+  if(e.type==='TOOL_ERROR') return '工具 '+(p.tool_name||'?')+' 报错';
+  if(e.type==='TASK_COMPLETED') return p.state_from?('从 '+p.state_from+' 完成一轮'):'完成一轮';
+  if(e.type==='DESTRUCTIVE_OP') return (p.kind||'?')+'（规则判断，只标不拦）';
+  if(e.type==='ERROR_SPIKE') return '连着失败 '+(p.count||'?')+' 次';
+  if(e.type==='REPEATED_FILE_EDIT') return '同一个文件来回 '+(p.count||'?')+' 轮都没通过';
+  if(e.type==='LARGE_DIFF') return p.rule==='large-task'?('一个任务动了 '+p.count+' 个文件'):('单次大改动 '+(p.count||'?')+' 次');
+  return '';
+}
+function renderTimeline(){
+  const tl=$('#timeline'); if(!tl) return;
+  if(!EVENTS.length){ tl.innerHTML='<div class="muted" style="padding:10px">暂无事件 (新事件会随会话状态变化出现)</div>'; return; }
+  const rows=EVENTS.slice(-200).reverse().map(e=>`<div class="evrow ${esc(e.severity)}">
+    <span class="evtime">${fmtClock(e.timestamp)}</span>
+    <span class="evt">${esc(EVT_LABEL[e.type]||e.type)}</span>
+    <span><span class="evproj">${esc(e.project||e.session||'')}</span> <span class="evdet">${esc(evDetail(e))}</span></span>
+  </div>`).join('');
+  tl.innerHTML=rows + (evDropped>0?`<div class="muted" style="padding:6px 12px">（事件 ring 已轮转 ${evDropped} 条更早历史，可能含已读）</div>`:'');
+}
+async function loadEvents(){
+  try{
+    const r=await fetch('/api/events?since='+evCursor); const d=await r.json();
+    if(d.error) return;
+    if(d.events && d.events.length){
+      const have=new Set(EVENTS.map(e=>e.seq));        // 按 seq 去重, 防并发拉取重复 append
+      for(const e of d.events) if(!have.has(e.seq)) EVENTS.push(e);
+      if(EVENTS.length>400) EVENTS=EVENTS.slice(-400);
+    }
+    if(typeof d.last_seq==='number' && d.last_seq>evCursor) evCursor=d.last_seq;
+    evDropped=d.dropped||0;
+    renderTimeline();
+  }catch(e){}
+}
+function matches(t,q){ return !q || String(t==null?'':t).toLowerCase().includes(q); }
+const CLS = {WORKING:'live',PROCESSING:'live',BLOCKED_ON_USER:'wait',AWAITING_USER:'wait',AMBIGUOUS_PENDING:'amb',CLOSED:'closed',UNKNOWN:'unk'};
+
+// ---- 过滤器: FILTERS 是唯一真相源, DOM 只是它的投影 (§1)。持久化到 localStorage, 坏数据回退默认。----
+const FKEY='mc_sess_filters';
+const STGRP_LABEL={live:'活跃',wait:'等你',amb:'久未返回',closed:'已关闭',unk:'读不出'};
+const AGE_LABEL={'3600':'近 1h','86400':'近 24h','604800':'近 7d'};
+let FILTERS={projects:[],states:[],ageMax:null};
+try{ const s=JSON.parse(localStorage.getItem(FKEY)||'{}');
+  if(Array.isArray(s.projects)) FILTERS.projects=[...new Set(s.projects.filter(x=>typeof x==='string'))];
+  if(Array.isArray(s.states)) FILTERS.states=[...new Set(s.states.filter(x=>STGRP_LABEL[x]))];
+  if(typeof s.ageMax==='number' && AGE_LABEL[String(s.ageMax)]) FILTERS.ageMax=s.ageMax;   // 只认三个合法窗, 防坏数据让 select 与实际筛选脱节
+}catch(e){}
+function saveFilters(){ try{ localStorage.setItem(FKEY, JSON.stringify(FILTERS)); }catch(e){} }
+function groupOf(state){ return CLS[state]||'unk'; }
+// 纯函数: (会话数组, 条件) -> 数组。不碰 DOM, 不改入参 (§2/§5)。AND 逐级收窄。
+function applyFilters(sessions, F){
+  return sessions.filter(s=>{
+    if(F.projects.length && !F.projects.includes(s.project||'')) return false;   // 与 chip 的 key 一致 (§3.2 无项目也可筛)
+    if(F.states.length && !F.states.includes(groupOf(s.state))) return false;
+    if(F.ageMax!=null && !(s.last_activity_age_s!=null && s.last_activity_age_s<=F.ageMax)) return false;  // null 年龄有时间窗时排除 (§3.3 会明示)
+    if(F.hideIdle && s.state==='AWAITING_USER' && s.idle) return false;
+    const q=F.text;
+    return matches(s.project,q)||matches(s.title,q)||matches(s.current_step,q)||matches(s.state,q)||matches(s.state_label,q)||matches(s.pending_tool_name,q)||matches(s.git_branch,q);
+  });
+}
+function toggleState(g){ const i=FILTERS.states.indexOf(g); if(i<0) FILTERS.states.push(g); else FILTERS.states.splice(i,1); saveFilters(); render(); }
+function toggleProject(p){ const i=FILTERS.projects.indexOf(p); if(i<0) FILTERS.projects.push(p); else FILTERS.projects.splice(i,1); saveFilters(); render(); }
+function clearFilters(){ FILTERS.projects=[]; FILTERS.states=[]; FILTERS.ageMax=null; saveFilters(); $('#filter').value=''; $('#agewin').value=''; render(); }
+const EVLABEL = {task_completed:'✓ 完成', tool_returned:'↩ 返回', tool_returned_error:'✗ 工具出错',
+  continued_after_subagent:'↺ 子代理返回', interrupted_by_user:'⎋ 你打断'};
+function evChip(e){
+  let t = e.kind==='tool_started' ? ('▶ '+esc(e.name||'工具')) : (EVLABEL[e.kind]||esc(e.kind));
+  return `<span class="ev ${e.kind==='tool_returned_error'?'err':''}">${t}</span>`;
+}
+
+let DATA=null, reqId=0;
+async function load(){
+  const my=++reqId;
+  try{
+    const r=await fetch('/api/sessions'); const d=await r.json();
+    if(my!==reqId) return;
+    if(d.error){ $('#app').innerHTML='<div class="row unk warn">读取失败: '+esc(d.error)+'</div>'; $('#foot').textContent=''; return; }
+    DATA=d; render();
+  }catch(e){ if(my===reqId) $('#foot').textContent='请求失败: '+e; }
+}
+
+function render(){
+  if(!DATA) return;
+  const d=DATA, q=$('#filter').value.trim().toLowerCase(), hideIdle=$('#hideidle').checked;
+  const c=d.counts;
+  // 5 个状态组 pill 可点即筛; 后台在跑/空闲/共 只读展示 (定: 严按 plan §2)
+  function spill(label,count,group,cls){
+    const on=FILTERS.states.includes(group);
+    return `<span class="pill ${cls||''} clk ${on?'on':''}" data-st="${group}" title="点一下按此状态筛选">${label} <b>${count}</b></span>`;
+  }
+  const counts=`<div class="counts">
+    ${spill('活跃', c.working, 'live', 'live')}
+    ${c.background?`<span class="pill live">后台在跑 <b>${c.background}</b></span>`:''}
+    ${spill('久未返回', c.ambiguous, 'amb', 'amb')}
+    ${spill('等你', c.awaiting+(c.blocked||0), 'wait', '')}
+    ${c.blocked?`<span class="pill amb" title="「等你」的子集: 回合卡在你身上 —— 权限弹窗 / Claude 在问你 (Claude Code 进程自报)">其中等你授权/回答 <b>${c.blocked}</b></span>`:''}
+    <span class="pill" title="「等你」的子集: Claude 已回复你且 >10min 无人接话 (不是并列状态)">其中等你已久 <b>${c.idle}</b></span>
+    ${spill('已关闭', c.closed, 'closed', 'unk')}
+    ${spill('读不出', c.unknown, 'unk', 'unk')}
+    <span class="pill">共 <b>${c.total}</b></span></div>`;
+
+  // 项目 chips: distinct project + 计数, 降序; 含"选中但本帧无会话"的项目 (§3.2, 不静默消失)
+  const projCounts=Object.create(null);   // 无原型链: 项目名若正好叫 toString/constructor 等也不串味
+  d.sessions.forEach(s=>{ const p=s.project||''; projCounts[p]=(projCounts[p]||0)+1; });   // key = 归一后的项目名 (与 applyFilters 一致)
+  FILTERS.projects.forEach(p=>{ if(!(p in projCounts)) projCounts[p]=0; });
+  const projList=Object.keys(projCounts).sort((a,b)=>(projCounts[b]-projCounts[a])||a.localeCompare(b));
+  $('#projchips').innerHTML = (projList.length>1 || FILTERS.projects.length) ? projList.map(p=>{
+    const on=FILTERS.projects.includes(p), zero=projCounts[p]===0;   // 选中态从 FILTERS 恢复, 不靠 DOM (§3.1)
+    return `<span class="chip ${on?'on':''} ${zero?'zero':''}" data-proj="${esc(p)}" title="${zero?'本帧无会话':'点一下按项目筛选'}">${esc(p||'(无项目)')} <b>${projCounts[p]}</b></span>`;
+  }).join('') : '';
+
+  const F={projects:FILTERS.projects, states:FILTERS.states, ageMax:FILTERS.ageMax, text:q, hideIdle};
+  let rows = applyFilters(d.sessions, F);
+
+  // §3.3 只要有 filter 生效就醒目提示 + 一键清除; §3.2 空项目 note; null 年龄被时间窗排除 note
+  const bits=[];
+  if(FILTERS.projects.length) bits.push('项目='+FILTERS.projects.map(p=>esc(p||'(无项目)')).join(', '));
+  if(FILTERS.states.length) bits.push('状态='+FILTERS.states.map(g=>STGRP_LABEL[g]).join(', '));
+  if(FILTERS.ageMax!=null) bits.push(AGE_LABEL[String(FILTERS.ageMax)]||('近 '+FILTERS.ageMax+'s'));
+  let nullExcl=0;
+  if(FILTERS.ageMax!=null){ const Fn=Object.assign({}, F, {ageMax:null}); nullExcl=applyFilters(d.sessions, Fn).filter(s=>s.last_activity_age_s==null).length; }
+  const emptyProj=FILTERS.projects.filter(p=>(projCounts[p]||0)===0);
+  let fbar='';
+  if(bits.length){
+    let extra='';
+    if(emptyProj.length) extra+=` · <span class="warn">项目 ${emptyProj.map(p=>esc(p||'(无项目)')).join(', ')} 本帧无会话</span>`;
+    if(nullExcl) extra+=` · <span class="muted">另有 ${nullExcl} 个会话时间读不出, 已被时间窗排除</span>`;
+    fbar=`<div class="fbar"><b>过滤中</b>：${bits.join(' · ')} <span class="muted">显示 ${rows.length}/${d.sessions.length}</span>${extra} <button id="clearf" class="clearbtn">清除全部过滤</button></div>`;
+  }
+  const body = rows.map(s=>{
+    const cls=CLS[s.state]||'unk';
+    const idleBadge = (s.state==='AWAITING_USER'&&s.idle) ? '<span class="idle" title="Claude 已回复你, 超过 10min 没人接话 —— 你欠它一句话">等你已久</span>' : '';
+    const wf = s.workflow, live = s.state==='WORKING'||s.state==='PROCESSING'||s.state==='BLOCKED_ON_USER';
+    const blk = s.state==='BLOCKED_ON_USER' ? ' blk' : '';
+    const src = s.state_source==='registry' ? '来源: Claude Code 进程自报' : '来源: 据 transcript 推断';
+    const wfHref = wf ? '/workflow?task='+encodeURIComponent(wf.task) : '';
+    const riskBadge = (wf && wf.risks.length) ? `<a class="rkb" href="${wfHref}" title="${esc('风险（规则判断，推断；只标不拦）\n'+wf.risks.map(r=>'· '+r.label).join('\n')+'\n点击看当前任务的回放')}">⚠ ${esc(wf.risks[0].label)}${wf.risks.length>1?' 等 '+wf.risks.length+' 条':''}</a>` : '';
+    const wfLink = wf ? `<a class="wfl" href="${wfHref}" title="${live?'打开当前任务的实时回放（每 5 秒自动刷新）':'打开这个会话最后一个任务的回放'}">${live?'实时回放 →':'回放 →'}</a>` : '';
+    const titleText = s.title || s.project;                 // 标题为主, 无标题回退项目名
+    const metaBits = [];
+    if(s.title) metaBits.push(esc(s.project)+(s.subpath?' /'+esc(s.subpath):''));   // 有标题时项目名降为辅
+    if(s.git_branch) metaBits.push(esc(s.git_branch));
+    if(s.model) metaBits.push(esc(s.model));
+    // 当前步骤: 工具动作 + 叙述 (思考原文不可得, 用可见叙述替代)
+    let step='';
+    if(s.tool_pending && s.pending_tool_name) step += `<span class="tool">▶ ${esc(s.pending_tool_name)}</span> `;
+    const narr = s.current_step || (s.state==='AWAITING_USER'&&!s.synthetic ? s.last_text : null);
+    if(narr){ const mark = s.step_kind==='thinking' ? '💭 ' : ''; step += `<span class="snippet">${mark}${esc(narr)}</span>`; }
+    const evs = (s.recent_events||[]).slice(-6).map(evChip).join('');
+    return `<div class="row ${cls}${blk}">
+      <div class="r1">
+        <span class="title" title="${esc(s.title||'')}">${esc(titleText)}</span>
+        <span class="sb ${cls}${blk}" title="${esc(s.state_label+' · '+src)}">${esc(s.state_label)}</span>
+        ${idleBadge}${riskBadge}${wfLink}
+        <span class="age">${fmtAgo(s.last_activity_age_s)}</span>
+      </div>
+      ${metaBits.length?`<div class="meta2">${metaBits.join(' · ')}</div>`:''}
+      ${step?`<div class="step">${step}</div>`:''}
+      ${evs?`<div class="events">${evs}</div>`:''}
+    </div>`;
+  }).join('');
+  // 无 filter 生效时才用旧的低调 note (被隐藏"等你已久"/文本不匹配); 有 filter 时上面的 fbar 已醒目说清
+  const shownNote = (!bits.length && rows.length<d.sessions.length) ? `<span class="meta">（显示 ${rows.length}/${d.sessions.length}，已隐藏「等你已久」/不匹配）</span>` : '';
+  $('#app').innerHTML = fbar + counts + `<div class="sess">${body||'<div class="muted">无匹配会话</div>'}</div>` + (shownNote?`<div style="margin-top:6px">${shownNote}</div>`:'');
+
+  const ts=new Date(d.generated_at_epoch*1000).toLocaleTimeString();
+  const th=d.thresholds;
+  $('#foot').innerHTML=`采样于 ${ts} · 状态据每个 session 最后一条<b>消息</b>的时间戳(非文件 mtime) · `
+    +`「等你已久」阈值 ${Math.round(th.idle_after_s/60)}min · 久未返回阈值 ${Math.round(th.stuck_after_s/60)}min · `
+    +`状态优先用 Claude Code 自己写的会话注册表 (~/.claude/sessions, 进程自报 忙/空闲/等授权), 没有才据 transcript 推断 · `
+    +`<span class="warn">久未返回=只在拿不到进程自报时出现: transcript 无法区分「长任务/等授权/会话已关闭」</span> · 纯本地只读, 不通知不外发`;
+}
+
+let timer=null;
+function tickAll(){ load(); loadEvents(); }
+function setAuto(){ if(timer){clearInterval(timer);timer=null;} if($('#auto').checked) timer=setInterval(tickAll,30000); }
+['filter','hideidle'].forEach(id=>$('#'+id).addEventListener('input', render));
+$('#hideidle').addEventListener('change', render);
+$('#auto').addEventListener('change', setAuto);
+$('#refresh').addEventListener('click', tickAll);
+// 事件委托挂在稳定容器上 (pill/chip 每帧重建, 委托不受影响; 选中态从 FILTERS 恢复 §3.1)
+$('#app').addEventListener('click', e=>{
+  const pl=e.target.closest('.pill.clk'); if(pl){ toggleState(pl.dataset.st); return; }
+  if(e.target.closest('#clearf')){ clearFilters(); }
+});
+$('#projchips').addEventListener('click', e=>{ const ch=e.target.closest('.chip'); if(ch) toggleProject(ch.dataset.proj); });
+$('#agewin').addEventListener('change', ()=>{ FILTERS.ageMax = $('#agewin').value ? +$('#agewin').value : null; saveFilters(); render(); });
+$('#agewin').value = FILTERS.ageMax!=null ? String(FILTERS.ageMax) : '';   // 从持久化恢复时间窗到 select
+setAuto(); tickAll();
+</script>
+</body></html>

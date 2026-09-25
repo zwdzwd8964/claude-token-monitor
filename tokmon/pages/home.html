@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>本地监控台</title>
+<style>__BASE__
+  main { padding:40px 24px; max-width:880px; margin:0 auto; }
+  .lead { color:var(--dim); margin:0 0 28px; }
+  .grid { display:grid; gap:20px; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); }
+  .tile { display:block; text-decoration:none; color:inherit; background:var(--panel);
+          border:1px solid var(--line); border-radius:14px; padding:22px; transition:border-color .15s; }
+  .tile:hover { border-color:var(--accent); }
+  .tile h2 { margin:0 0 8px; font-size:17px; }
+  .tile p { margin:0; color:var(--dim); font-size:13px; }
+  .tile .ico { font-size:26px; margin-bottom:10px; }
+  footer { padding:14px 24px; color:var(--dim); font-size:12px; border-top:1px solid var(--line); text-align:center; }
+</style></head>
+<body>
+<header><h1>Claude Mission Control <span>AI coding 运维驾驶舱 · 纯本地只读, 不外发</span></h1></header>
+<main>
+  <p class="lead">几个并行同级的监控视图, 都只读本机、只监听 127.0.0.1, 默认不通知、不外发。</p>
+  <div class="grid">
+    <a class="tile" href="/sessions">
+      <div class="ico">🛰️</div>
+      <h2>对话 / Session 状态 →</h2>
+      <p>每个 Claude Code session 现在是「推进 / 处理 / 久未返回 / 等你 / 读不出」: 从 transcript 推断, 诚实标注不确定。M1·先看见, 不通知。</p>
+    </a>
+    <a class="tile" href="/tokens">
+      <div class="ico">📊</div>
+      <h2>Token 看板 →</h2>
+      <p>Claude Code 烧了多少 token / 等价多少钱: 按天/项目/模型/来源, 带「vs 上一周期」自基线对比。</p>
+    </a>
+    <a class="tile" href="/workflow">
+      <div class="ico">🧭</div>
+      <h2>工作流回放 →</h2>
+      <p>一次提问是怎么被完成的: 调了哪些 skill / 工具 / MCP / 子 agent / workflow, 各花多少时间和 token, 哪里失败、打转、等你。</p>
+    </a>
+    <a class="tile" href="/billing">
+      <div class="ico">🧾</div>
+      <h2>厂商账单 →</h2>
+      <p>OpenAI · Anthropic 的<b>真实</b> API 平台开销 (官方 usage/cost API)。与 /tokens 的<b>等价估算</b>是两个计费池, 不该相等。Google 无官方 API → 诚实标「不可得」。默认不配 key 则零外发。</p>
+    </a>
+    <a class="tile" href="/processes">
+      <div class="ico">⚙️</div>
+      <h2>进程 / 端口监控 →</h2>
+      <p>本机进程资源、localhost 监听端口→占用进程、活动网络连接, 以及 cloudflared 隧道进程。纯只读。</p>
+    </a>
+    <a class="tile" href="/doctor">
+      <div class="ico">🩺</div>
+      <h2>体检 (doctor) →</h2>
+      <p>对真相校验: 成本契约 + **推断契约**(activity/events 的格式假设)。Claude Code 一变, 你先看见, 而不是推断悄悄算错。</p>
+    </a>
+    <a class="tile" href="/backtest">
+      <div class="ico">🎯</div>
+      <h2>准确率回测 (L2) →</h2>
+      <p>用 transcript 的"未来"当真值, 量 classify_state 到底准不准: 准确率 + 混淆矩阵 + 危险格。三把尺(严/中/宽)并排, 你挑最信的。</p>
+    </a>
+  </div>
+</main>
+<footer>Claude Mission Control · 纯标准库 + psutil · 只监听本机 · 默认不通知不外发</footer>
+</body></html>

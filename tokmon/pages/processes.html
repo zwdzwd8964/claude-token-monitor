@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>进程 / 端口监控</title>
+<style>__BASE__
+  .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  input[type=text], select, button {
+      background:var(--panel); color:var(--fg); border:1px solid var(--line);
+      border-radius:8px; padding:6px 10px; font-size:13px; }
+  button { cursor:pointer; } button:hover { border-color:var(--accent); }
+  label.chk { display:inline-flex; gap:6px; align-items:center; cursor:pointer; font-size:13px; }
+  main { padding:20px 24px; display:flex; flex-direction:column; gap:18px; max-width:1320px; }
+  .kpis { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); }
+  .kpi { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+  .kpi .k { color:var(--dim); font-size:12px; } .kpi .v { font-size:21px; font-weight:600; }
+  .cf-grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); }
+  .cf { background:#15140f; border:1px solid #3a3320; border-radius:12px; padding:14px; }
+  .cf .nm { font-weight:600; } .cf .row { display:flex; justify-content:space-between; font-size:13px; margin-top:4px; }
+  h2.sec { font-size:14px; margin:4px 0 2px; font-weight:600; }
+  .bar { height:7px; border-radius:4px; background:#11141a; overflow:hidden; margin-top:6px; }
+  .bar > i { display:block; height:100%; background:var(--bar); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th,td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:500; position:sticky; top:0; background:var(--panel); cursor:default; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  td.cmd { color:var(--dim); max-width:520px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .wrap { max-height:360px; overflow:auto; border:1px solid var(--line); border-radius:10px; }
+  .badge { font-size:11px; padding:1px 6px; border-radius:5px; border:1px solid var(--line); }
+  .badge.lo { color:var(--good); border-color:#2c3a23; } .badge.any { color:var(--warn); border-color:#3a3320; }
+  .hb { font-size:11px; padding:1px 6px; border-radius:5px; border:1px solid var(--line); white-space:nowrap; }
+  .hb.ok { color:var(--good); border-color:#2c3a23; } .hb.bad { color:var(--bad); border-color:#4a2730; }
+  .hb.warn { color:var(--warn); border-color:#3a3320; } .hb.dim { color:var(--dim); }
+  .count { color:var(--dim); font-size:12px; margin-left:8px; font-weight:400; }
+  .catgrid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); }
+  .catcard { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+  .catcard h3 { font-size:13.5px; margin:0 0 8px; font-weight:600; }
+  .catcard.other { opacity:.85; }
+  td.act, th.act { text-align:right; white-space:nowrap; }
+  .kill { font-size:11px; padding:2px 9px; border-radius:6px; border:1px solid #4a2730; background:#1b1113; color:#f7768e; cursor:pointer; }
+  .kill:hover { border-color:var(--bad); background:#251317; }
+  .kill.force { border-color:var(--bad); background:#2a1418; color:#ff9db0; font-weight:600; }
+  .modebtn { font-size:12px; padding:4px 12px; border-radius:8px; border:1px solid var(--line); background:var(--panel); color:var(--dim); cursor:pointer; }
+  .modebtn.on { color:var(--good); border-color:#2c3a23; background:#151d12; }
+  footer { padding:14px 24px; color:var(--dim); font-size:12px; border-top:1px solid var(--line); }
+</style></head>
+<body>
+<header>
+  <h1>进程 / 端口监控 <span>只读 · 本机 (终止需开控制模式)</span></h1>
+  <div class="nav">
+    __NAV__
+  </div>
+</header>
+<main>
+  <div class="controls">
+    <input type="text" id="filter" placeholder="过滤: 进程名 / 端口 / 命令行 / 远端地址…" style="min-width:280px">
+    <span class="muted">进程排序</span>
+    <select id="sort"><option value="rss">按内存</option><option value="cpu">按 CPU</option></select>
+    <label class="chk"><input type="checkbox" id="loonly"> 仅 localhost 端口</label>
+    <label class="chk"><input type="checkbox" id="auto"> 自动刷新 5s</label>
+    <button id="probe" title="对本机可经 127.0.0.1/::1 触达的监听端口做一次探活 (主动连接·HTTP 层只读幂等·只碰本机·不外发)">探测本地服务</button>
+    <button id="refresh">刷新</button>
+  </div>
+  <div id="app"><div class="muted">加载中…</div></div>
+</main>
+<footer id="foot"></footer>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function fmtBytes(n){ n=+n||0; if(n>=1e9)return (n/1073741824).toFixed(2)+'GB'; if(n>=1e6)return (n/1048576).toFixed(0)+'MB'; if(n>=1e3)return (n/1024).toFixed(0)+'KB'; return n+'B'; }
+function fmtUp(s){ s=+s||0; const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+  if(d>0)return d+'d '+h+'h'; if(h>0)return h+'h '+m+'m'; if(m>0)return m+'m'; return s+'s'; }
+function matches(txt,q){ return !q || String(txt).toLowerCase().includes(q); }
+function healthBadge(h){
+  if(!h) return '';
+  // 收到任何 HTTP 状态 = 服务存活并在响应; 2xx/3xx 绿, 4xx/5xx 黄(响应但报错, 含不支持 HEAD), 仅连不上才红。
+  if(h.state==='http'){ const cls=h.status<400?'ok':'warn'; return `<span class="hb ${cls}" title="HTTP HEAD 有响应=存活">HTTP ${h.status} · ${h.ms}ms</span>`; }
+  if(h.state==='open') return `<span class="hb dim" title="TCP 可连, 但未响应 HTTP (可能是非 HTTP 服务)">开放·非HTTP · ${h.ms}ms</span>`;
+  return `<span class="hb bad" title="无法连接">无响应</span>`;
+}
+function remoteCard(rows,q){
+  let rr=(rows||[]).filter(r=>matches(r.raddr_ip,q)||r.procs.some(p=>matches(p,q)));
+  if(!rr.length) return '';
+  rr=rr.slice(0,40);
+  const body=rr.map(r=>`<tr>
+    <td>${esc(r.raddr_ip)}</td><td class="num">${r.count}</td>
+    <td>${esc(r.procs.slice(0,4).join(', '))}${r.procs.length>4?' <span class="muted">+'+(r.procs.length-4)+'</span>':''}</td>
+    <td class="cmd" title="${esc(r.rports.join(', '))}">${esc(r.rports.join(', '))}</td></tr>`).join('');
+  return `<div><h2 class="sec">连接按远端聚合 <span class="count">${rr.length} 个远端 · 本地聚合, 无反向 DNS</span></h2>
+    <div class="wrap"><table><thead><tr><th>远端 IP</th><th class="num">连接数</th><th>进程</th><th>远端端口</th></tr></thead>
+    <tbody>${body}</tbody></table></div></div>`;
+}
+
+let DATA=null, HEALTH={}, reqId=0;
+async function load(){
+  const my=++reqId;
+  try{
+    const r=await fetch('/api/processes'); const d=await r.json();
+    if(my!==reqId) return;
+    if(d.error){ $('#app').innerHTML='<div class="card warn">进程监控不可用: '+esc(d.error)+
+      '<br><span class="muted">该页需要 psutil。安装后刷新即可: <code>pip install psutil</code> (Token 看板不受影响)。</span></div>'; $('#foot').textContent=''; return; }
+    DATA=d; render();
+  }catch(e){ if(my===reqId) $('#foot').textContent='请求失败: '+e; }
+}
+
+function render(){
+  if(!DATA) return;
+  const d=DATA, q=$('#filter').value.trim().toLowerCase(), loonly=$('#loonly').checked, sortKey=$('#sort').value;
+  const h=d.host;
+  const kpis=[['CPU', (h.cpu_percent||0)+'%'],['内存', (h.mem_percent||0)+'%  ·  '+fmtBytes(h.mem_used)+'/'+fmtBytes(h.mem_total)],
+    ['进程数', h.proc_count],['监听端口', d.listening.length],['活动连接', d.conn_total]];
+  const kpiHtml=kpis.map(k=>`<div class="kpi"><div class="k">${k[0]}</div><div class="v">${esc(k[1])}</div></div>`).join('');
+
+  // cloudflared
+  let cf='';
+  if(d.cloudflared.length){
+    cf=`<h2 class="sec">🛰️ cloudflared 隧道进程 <span class="count">本机运行中</span></h2><div class="cf-grid">`+
+      d.cloudflared.map(c=>`<div class="cf">
+        <div class="nm">${esc(c.name)} <span class="muted">pid ${c.pid}</span></div>
+        <div class="row"><span class="muted">CPU / 内存</span><span>${c.cpu}% · ${fmtBytes(c.rss)}</span></div>
+        <div class="row"><span class="muted">运行时长</span><span>${fmtUp(c.uptime)}</span></div>
+        <div class="row"><span class="muted">本机监听口</span><span>${c.listen_ports.length?esc(c.listen_ports.join(', ')):'—'}</span></div>
+        <div class="row muted" style="font-size:11px;margin-top:8px">隧道走 QUIC, 边缘链路在 socket 层不可见 (只显示本机可见信息)</div>
+      </div>`).join('')+`</div>`;
+  } else {
+    cf=`<h2 class="sec">🛰️ cloudflared</h2><div class="card muted">未发现本机运行的 cloudflared 进程。</div>`;
+  }
+
+  // listening
+  let lis=d.listening.filter(l=>(!loonly||l.loopback) && (matches(l.port,q)||matches(l.name,q)||matches(l.cmd,q)||matches(l.addr,q)));
+  const lisRows=lis.map(l=>`<tr>
+      <td class="num">${l.port}</td>
+      <td>${esc(l.addr)} ${l.loopback?'<span class="badge lo">loopback</span>':'<span class="badge any">all-if</span>'}</td>
+      <td>${healthBadge((HEALTH[l.port] && (HEALTH[l.port].pid==null || HEALTH[l.port].pid===l.pid)) ? HEALTH[l.port] : null)}</td>
+      <td>${esc(l.name)} <span class="muted">${l.pid==null?'':'· '+l.pid}</span> ${(l.category&&l.category!=='other')?'<span class="badge lo">'+esc(l.category)+'</span>':''}</td>
+      <td class="cmd" title="${esc(l.cmd)}">${esc(l.cmd)}</td>
+      <td class="act">${(CTRL_MODE&&l.terminable)?`<button class="kill" data-port="${l.port}" onclick="freePort(this)" title="终止占用此端口的进程">释放</button>`:(l.pid&&!l.terminable?'<span class="muted" title="仅 VS Code/Cloudflare/Railway 可终止">🔒</span>':'')}</td></tr>`).join('');
+  const lisCard=`<div><h2 class="sec">监听端口 → 占用进程 <span class="count">${lis.length}/${d.listening.length}</span></h2>
+    <div class="wrap"><table><thead><tr><th class="num">端口</th><th>地址</th><th>健康</th><th>进程</th><th>命令行 (已脱敏)</th><th class="act"></th></tr></thead>
+    <tbody>${lisRows||'<tr><td colspan=6 class="muted">无匹配</td></tr>'}</tbody></table></div></div>`;
+
+  // 分类进程: VS Code / Cloudflare / Railway 详列(可终止), 其余汇总为"其他"(只读)
+  function catCard(key,label,icon){
+    const c=(d.categories&&d.categories[key])||{procs:[],count:0,rss:0,listen_ports:[]};
+    const procs=(c.procs||[]).filter(p=>matches(p.name,q)||matches(p.pid,q)||matches(p.cmd,q))
+          .sort((a,b)=>(b[sortKey]||0)-(a[sortKey]||0));
+    const rows=procs.map(p=>`<tr id="pr${p.pid}">
+        <td title="${esc(p.cmd)}">${esc(p.name)}${p.name==='claude.exe'?' <span class="badge lo">会话</span>':''}</td>
+        <td class="num">${p.pid}</td><td class="num">${p.cpu||0}%</td><td class="num">${fmtBytes(p.rss)}</td>
+        <td class="num">${(p.listen_ports&&p.listen_ports.length)?esc(p.listen_ports.join(',')):'—'}</td>
+        <td class="act">${CTRL_MODE?`<button class="kill" data-pid="${p.pid}" data-ct="${p.create_time}" data-name="${esc(p.name)}" onclick="killProc(this)">终止</button>`:''}</td></tr>`).join('');
+    return `<div class="catcard"><h3>${icon} ${esc(label)} <span class="count">${c.count} 进程 · ${fmtBytes(c.rss)}${(c.listen_ports&&c.listen_ports.length)?' · 端口 '+esc(c.listen_ports.slice(0,12).join(',')):''}</span></h3>
+      ${c.count?`<div class="wrap"><table><thead><tr><th>进程</th><th class="num">PID</th><th class="num">CPU</th><th class="num">内存</th><th class="num">监听</th><th class="act"></th></tr></thead><tbody>${rows||'<tr><td colspan=6 class="muted">无匹配</td></tr>'}</tbody></table></div>`:'<div class="muted">未运行</div>'}</div>`;
+  }
+  const other=(d.categories&&d.categories.other)||{count:0,rss:0};
+  const otherRow=`<div class="catcard other"><h3>▦ 其他 <span class="count">${other.count} 个进程 · 总内存 ${fmtBytes(other.rss)} · 只读, 不可终止</span></h3></div>`;
+  const modeBtn=CTRL_MODE
+    ? `<button class="modebtn on" onclick="toggleMode()" title="这也是 M4 的远程审批模式: 同时会把 Claude Code 的 permission 请求路由到网页(每条最多阻塞 25s 再回退本地)。用完记得关。">● 控制模式开 · 点击关闭</button>`
+    : `<button class="modebtn" onclick="toggleMode()" title="开启后才出现终止按钮 (需本机控制令牌; 服务端 kill 时仍二次校验类别+身份)。注意: 这也是远程审批模式, 开着会把 permission 请求路由到网页并阻塞至多 25s。">○ 只读 · 开控制模式启用终止</button>`;
+  const catsCard=`<div><h2 class="sec">分类进程 <span class="count">只这三类可终止 · 其余汇总为"其他" · 终止 = 先 terminate 不掉再强制</span> &nbsp;${modeBtn}</h2>
+    <div class="catgrid">${catCard('vscode','VS Code','🟦')}${catCard('cloudflare','Cloudflare','🟧')}${catCard('railway','Railway','🚝')}${otherRow}</div></div>`;
+
+  // connections
+  let cn=d.connections.filter(c=>matches(c.name,q)||matches(c.raddr,q)||matches(c.laddr,q)||matches(c.status,q));
+  const cnRows=cn.map(c=>`<tr>
+      <td>${esc(c.proto||'')}</td><td>${esc(c.laddr)}</td><td>${esc(c.raddr)}</td>
+      <td>${esc(c.status)}</td><td>${esc(c.name)} <span class="muted">${c.pid==null?'':'· '+c.pid}</span></td></tr>`).join('');
+  const cnCard=`<div><h2 class="sec">活动网络连接 <span class="count">显示 ${cn.length}/${d.connections.length}${d.conn_total>d.connections.length?` (共 ${d.conn_total}, 已截断)`:''} <span class="muted">· 仅 ESTABLISHED/UDP</span></span></h2>
+
+    <div class="wrap"><table><thead><tr><th>协议</th><th>本地</th><th>远端</th><th>状态</th><th>进程</th></tr></thead>
+    <tbody>${cnRows||'<tr><td colspan=5 class="muted">无匹配</td></tr>'}</tbody></table></div></div>`;
+
+  $('#app').innerHTML=`<div class="kpis">${kpiHtml}</div>${catsCard}${cf}${lisCard}${remoteCard(d.by_remote,q)}${cnCard}`;
+  const ts=new Date(d.generated_at_epoch*1000).toLocaleTimeString();
+  $('#foot').innerHTML=`采样于 ${ts} · ${h.proc_count} 进程 / ${d.listening.length} 监听口 / ${d.conn_total} 活动连接 · 观测只读不外发, 命令行已脱敏 · 终止仅限三类, 服务端二次校验类别+身份`;
+}
+
+async function probeHealth(){
+  const btn=$('#probe'), old=btn.textContent;
+  btn.disabled=true; btn.textContent='探测中…';
+  try{
+    const r=await fetch('/api/health'); const d=await r.json();
+    if(d.error){ $('#foot').textContent='探测失败: '+d.error; return; }
+    HEALTH={}; (d.results||[]).forEach(x=>HEALTH[x.port]=x);
+    render();
+    const res=d.results||[], n=res.length;
+    const http=res.filter(x=>x.state==='http').length, open=res.filter(x=>x.state==='open').length, down=res.filter(x=>x.state==='down').length;
+    $('#foot').innerHTML=`已探测 ${n} 个本机端口: ${http} 个 HTTP 响应 · ${open} 个开放(非HTTP) · ${down} 个无响应 · 主动探活, 只碰本机不外发 · `+$('#foot').innerHTML;
+  }catch(e){ $('#foot').textContent='探测失败: '+e; }
+  finally{ btn.disabled=false; btn.textContent=old; }
+}
+
+// --- 控制面 (P7): 终止进程/释放端口。默认只读; 开控制模式 + 令牌 + 服务端二次校验 + 审计 ---
+// 令牌不再经 HTTP 下发 (评审: 防本机他进程/网页窃取): 首次操作时粘贴一次(见服务器控制台/~/.tokmon/control_token), 存浏览器。
+let CTRL_TOKEN=localStorage.getItem('mc_ctl_token')||'', CTRL_MODE=false;
+function ctrlHeaders(){ return {'Content-Type':'application/json','X-Control-Token':CTRL_TOKEN}; }
+function ensureToken(){
+  if(!CTRL_TOKEN){ const t=prompt('粘贴控制令牌以启用控制操作\n(见服务器控制台启动输出, 或 ~/.tokmon/control_token):'); if(t&&t.trim()){ CTRL_TOKEN=t.trim(); localStorage.setItem('mc_ctl_token',CTRL_TOKEN); } }
+  return !!CTRL_TOKEN;
+}
+async function ctlPost(path, body){
+  if(!ensureToken()) return null;
+  const res=await fetch(path,{method:'POST',headers:ctrlHeaders(),body:JSON.stringify(body)});
+  if(res.status===403){ localStorage.removeItem('mc_ctl_token'); CTRL_TOKEN=''; alert('控制令牌无效, 请重新粘贴'); return null; }
+  return res.json();
+}
+async function loadCtrl(){
+  try{ const c=await (await fetch('/api/control')).json(); CTRL_MODE=!!c.remote_mode; }catch(e){}
+}
+async function toggleMode(){
+  const r=await ctlPost('/api/control/mode',{on:!CTRL_MODE});
+  if(r) CTRL_MODE=!!r.remote_mode;
+  render();
+}
+async function killProc(btn){
+  const pid=+btn.dataset.pid, ct=+btn.dataset.ct, name=btn.dataset.name, action=btn.dataset.action||'terminate';
+  let msg=(action==='kill'?'强制结束':'终止')+' '+name+' (pid '+pid+')?\n\nWindows 上 terminate 即强制结束 (无优雅 SIGTERM)。';
+  if(name==='claude.exe') msg+='\n⚠ 这是一个 Claude Code 会话进程, 终止会中断该会话。';
+  if(!confirm(msg)) return;
+  const cell=document.querySelector('#pr'+pid+' .act'); if(cell) cell.innerHTML='<span class="muted">处理中…</span>';
+  try{
+    const r=await ctlPost('/api/control/terminate',{pid,create_time:ct,action});
+    if(r) showKill(pid,ct,name,r); else if(cell) cell.innerHTML='';
+  }catch(e){ if(cell) cell.innerHTML='<span class="hb bad">请求失败</span>'; }
+}
+function showKill(pid,ct,name,r){
+  const cell=document.querySelector('#pr'+pid+' .act'); if(!cell) return;
+  if(!r.ok){ const m={'control-mode-off':'控制模式未开','not-terminable':'不可终止'+(r.category?'('+r.category+')':''),'pid-reused':'进程已变·请刷新','gone':'已不存在','bad-pid':'PID 无效','no-psutil':'缺 psutil','identity-required':'请刷新','refuse-self':'不能终止监控自身'}[r.reason]||r.reason;
+    cell.innerHTML='<span class="hb bad" title="'+esc(m)+'">'+esc(m)+'</span>'; return; }
+  const o=r.outcome;
+  if(o==='terminated'||o==='killed'||o==='gone'){ cell.innerHTML='<span class="hb ok">已结束</span>'; setTimeout(load,900); }
+  else if(o==='still-alive'){ cell.innerHTML='<button class="kill force" data-pid="'+pid+'" data-ct="'+ct+'" data-name="'+esc(name)+'" data-action="kill" onclick="killProc(this)" title="terminate 没生效, 强制结束">强制结束</button>'; }
+  else if(o==='access-denied'){ cell.innerHTML='<span class="hb bad" title="需管理员权限或受保护进程">需管理员</span>'; }
+  else { cell.innerHTML='<span class="hb warn">'+esc(o)+'</span>'; }
+}
+async function freePort(btn){
+  const port=+btn.dataset.port;
+  if(!confirm('释放端口 '+port+'? 将终止占用它的进程 (Windows 上为强制结束)。')) return;
+  btn.disabled=true; const old=btn.textContent; btn.textContent='…';
+  try{ const r=await ctlPost('/api/control/free-port',{port});
+    if(!r){ btn.disabled=false; btn.textContent=old; return; }
+    if(!r.ok){ btn.disabled=false; btn.textContent=old; alert('未能释放: '+(r.reason||'?')); return; }
+    setTimeout(load,900);
+  }catch(e){ btn.disabled=false; btn.textContent=old; }
+}
+
+let timer=null;
+function setAuto(){ if(timer){clearInterval(timer);timer=null;} if($('#auto').checked) timer=setInterval(load,5000); }
+['filter','sort','loonly'].forEach(id=>$('#'+id).addEventListener('input', render));
+$('#sort').addEventListener('change', render);
+$('#loonly').addEventListener('change', render);
+$('#auto').addEventListener('change', setAuto);
+$('#probe').addEventListener('click', probeHealth);
+$('#refresh').addEventListener('click', load);
+loadCtrl().then(load);
+</script>
+</body></html>

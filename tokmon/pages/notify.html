@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>通知 / 规则 · Mission Control</title>
+<style>__BASE__
+  main { padding:18px 24px; display:flex; flex-direction:column; gap:14px; max-width:1100px; }
+  .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 12px; font-size:13px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  .pills { display:flex; gap:10px; flex-wrap:wrap; }
+  .pill { background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:5px 12px; font-size:13px; }
+  .pill b { font-weight:600; } .pill.on b { color:var(--good); } .pill.off b { color:var(--dim); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .setup { font-size:13px; line-height:1.7; } .setup code { background:#11141a; padding:1px 6px; border-radius:5px; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th,td { text-align:left; padding:5px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--dim); font-weight:500; }
+  td.sum { white-space:normal; color:var(--dim); }
+  .wrap { max-height:420px; overflow:auto; border:1px solid var(--line); border-radius:10px; }
+  .tag { font-size:11px; padding:1px 7px; border-radius:6px; border:1px solid var(--line); }
+  .tag.push { color:var(--good); border-color:#2c3a23; } .tag.supp { color:var(--dim); }
+  .sev.warning { color:var(--warn); } .sev.critical { color:var(--bad); } .sev.info { color:var(--dim); }
+  footer { padding:14px 24px; color:var(--dim); font-size:12px; border-top:1px solid var(--line); }
+</style></head>
+<body>
+<header>
+  <h1>通知 / 规则 <span>Mission Control · M3 · 出站推送 (有用且不烦)</span></h1>
+  <div class="nav">
+    __NAV__
+  </div>
+</header>
+<main>
+  <div class="controls">
+    <button id="test">发送测试通知</button>
+    <label class="nav" style="margin:0"><input type="checkbox" id="auto" checked> 自动刷新 5s</label>
+    <button id="refresh">刷新</button>
+    <span id="testresult" class="muted"></span>
+  </div>
+  <div class="pills" id="status"></div>
+  <div id="setup"></div>
+  <div>
+    <h2 style="font-size:14px;margin:4px 0 6px">通知 feed <span class="muted" style="font-weight:400;font-size:12px">推送与被抑制的都记下来, 方便你调"不烦"的参数</span></h2>
+    <div class="wrap"><table id="feed"><thead><tr><th>时间</th><th>严重度</th><th>事件</th><th>项目</th><th>结果</th><th>详情</th></tr></thead><tbody id="feedbody"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody></table></div>
+  </div>
+</main>
+<footer id="foot"></footer>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function fmtClock(ts){ try { return new Date(ts*1000).toLocaleTimeString(); } catch(e){ return '—'; } }
+const REASON = {'below-threshold':'低于阈值','quiet-hours':'静默时段','debounce':'去抖(刚推过同类)','rate-limit':'限流','type-disabled':'该类型已关','push':'推送'};
+let reqId=0;
+async function load(){
+  const my=++reqId;
+  try{
+    const r=await fetch('/api/notifications'); const d=await r.json();
+    if(my!==reqId) return;
+    if(d.error){ $('#status').innerHTML='<span class="pill off">通知层未启动</span>'; return; }
+    const tg=d.telegram_configured, po=d.pushover_configured, on=tg||po;
+    const qh=d.quiet_hours?('每天 '+d.quiet_hours[0]+':00–'+d.quiet_hours[1]+':00 只放行 critical'):'未设';
+    $('#status').innerHTML=[
+      ['出站', d.egress, on?'on':'off'],
+      ['Telegram', tg?'已配置':'未配置', tg?'on':'off'],
+      ['Pushover', po?'已配置':'未配置', po?'on':'off'],
+      ['推送阈值', d.push_min_severity, ''],
+      ['静默时段', qh, ''],
+      ['去抖', d.debounce_s+'s/同类', ''],
+      ['限流', d.rate_max+' 条/'+Math.round(d.rate_window_s/60)+'min', ''],
+      ['已推送', d.sent, 'on'], ['已抑制', d.suppressed, ''], ['错误', d.errors, d.errors?'off':''],
+    ].map(x=>`<span class="pill ${x[2]}">${x[0]} <b>${esc(x[1])}</b></span>`).join('');
+    $('#setup').innerHTML = on ? '' :
+      `<div class="card setup">📵 <b>当前默认仅本地, 不外发任何字节。</b>
+       两个通道任选其一即可让手机真的震 (也可两个都配, 互为冗余):<br><br>
+       <b>A · Pushover (最快, 只出)</b><br>
+       1) pushover.net 注册 → 首页拿 <code>User Key</code>; 2) Create an Application → 拿 <code>API Token</code>;<br>
+       3) 设 <code>MC_PUSHOVER_USER</code> 和 <code>MC_PUSHOVER_TOKEN</code> 后重启本服务 → 点上方「发送测试通知」。<br>
+       <span class="muted">critical 会以 high priority 发 (突破手机端免打扰); 永不用 emergency 优先级 —— 不做尖叫的闹钟。</span><br><br>
+       <b>B · Telegram (未来双向的基础)</b><br>
+       1) 找 <code>@BotFather</code> 建 bot 拿 token; 2) 给 bot 发一句话, 用
+       <code>https://api.telegram.org/bot&lt;token&gt;/getUpdates</code> 拿 chat id;<br>
+       3) 设 <code>MC_TELEGRAM_TOKEN</code> / <code>MC_TELEGRAM_CHAT_ID</code> (或写进 <code>~/.tokmon/notify.json</code>) 后重启。<br>
+       <span class="muted">两者都是纯出站, 不开任何入站端口、不暴露看板。内容已最小化: 无命令行/路径/密钥。</span></div>`;
+    const rows=(d.feed||[]).slice().reverse().map(f=>{
+      const res = f.decision==='push'
+        ? `<span class="tag push">推送</span> <span class="muted">${esc(f.delivery||'…')}</span>`
+        : `<span class="tag supp">抑制</span> <span class="muted">${esc(REASON[f.reason]||f.reason)}</span>`;
+      return `<tr><td>${fmtClock(f.ts)}</td><td class="sev ${esc(f.severity)}">${esc(f.severity)}</td>
+        <td>${esc(f.type)}</td><td>${esc(f.project||f.session||'')}</td><td>${res}</td><td class="sum">${esc(f.summary)}</td></tr>`;
+    }).join('');
+    $('#feedbody').innerHTML = rows || '<tr><td colspan="6" class="muted">暂无通知候选事件 (warning 及以上才进这里)</td></tr>';
+    $('#foot').innerHTML = '通知层是事件总线的消费者; 严重度/静默/去抖/限流都在这一层 · 默认不外发, 配 token 才出站 · 内容已最小化(无命令行/路径/密钥)';
+  }catch(e){ if(my===reqId) $('#foot').textContent='请求失败: '+e; }
+}
+async function sendTest(){
+  const b=$('#test'); b.disabled=true; $('#testresult').textContent='发送中…';
+  try{ const r=await fetch('/api/notify-test'); const d=await r.json();
+    $('#testresult').innerHTML='<span class="'+(d.ok?'':'warn')+'">'+esc(d.detail||'')+'</span>'; }
+  catch(e){ $('#testresult').textContent='失败: '+e; }
+  finally{ b.disabled=false; load(); }
+}
+let timer=null;
+function setAuto(){ if(timer){clearInterval(timer);timer=null;} if($('#auto').checked) timer=setInterval(load,5000); }
+$('#auto').addEventListener('change', setAuto);
+$('#refresh').addEventListener('click', load);
+$('#test').addEventListener('click', sendTest);
+setAuto(); load();
+</script>
+</body></html>

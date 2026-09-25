@@ -15,7 +15,7 @@
 
 | | |
 |---|---|
-| 代码 / 测试 | 约 15k 行 · **469 个测试全过**（`python -m pytest -q`；含 Node 跑的页面冒烟测试） |
+| 代码 / 测试 | 约 15k 行 · **482 个测试全过**（`python -m pytest -q`；含 Node 跑的页面冒烟测试） |
 | 会话状态 | 0.15.1 起以 Claude Code **进程自报**为准（`~/.claude/sessions` 注册表，只读）：运行中 / 等你 / **等你授权或回答** / 已关闭不再靠猜；拿不到自报时才退回 transcript 推断 |
 | 工作流回放 | `/workflow`：近 7 天 98 个任务可回放，token 与 /tokens **逐 token 对账 98/98**；S2 学习层：流程条、数据依赖、名词说明、脚本对照（43/43 次 workflow 的阶段都对上了脚本）；S3 统计：工具 / skill 排行、MCP 健康、跨任务对照，**每个数字点开都是同样条数的明细**（真实数据 323/323） |
 | 状态推断可信度 | 回测 **97.0% 准确率 / 1343 个评估点**（`python -m tokmon backtest`） |
@@ -117,7 +117,7 @@ python -m tokmon serve
 | [docs/atlas.html](docs/atlas.html) | 系统图谱（离线 Mermaid） | 📜 停在 07-01，不含 billing/steer |
 | [WORKFLOW_TAB_PLAN.md](WORKFLOW_TAB_PLAN.md) | **`/workflow` 工作流追踪器一页规格** | ✅ S1–S3 全部验收（0.10.0 → 0.12.0） |
 | [CHANGE_RISK_PLAN.md](CHANGE_RISK_PLAN.md) | **改动与风险一页规格**（当前优先级：它改了什么 / 有没有乱改 / 在变好吗） | ✅ S1–S3 全部验收（0.13.0 → 0.15.0） |
-| [SESSIONS_COCKPIT_PLAN.md](SESSIONS_COCKPIT_PLAN.md) | **会话驾驶舱一页规格**（当前优先级：`/sessions` 一行看全四件事 + 等你时叫你） | 🟡 已批，S0 进行中 |
+| [SESSIONS_COCKPIT_PLAN.md](SESSIONS_COCKPIT_PLAN.md) | **会话驾驶舱一页规格**（当前优先级：`/sessions` 一行看全四件事 + 等你时叫你） | 🟡 已批 · S0 ✅ · S1 进行中 |
 | [RUNNER_SDK_PLAN.md](RUNNER_SDK_PLAN.md) | steer 改用 Agent SDK | ✅ 已实施 |
 | [SESSIONS_FILTER_PLAN.md](SESSIONS_FILTER_PLAN.md) | `/sessions` 过滤器 V1 | ✅ 已实施 |
 | [REMOTE_CONTROL_PLAN.md](REMOTE_CONTROL_PLAN.md) | 远程 steer + 上手机 | 🟡 S1/S0 已实施，S2/S3 未做 |
@@ -150,15 +150,16 @@ tokmon/
   activity                     对话活动支柱 (classify_state 纯函数)
   procmon                      进程支柱 (只读 + 脱敏)
   events                       事件总线 (支柱无关, payload allow-list)
-  event_sources/               activity_source (5s) · cost_source (60s)
+  event_sources/               activity_source (5s) · cost_source (60s) · risk_source (15s, 只发 info)
   notify                       通知层 (总线消费者; Telegram + Pushover, 默认全关)
   control                      控制层 (permission 审批, 全程失败安全)
   runner                       steer (Agent SDK + canUseTool, 唯一重依赖)
   billing                      厂商账单 (第 4 数据源, 绝不 import 成本内核)
   remote                       MC_REMOTE 读页收口 (读门 / 控制门故意分离)
   trace                        工作流追踪支柱 (/workflow 数据层: 任务切分 / 调用树 / 耗时三段 / token 对账 / 统计与追溯索引)
-  pages/workflow.html          /workflow 页面 (独立文件, 不再内联进 serve.py)
+  tokens_view                  /tokens 数据立方 (展示层, 内核零改动)
+  pages/*.html                 全部页面 (独立文件; serve.py 只留路由与数据, 测试守着不许再内联)
   inference_doctor / inference_backtest   推断层的体检与回测
-  serve                        驾驶舱外壳
-tests/                         469 例: pytest -q (tests/js/workflow_smoke.js: 页面 JS 的 Node 冒烟脚手架)
+  serve                        驾驶舱外壳 (路由 + 数据接口 + 公共皮肤 / 导航)
+tests/                         482 例: pytest -q (tests/js/workflow_smoke.js: 页面 JS 的 Node 冒烟脚手架)
 ```
