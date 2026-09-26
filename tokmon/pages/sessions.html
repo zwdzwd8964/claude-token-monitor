@@ -40,7 +40,12 @@
           font-variant-numeric:tabular-nums; }
   .pill.fact { cursor:help; } .pill.fact b { font-variant-numeric:tabular-nums; }
   a.pill.fact { color:var(--fg); text-decoration:none; } a.pill.fact:hover { border-color:var(--accent); }
-  .pill.rk b { color:var(--warn); } .csep { width:1px; background:var(--line); margin:2px 4px; }
+  .pill.rk b { color:var(--warn); }
+  .ctx { font-size:11.5px; border:1px solid var(--line); border-radius:6px; padding:0 6px; color:var(--dim); white-space:nowrap;
+         cursor:help; font-variant-numeric:tabular-nums; }
+  .ctx.big { color:var(--fg); } .ctx.huge { color:var(--warn); border-color:#4a3d22; }
+  .cache { font-size:11.5px; color:var(--dim); white-space:nowrap; cursor:help; }
+  .cache.soon { color:var(--warn); } .cache.gone { color:var(--warn); border:1px solid #4a3d22; border-radius:6px; padding:0 6px; } .csep { width:1px; background:var(--line); margin:2px 4px; }
   .sb { font-size:12px; padding:2px 9px; border-radius:7px; border:1px solid var(--line); white-space:nowrap; }
   .sb.live { color:var(--good); border-color:#2c3a23; background:#151d12; }
   .sb.wait { color:var(--dim); }
@@ -211,10 +216,13 @@ function render(){
   const wfs=d.sessions.map(s=>s.workflow).filter(Boolean);
   const burnAll=wfs.reduce((a,w)=>a+(w.burn||0),0), riskN=wfs.filter(w=>w.risks.length).length;
   const st=d.spend_today;
+  const bigCtx=d.big_ctx||300000, line=d.context_line||150000;
+  const bigN=d.sessions.filter(s=>s.context && s.state!=='CLOSED' && s.context.ctx>=bigCtx).length;
   const facts=`<span class="csep"></span>`
     +(st?`<a class="pill fact" href="/tokens?since=today" title="${esc('今天（本地 00:00 起）全部会话的等价成本（估算，不是账单）\n'+fmtTok(st.tokens)+' tok'+(st.unpriced?'\n含未知单价的模型，金额偏低':'')+'\n与 Token 看板「今天 · 全部」同一口径；点开去看明细')}">今天已烧 <b>≈${fmtUsd(st.cost)}${st.unpriced?'*':''}</b></a>`:'')
     +`<span class="pill fact" title="${esc('近 '+win+' 分钟里所有会话新增的 token（按 API 响应时刻算，真值）')}">近 ${win} 分钟 <b>+${fmtTok(burnAll)}</b> tok</span>`
-    +`<span class="pill fact rk" title="${esc('当前任务命中了至少一条风险规则的会话数（规则判断，推断；只标不拦）。只算 24 小时内有动静的会话')}">有风险 <b>${riskN}</b></span>`;
+    +`<span class="pill fact rk" title="${esc('当前任务命中了至少一条风险规则的会话数（规则判断，推断；只标不拦）。只算 24 小时内有动静的会话')}">有风险 <b>${riskN}</b></span>`
+    +`<span class="pill fact rk" title="${esc('最近一轮上下文超过 '+fmtTok(bigCtx)+' token 的会话（不含已关闭；24 小时内有动静的）。上下文越大，每轮都要把它再读一遍，越贵')}">大上下文 <b>${bigN}</b></span>`;
   const counts=`<div class="counts">
     ${spill('活跃', c.working, 'live', 'live')}
     ${c.background?`<span class="pill live">后台在跑 <b>${c.background}</b></span>`:''}
@@ -264,16 +272,31 @@ function render(){
     const riskBadge = (wf && wf.risks.length) ? `<a class="rkb" href="${wfHref}" title="${esc('风险（规则判断，推断；只标不拦）\n'+wf.risks.map(r=>'· '+r.label).join('\n')+'\n点击看当前任务的回放')}">⚠ ${esc(wf.risks[0].label)}${wf.risks.length>1?' 等 '+wf.risks.length+' 条':''}</a>` : '';
     const wfLink = wf ? `<a class="wfl" href="${wfHref}" title="${live?'打开当前任务的实时回放（每 5 秒自动刷新）':'打开这个会话最后一个任务的回放'}">${live?'实时回放 →':'回放 →'}</a>` : '';
     // 烧钱: 当前任务的等价 $ (行尾, 各行一列对齐着扫) + 近 10 分钟新烧 (有才出)
-    const money = (wf && wf.tokens!=null) ? `<span class="money" title="${esc('当前任务的等价成本（估算，不是账单）：API usage 真值 × 公开单价'
+    const money = (wf && wf.tokens) ? `<span class="money" title="${esc('当前任务的等价成本（估算，不是账单）：API usage 真值 × 公开单价'
         +'\n'+(wf.partial?'≥ ':'')+fmtTok(wf.tokens)+' tok'+(wf.partial?'（有 agent / workflow 的文件缺失，是下限）':'')
         +(wf.unpriced?'\n含未知单价的模型，金额偏低':'')+'\n与回放页头是同一个数')}">≈${fmtUsd(wf.cost)}${wf.unpriced?'*':''}</span>` : '';
     const burn = (wf && wf.burn>0) ? `<span class="burn" title="${esc('近 '+win+' 分钟新增 '+wf.burn.toLocaleString()+' tok（按 API 响应时刻算，真值）')}">+${fmtTok(wf.burn)}/${win}分</span>` : '';
+    // 省钱 S1: 上下文多大 (主线程最后一轮, 真值) + 等你的会话缓存还剩多久 / 过期了下一轮重建多少钱
+    const cx = s.context;
+    const ctxChip = cx ? `<span class="ctx ${cx.ctx>=bigCtx?'huge':(cx.ctx>=line?'big':'')}" title="${esc('上下文 = 最近一轮送进模型的全部 token（新输入 + 缓存读 + 缓存写，真值）：'+cx.ctx.toLocaleString()
+        +'\n每轮 ≈'+fmtUsd(cx.per_turn)+'（最近 5 轮中位）'
+        +(cx.tax_per_turn>0?'\n其中超过 '+fmtTok(line)+' 的那部分每轮 ≈'+fmtUsd(cx.tax_per_turn)+'（每轮都要再读一遍）':'')
+        +(cx.known?'':'\n模型单价未知，金额不可信'))}">上下文 ${fmtTok(cx.ctx)}</span>` : '';
+    let cacheChip = '';
+    if (cx && cx.ttl && cx.ctx>=50000 && (s.state==='AWAITING_USER'||s.state==='BLOCKED_ON_USER')) {
+      const left = cx.ttl - (Date.now()/1000 - cx.t), ttlTxt = cx.ttl>=3600 ? '1 小时' : Math.round(cx.ttl/60)+' 分钟';
+      const why = 'Claude Code 的提示缓存 '+ttlTxt+'有效（推断：看这个会话最近一次写的是哪种；近 14 天回测精确率 96.7%）。'
+        +'\n空了超过这个时间再回来，下一轮要把整段上下文重写一遍 ≈'+fmtUsd(cx.rebuild)+'（命中缓存只要 ≈'+fmtUsd(cx.hit)+'）。';
+      cacheChip = left>0
+        ? `<span class="cache${left<600?' soon':''}" title="${esc(why+'\n要走很久的话，趁缓存还在先 /compact 比回来再重建便宜。')}">缓存还剩 ${Math.max(1,Math.round(left/60))} 分</span>`
+        : `<span class="cache gone" title="${esc(why+'\n已经空了 '+fmtDur(Date.now()/1000-cx.t)+'：过期之后连 /compact 也要把整段重读一遍。')}">缓存已过期 · 下一轮重建 ≈${fmtUsd(cx.rebuild)}</span>`;
+    }
     const titleText = s.title || s.project;                 // 标题为主, 无标题回退项目名
     const metaBits = [];
     if(s.title) metaBits.push(esc(s.project)+(s.subpath?' /'+esc(s.subpath):''));   // 有标题时项目名降为辅
     if(s.git_branch) metaBits.push(esc(s.git_branch));
     if(s.model) metaBits.push(esc(s.model));
-    if(wf && wf.tokens!=null) metaBits.push(`本任务 ${wf.partial?'≥ ':''}${fmtTok(wf.tokens)} tok`+(wf.active!=null?` · 活跃 ${esc(fmtDur(wf.active)||'0s')}`:'')
+    if(wf && wf.tokens) metaBits.push(`本任务 ${wf.partial?'≥ ':''}${fmtTok(wf.tokens)} tok`+(wf.active!=null?` · 活跃 ${esc(fmtDur(wf.active)||'0s')}`:'')
         +(wf.files?` · ✎ ${wf.files} 个文件`:(wf.changes?` · ✎ ${wf.changes} 次改动`:'')));
     // 当前步骤: 工具动作 + 叙述 (思考原文不可得, 用可见叙述替代)
     let step='';
@@ -286,7 +309,7 @@ function render(){
         <span class="title" title="${esc(s.title||'')}">${esc(titleText)}</span>
         <span class="sb ${cls}${blk}" title="${esc(s.state_label+' · '+src)}">${esc(s.state_label)}</span>
         ${idleBadge}${riskBadge}${wfLink}
-        ${money}${burn}<span class="age"${money?'':' style="margin-left:auto"'}>${fmtAgo(s.last_activity_age_s)}</span>
+        ${cacheChip}${ctxChip&&!money?`<span style="margin-left:auto"></span>`:''}${money}${ctxChip}${burn}<span class="age"${money||ctxChip?'':' style="margin-left:auto"'}>${fmtAgo(s.last_activity_age_s)}</span>
       </div>
       ${metaBits.length?`<div class="meta2">${metaBits.join(' · ')}</div>`:''}
       ${step?`<div class="step">${step}</div>`:''}

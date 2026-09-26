@@ -289,7 +289,10 @@ def test_sessions_api_joins_briefs_without_mutating_shared_snapshot(brief_env, m
               "counts": {"AWAITING_USER": 1}}
     monkeypatch.setattr(activity, "snapshot", lambda base=None, live=None: shared)
     monkeypatch.setattr(procmon, "live_claude_index", lambda: {})
-    monkeypatch.setattr(serve, "_spend_today", lambda base: {"tokens": 7, "cost": 0.5, "unpriced": False})
+    cx = {"ctx": 420_000, "t": 1.0, "model": "claude-opus-5", "known": True, "ttl": 3600, "per_turn": 0.4,
+          "tax_per_turn": 0.1, "rebuild": 4.2, "hit": 0.21}
+    monkeypatch.setattr(serve, "_records_view", lambda base: {"today": {"tokens": 7, "cost": 0.5, "unpriced": False},
+                                                             "ctx": {SID: cx, "x": cx}})
     assert not trace.baseline_ready()
     out = serve._sessions_with_briefs(None)
     assert "workflow" not in out["sessions"][0] and out["briefs_pending"] == 1   # 请求不当场解析: 交给后台线程
@@ -305,6 +308,8 @@ def test_sessions_api_joins_briefs_without_mutating_shared_snapshot(brief_env, m
     assert wf["active"] == full["time"]["active"] and wf["burn"] == 0    # 夹具是很久以前的数据: 近 10 分钟没烧
     assert "usage_ts" not in wf and "by_model" not in wf                 # 原始序列不下发
     assert out["spend_today"] == {"tokens": 7, "cost": 0.5, "unpriced": False} and out["burn_window_s"] == 600
+    assert out["sessions"][0]["context"] == cx and "context" not in out["sessions"][1]   # 老会话不挂上下文体检
+    assert out["context_line"] == 150_000 and out["big_ctx"] == 300_000
     assert "workflow" not in out["sessions"][1]                           # 一天没动静的老会话不算
     assert all("workflow" not in r for r in shared["sessions"]) and out is not shared   # 共享缓存原样不动
     assert out["counts"] == shared["counts"]
@@ -349,7 +354,7 @@ def test_spend_today_same_basis_as_tokens_page(tmp_path, monkeypatch):
     msg = asst(0, "m1", "r1", {"type": "text", "text": "hi"}, usage(inp=100, out=50, cread=2000, c1h=10))
     msg["timestamp"] = now_iso
     write_jsonl(proj / f"{SID}.jsonl", [msg])
-    monkeypatch.setattr(serve, "_TODAY", {"t": 0.0, "key": None, "v": None})
+    monkeypatch.setattr(serve, "_RECS_VIEW", {"t": 0.0, "key": None, "v": None})
     got = serve._spend_today(tmp_path)
     want = serve.build_summary(tmp_path, "today", "all", False)["total"]
     assert got["tokens"] == want["tokens"] > 0 and got["cost"] == want["cost"]

@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import activity, billing, control, notify, procmon, remote, runner, tokens_view, trace
+from . import activity, billing, context_view, control, notify, procmon, remote, runner, tokens_view, trace
 from .aggregate import Agg, filter_since, group_by, summarize
 from .event_sources import activity_source, cost_source, risk_source
 from .events import bus as event_bus
@@ -627,24 +627,41 @@ _BRIEF_MAX_AGE = 86400                 # 一天没动静的会话不算简报 (�
 
 
 BURN_WINDOW_S = 600                    # 「正在烧」= 近 10 分钟新增的 token
-_TODAY_TTL = 30.0
-_TODAY: dict = {"t": 0.0, "key": None, "v": None}
+_RECS_TTL = 30.0
+_RECS_VIEW: dict = {"t": 0.0, "key": None, "v": None}
+
+
+def _records_view(base) -> dict:
+    """/sessions 里两样「要扫全部记录」的东西, 一次扫描一起算、30 秒内复用:
+    - today: 今天 (本地 00:00 起) 全部会话的 token 真值与等价 $ —— 与 /tokens「今天 · 全部」同一套 load_records / summarize
+      口径 (scope=all, 不限 .vscode); 拿不到 -> None (页面不显示, 不瞎估);
+    - ctx: 每个会话主线程最后一轮的上下文体检 (context_view, 省钱 S1)。"""
+    now = time.time()
+    key = str(base)
+    if _RECS_VIEW["v"] is not None and _RECS_VIEW["key"] == key and now - _RECS_VIEW["t"] < _RECS_TTL:
+        return _RECS_VIEW["v"]
+    try:
+        recs = load_records(base, SCOPE_KINDS["all"], False)
+    except Exception:
+        recs = None
+    today, ctx = None, {}
+    if recs is not None:
+        try:
+            agg = summarize(filter_since(recs, parse_since("today")))
+            today = {"tokens": agg.total_tokens, "cost": round(agg.cost, 4), "unpriced": bool(agg.any_unpriced)}
+        except Exception:
+            pass
+        try:
+            ctx = context_view.session_contexts(recs)
+        except Exception:
+            pass
+    v = {"today": today, "ctx": ctx}
+    _RECS_VIEW.update(t=now, key=key, v=v)
+    return v
 
 
 def _spend_today(base) -> dict | None:
-    """今天 (本地 00:00 起) 全部会话的 token 真值与等价 $ —— 与 /tokens「今天 · 全部」同一套 load_records / summarize
-    口径 (scope=all, 不限 .vscode)。要扫全部记录, 所以 30 秒内复用。拿不到 -> None (页面不显示, 不瞎估)。"""
-    now = time.time()
-    key = str(base)
-    if _TODAY["v"] is not None and _TODAY["key"] == key and now - _TODAY["t"] < _TODAY_TTL:
-        return _TODAY["v"]
-    try:
-        agg = summarize(filter_since(load_records(base, SCOPE_KINDS["all"], False), parse_since("today")))
-        v = {"tokens": agg.total_tokens, "cost": round(agg.cost, 4), "unpriced": bool(agg.any_unpriced)}
-    except Exception:
-        v = None
-    _TODAY.update(t=now, key=key, v=v)
-    return v
+    return _records_view(base)["today"]
 
 
 # 会话简报的后台线程: /api/sessions 绝不当场解析会话 (冷启动时十几个会话一起算要近一分钟, 页面会白等);
@@ -709,9 +726,13 @@ def _sessions_with_briefs(base) -> dict:
     rows = []
     now = time.time()
     pending = 0
+    rv = _records_view(base)
     for row in snap.get("sessions", []):
         r = dict(row)
         age = row.get("last_activity_age_s")
+        c = rv["ctx"].get(row.get("session_id"))
+        if c and (age is None or age < _BRIEF_MAX_AGE):
+            r["context"] = c                                 # 省钱 S1: 主线程最后一轮的上下文 / 每轮 $ / 缓存有效期
         if row.get("file") and (age is None or age < _BRIEF_MAX_AGE):
             try:
                 b = _brief_nowait(row["file"], row.get("state") in ("WORKING", "PROCESSING", "BLOCKED_ON_USER"))
@@ -729,8 +750,9 @@ def _sessions_with_briefs(base) -> dict:
                                  "burn": trace.recent_tokens(b.get("usage_ts") or [], now - BURN_WINDOW_S)}
         rows.append(r)
     out["sessions"] = rows
-    out["spend_today"] = _spend_today(base)
+    out["spend_today"] = rv["today"]
     out["burn_window_s"] = BURN_WINDOW_S
+    out["context_line"], out["big_ctx"] = context_view.TAX_LINE, context_view.BIG_CTX
     out["briefs_pending"] = pending                      # 还没算出当前任务的会话数 (服务刚启动时会有)
     return out
 
