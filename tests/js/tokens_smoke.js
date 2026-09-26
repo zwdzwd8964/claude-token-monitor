@@ -78,7 +78,7 @@ function renderErrors(label) {
   const re = R("RENDER_ERRORS.splice(0)");
   for (const e of re) errors.push(`${label}: 渲染出错 ${e}`);
 }
-const CHARTS = ["k-cost", "k-tok", "k-unit", "k-hit", "k-out", "k-n", "burn", "comp", "pdelta", "days", "heat", "tree", "pareto", "models", "tables", "foot"];
+const CHARTS = ["k-cost", "k-tok", "k-unit", "k-hit", "k-out", "k-n", "burn", "comp", "pdelta", "days", "heat", "tree", "pareto", "models", "save", "tables", "foot"];
 const all = () => CHARTS.map(id => String(el(id).innerHTML)).join("\n") + String(el("fx").innerHTML);
 const unesc = s => String(s).replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 function marks() {                       // 页面上所有「可点筛选」的 (维度, 值) —— 就是点击会用到的那份属性
@@ -106,6 +106,8 @@ function checkEscaping(label) {
   seen.callout_pareto = String(el("pareto").innerHTML).includes("第 1 名");
   seen.baseline_chip = /chip (good|bad|flat|neu)/.test(String(el("k-cost").innerHTML));
   seen.wf_link = String(el("tree").innerHTML).includes("/workflow?project=");
+  seen.save = String(el("save").innerHTML).includes("上下文税");                       // 省钱 S2 卡片
+  seen.save_list = String(el("save").innerHTML).includes('class="svl"') && String(el("save").innerHTML).includes("/sessions#s-");
   checkEscaping("首屏");
 
   // $ ↔ tokens

@@ -55,6 +55,18 @@
   .note { color:var(--dim); font-size:11.5px; line-height:1.5; }
   .callout { font-size:12px; color:var(--ink2); margin:0 0 4px; line-height:1.45; }
   .callout b { color:var(--fg); font-weight:600; }
+  .sv { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.25fr); gap:12px 26px; }
+  .svk { padding:6px 0 8px; border-bottom:1px solid var(--line); }
+  .svk:last-child { border-bottom:0; }
+  .svk .t { font-size:12px; color:var(--ink2); }
+  .svk .v { font-size:20px; font-weight:600; font-variant-numeric:tabular-nums; margin:2px 8px 2px 0; display:inline-block; }
+  .svk .why { font-size:11.5px; color:var(--ink2); line-height:1.5; margin-top:2px; }
+  .svl { display:grid; grid-template-columns:auto minmax(0,1fr) auto auto; gap:5px 10px; align-items:center; font-size:12px; }
+  .svl .nm { cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .svl .nm:hover { color:var(--fg); text-decoration:underline; }
+  .svl .num { font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
+  .svl .bar { height:6px; border-radius:3px; background:var(--accent); opacity:.8; }
+  @media (max-width:900px) { .sv { grid-template-columns:minmax(0,1fr); } }
   .empty { color:var(--dim); font-size:12.5px; padding:26px 4px; text-align:center; }
   .err { color:var(--bad); font-size:12px; }
 
@@ -262,6 +274,11 @@
     <div class="cb" id="models"></div>
   </section>
 
+  <section class="card w12">
+    <div class="ch"><h2>省钱机会</h2><span class="q" id="save-q">上下文越大，每轮都要把它再读一遍 · 跟随图上的筛选</span></div>
+    <div class="cb" id="save"></div>
+  </section>
+
   <details class="card more" id="more">
     <summary>明细 ▸ <span class="q">按模型 / 来源 / 项目 / 会话 / 时间的表格 · 跟随筛选 · 点行筛选</span></summary>
     <div class="cb" id="tables"></div>
@@ -359,7 +376,7 @@ const STACKS = ["component", "model", "source", "project"];
 const DIM_ZH = {k: "成分", p: "项目", m: "模型", s: "来源", x: "会话", d: "日期", e: "时段", wd: "星期", h: "小时", c: "星期×小时"};
 const ROW_DIMS = ["p", "m", "s", "x", "d", "e", "h", "wd", "c"];
 const WD_ZH = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
-const VALS = ["n", "in", "out", "cr", "cw", "ws", "wf", "c", "ci", "co", "ccw", "ccr", "ct", "un", "ut"];
+const VALS = ["n", "in", "out", "cr", "cw", "ws", "wf", "c", "ci", "co", "ccw", "ccr", "ct", "un", "ut", "tx", "rb", "rn"];
 const COMPS = [                           // 堆叠顺序 (自下而上 / 自左而右)
   {k: "in", zh: "Input", cost: "ci", tok: "in", col: "#008300"},
   {k: "cr", zh: "缓存读", cost: "ccr", tok: "cr", col: "#3987e5"},
@@ -1433,6 +1450,61 @@ function renderPareto() {
   el.innerHTML = h;
 }
 
+// ---------------------------------------------------------------- C8 · 省钱机会 (CONTEXT_COST_PLAN S2)
+// 两个数都是已有成本的一部分 (立方里 tx <= ccr, rb <= ccw), 不是另加的钱; 跟着图上的筛选走, 会话列表不按会话筛自己。
+function renderSave() {
+  const el = $("#save");
+  const line = (CUBE.save || {}).line || 150000;
+  const rows = view(R), t = tot(rows);
+  if (!(t.c > 0)) { el.innerHTML = `<div class="empty">当前筛选下没有花费</div>`; return; }
+  const ok = baseOK(), p = ok ? tot(view(B)) : null;
+  const chip = (cur, prev) => ok ? deltaChip(cur, prev, true, fmtUsd, false) : deltaChip(0, 0, false, fmtUsd, false);
+  const lineTxt = line % 10000 === 0 ? (line / 10000) + " 万" : fmtTokens(line);   // 15 万, 与规格和悬浮提示一致
+  const unp = t.ut > 0 ? `<div class="note warn">* 含未知单价模型的 token，这两项按 $0 计，偏低</div>` : "";
+  const note = isCost() ? "" : `<div class="note">这张卡按等价 $ 算（两项都是花在缓存上的钱），不随「Tokens」切换</div>`;
+  let h = `<div class="sv"><div>`
+    + `<div class="svk"><div class="t">上下文税 · 每轮上下文超过 ${esc(lineTxt)} 的那部分，每轮都要按缓存读价再读一遍</div>`
+    + `<span class="v"${tipAttr(["上下文税 ≈" + fmtUsd(t.tx), "= 每一轮缓存读里超过 " + lineTxt + " token 的部分 × 缓存读单价",
+                                  "它是「缓存读」" + fmtUsd(t.ccr) + " 里的 " + fmtPct(t.ccr > 0 ? t.tx / t.ccr : 0) + "，不是另加的钱",
+                                  ok ? "上一周期 ≈" + fmtUsd(p.tx) : ""])}>≈${esc(fmtUsd(t.tx))}</span>`
+    + `<span class="muted">占总花费 ${esc(fmtPct(t.tx / t.c))}</span> ${chip(t.tx, ok ? p.tx : 0)}`
+    + `<div class="why">上下文越大，每一轮都更贵。长任务做完一段就 /compact、换新任务开新会话，这部分会少。</div></div>`
+    + `<div class="svk"><div class="t">离开超过缓存有效期再回来 · 这一轮把整段上下文重写一遍</div>`
+    + `<span class="v"${tipAttr(["重建多花 ≈" + fmtUsd(t.rb) + " · " + t.rn + " 次",
+                                  "= 这些回合缓存写的钱 − 同样多 token 按缓存读算的钱（假设本来能命中）",
+                                  "只看主线程；有效期看这个会话最近一次写的缓存类型（Claude Code 几乎都是 1 小时；推断，回测精确率 96.7%）",
+                                  ok ? "上一周期 ≈" + fmtUsd(p.rb) + " · " + p.rn + " 次" : ""])}>≈${esc(fmtUsd(t.rb))}</span>`
+    + `<span class="muted">${t.rn} 次 · 占总花费 ${esc(fmtPct(t.rb / t.c))}</span> ${chip(t.rb, ok ? p.rb : 0)}`
+    + `<div class="why">要走很久的话，趁缓存还在先 /compact；过期之后连 /compact 也要把整段重读一遍。</div></div>`
+    + unp + note + `</div>`;
+  // 右半: 交这两样最多的会话 (不按会话筛自己, 选中的高亮)
+  const by = new Map();
+  for (const r of view(R, ["x"])) {
+    if (!(r.tx > 0 || r.rb > 0)) continue;
+    const a = by.get(r.x) || {tx: 0, rb: 0, rn: 0};
+    a.tx += r.tx; a.rb += r.rb; a.rn += r.rn; by.set(r.x, a);
+  }
+  const own = new Map();
+  for (const r of view(R, ["x"])) own.set(r.x, (own.get(r.x) || 0) + r.c);
+  const top = [...by.entries()].map(([x, a]) => Object.assign({x, s: a.tx + a.rb}, a)).sort((a, b) => b.s - a.s).slice(0, 8);
+  if (!top.length) h += `<div class="empty">当前筛选下没有会话交上下文税或重建缓存</div>`;
+  else {
+    const mx = top[0].s;
+    h += `<div><p class="callout">交得最多的会话 · 点名字筛选 · ↗ 看它现在的上下文</p><div class="svl">` + top.map((a, i) => {
+      const meta = SESS[a.x] || {}, sel = F.x.size && !F.x.has(a.x) ? " dimm" : "";
+      const tip = [a.x, "项目 " + (meta.p || "?"), "上下文税 ≈" + fmtUsd(a.tx), a.rn ? "离开后重建 " + a.rn + " 次 ≈" + fmtUsd(a.rb) : "没有离开后重建",
+                   "占它自己花费的 " + fmtPct(own.get(a.x) > 0 ? a.s / own.get(a.x) : 0), "点击筛选这个会话"];
+      return `<span class="muted${sel}">${i + 1}</span>`
+        + `<span class="nm${sel}" data-f="x" data-v="${esc(a.x)}" data-k="x:${esc(enc(a.x))}"${tipAttr(tip)}>`
+        + `<span style="font-family:ui-monospace,Consolas,monospace">${esc(a.x.slice(0, 8))}</span> ${esc(meta.p || "?")}`
+        + `<div class="bar" style="width:${Math.max(2, 100 * a.s / mx).toFixed(1)}%"></div></span>`
+        + `<span class="num${sel}">≈${esc(fmtUsd(a.s))}${a.rn ? ` <span class="muted">· 重建 ${a.rn}</span>` : ""}</span>`
+        + `<a class="num" href="/sessions#s-${esc(enc(a.x))}" data-tip="看这个会话现在的上下文 → /sessions">↗</a>`;
+    }).join("") + `</div></div>`;
+  }
+  el.innerHTML = h + `</div>`;
+}
+
 // ---------------------------------------------------------------- C7 · 模型占比 (每天 100% 堆叠)
 function renderModels() {
   const el = $("#models");
@@ -1597,6 +1669,7 @@ function render() {
   safe("tree", renderTree);
   safe("pareto", renderPareto);
   safe("models", renderModels);
+  safe("save", renderSave);
   safe("tables", renderTables);
   safe("foot", renderFoot);
   stamp();

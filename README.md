@@ -15,7 +15,7 @@
 
 | | |
 |---|---|
-| 代码 / 测试 | 约 15k 行 · **494 个测试全过**（`python -m pytest -q`；含 Node 跑的页面冒烟测试） |
+| 代码 / 测试 | 约 15k 行 · **496 个测试全过**（`python -m pytest -q`；含 Node 跑的页面冒烟测试） |
 | 会话状态 | 0.15.1 起以 Claude Code **进程自报**为准（`~/.claude/sessions` 注册表，只读）：运行中 / 等你 / **等你授权或回答** / 已关闭不再靠猜；拿不到自报时才退回 transcript 推断 |
 | 工作流回放 | `/workflow`：近 7 天 98 个任务可回放，token 与 /tokens **逐 token 对账 98/98**；S2 学习层：流程条、数据依赖、名词说明、脚本对照（43/43 次 workflow 的阶段都对上了脚本）；S3 统计：工具 / skill 排行、MCP 健康、跨任务对照，**每个数字点开都是同样条数的明细**（真实数据 323/323） |
 | 状态推断可信度 | 回测 **97.0% 准确率 / 1343 个评估点**（`python -m tokmon backtest`） |
@@ -56,7 +56,7 @@ python -m tokmon doctor              # 体检 (升级 Claude Code 后先跑这�
 | 页面 | 支柱 / 层 | 内容 |
 |---|---|---|
 | `/sessions` | 对话活动 | 每个会话在 **推进 / 等你授权或回答 / 等你 / 已关闭**（进程自报优先），含当前步骤与真实思考片段；当前任务的**等价 $ · 近 10 分钟新烧 · token · 活跃时长 · 改了几个文件** + **上下文多大 / 缓存还剩多久（过期了下一轮重建多少钱）** + 风险角标 + 「实时回放 →」；页顶今天已烧 / 近 10 分钟 / 有风险 / 大上下文 |
-| `/tokens` | 成本 | 一屏分析台：KPI + 累计花费 + 项目树图 + 成本构成 + 时段热力图 + 会话帕累托，**点任何图形全页联动筛选**；$ 是等价成本（估算）；预算设置；项目可点进工作流回放 |
+| `/tokens` | 成本 | 一屏分析台：KPI + 累计花费 + 项目树图 + 成本构成 + 时段热力图 + 会话帕累托，**点任何图形全页联动筛选**；**省钱机会**：上下文税（15 万以上每轮再读的钱）+ 离开超过缓存有效期回来的重建，按会话排行；$ 是等价成本（估算）；预算设置；项目可点进工作流回放 |
 | `/workflow` | 工作流回放 + 统计 | **一次提问是怎么被完成的**：结构化摘要（耗时三段 / token / 异常 / 关键时刻）+ 调用树与时间轴并排 + 明细抽屉（完整输入输出，已脱敏）。skill / MCP / 子 agent / workflow 的层级都在里面。**统计**（`?view=stats`）：哪些工具 / skill 最花时间、哪个 MCP 老出错、同一个阶段在不同任务里差多少——数字点开是明细，明细点开回到回放 |
 | `/processes` | 进程 | 进程 / 监听端口 / 活动连接 / cloudflared 隧道 / 健康探测（纯只读 + 命令行脱敏） |
 | `/notify` | 通知层 | ⏸ 已从导航隐藏（URL 仍可用）。推送与抑制双记的 feed + 通道配置 |
@@ -118,7 +118,7 @@ python -m tokmon serve
 | [docs/atlas.html](docs/atlas.html) | 系统图谱（离线 Mermaid） | 📜 停在 07-01，不含 billing/steer |
 | [WORKFLOW_TAB_PLAN.md](WORKFLOW_TAB_PLAN.md) | **`/workflow` 工作流追踪器一页规格** | ✅ S1–S3 全部验收（0.10.0 → 0.12.0） |
 | [CHANGE_RISK_PLAN.md](CHANGE_RISK_PLAN.md) | **改动与风险一页规格**（当前优先级：它改了什么 / 有没有乱改 / 在变好吗） | ✅ S1–S3 全部验收（0.13.0 → 0.15.0） |
-| [CONTEXT_COST_PLAN.md](CONTEXT_COST_PLAN.md) | **省钱：上下文体检一页规格**（当前优先级：上下文多大、每轮多少钱、离开多久会重建、是什么把它撑大的） | 🟡 S1 ✅ 已交付（0.19.0）· S2 进行中 |
+| [CONTEXT_COST_PLAN.md](CONTEXT_COST_PLAN.md) | **省钱：上下文体检一页规格**（当前优先级：上下文多大、每轮多少钱、离开多久会重建、是什么把它撑大的） | 🟡 S1 ✅（0.19.0）· S2 ✅（0.20.0）· S3 进行中 |
 | [SESSIONS_COCKPIT_PLAN.md](SESSIONS_COCKPIT_PLAN.md) | **会话驾驶舱一页规格**（`/sessions` 一行看全四件事 + 等你时叫你） | ✅ 全部验收（0.17.0 → 0.18.0） |
 | [RUNNER_SDK_PLAN.md](RUNNER_SDK_PLAN.md) | steer 改用 Agent SDK | ✅ 已实施 |
 | [SESSIONS_FILTER_PLAN.md](SESSIONS_FILTER_PLAN.md) | `/sessions` 过滤器 V1 | ✅ 已实施 |
@@ -164,5 +164,5 @@ tokmon/
   pages/*.html                 全部页面 (独立文件; serve.py 只留路由与数据, 测试守着不许再内联)
   inference_doctor / inference_backtest   推断层的体检与回测
   serve                        驾驶舱外壳 (路由 + 数据接口 + 公共皮肤 / 导航)
-tests/                         494 例: pytest -q (tests/js/workflow_smoke.js: 页面 JS 的 Node 冒烟脚手架)
+tests/                         496 例: pytest -q (tests/js/workflow_smoke.js: 页面 JS 的 Node 冒烟脚手架)
 ```

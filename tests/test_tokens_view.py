@@ -80,6 +80,12 @@ def base(tmp_path, monkeypatch):
         _asst(2, ago(days=6), "s-beta", "claude-opus-5", 20, 20, cr=500),
         _asst(3, ago(days=16), "s-beta", "claude-opus-5", 20, 20, cr=500),                  # 2w 的上一周期
     ])
+    # delta: 大上下文 (省钱 S2): 写 18 万 1 小时缓存 -> 命中 18 万 (其中 3 万是上下文税) -> 空了 2.5 小时回来整段重建
+    _write(b / "c--vs-delta" / "s-delta.jsonl", VS + r"\delta", [
+        _asst(1, ago(hours=3), "s-delta", "claude-opus-5", 20, 300, c1=180_000),
+        _asst(2, ago(hours=2, minutes=50), "s-delta", "claude-opus-5", 20, 300, cr=180_000),
+        _asst(3, ago(minutes=20), "s-delta", "claude-opus-5", 20, 300, c1=182_000),
+    ])
     # gamma: 不在 .vscode 下 (vscode_only 时应被排除)
     _write(b / "c--Users-u" / "s-gamma.jsonl", r"C:\Users\u\Desktop", [
         _asst(1, ago(hours=3), "s-gamma", "claude-opus-5", 9, 9, cr=900),
@@ -315,3 +321,30 @@ def test_cube_endpoint_local_mode_and_page(base):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+# ------------------------------------------------------------------ 省钱 S2: 上下文税 / 离开后重建 (都是已有成本的一部分)
+
+def test_savings_columns_are_slices_of_existing_cost(base):
+    cube = serve.build_cube(base, "7d", "all", False)
+    rows = _decode(cube)
+    for r in rows:                                            # tx 是缓存读的一部分, rb 是缓存写的一部分
+        assert r["tx"] <= r["ccr"] + 1e-9 and r["rb"] <= r["ccw"] + 1e-9 and r["rn"] in (0, 1)
+    d = [r for r in rows if r["session"] == "s-delta"]
+    rate = pricing.rates_for("claude-opus-5")[0]
+    assert math.isclose(sum(r["tx"] for r in d), 30_000 * rate * pricing.CACHE_READ_MULT / 1e6, rel_tol=1e-9)
+    assert sum(r["rn"] for r in d) == 1
+    assert math.isclose(sum(r["rb"] for r in d),
+                        182_000 * (pricing.CACHE_WRITE_1H_MULT - pricing.CACHE_READ_MULT) * rate / 1e6, rel_tol=1e-9)
+    assert sum(r["rn"] for r in rows if r["session"] != "s-delta") == 0     # 别的会话: 子 agent 第一轮写缓存不算重建
+    assert cube["save"] == {"line": 150_000}
+
+
+def test_rebuild_sees_previous_turn_outside_the_window(base):
+    """重建要看上一轮: 上一轮在窗口外 (昨天) 也要认得出来 —— 标记是在全部记录上判的。"""
+    recs = parser.load_records(base, {"main", "subagent", "workflow"}, False)
+    d = sorted((r for r in recs if r.session_id == "s-delta"), key=lambda r: r.timestamp)
+    cube = tokens_view.build([d[-1]], None, recs)            # 窗口里只有重建那一轮
+    r = dict(zip(cube["cols"], cube["rows"][0]))
+    assert r["rn"] == 1 and r["rb"] > 0
+    assert tokens_view.build([d[-1]], None, [d[-1]])["rows"][0][cube["cols"].index("rn")] == 0   # 看不到上一轮: 不猜

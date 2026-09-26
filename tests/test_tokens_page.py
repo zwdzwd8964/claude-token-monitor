@@ -55,6 +55,7 @@ def test_tokens_page_runs_clean(base, tmp_path):  # noqa: F811
     for k in ("first", "reconciled", "callout_comp", "callout_heat", "callout_pareto", "baseline_chip", "wf_link",
               "escaped", "metric", "multi", "url_roundtrip", "multi_vs", "brush", "hourly", "budget_line",
               "no_baseline", "hostile_url", "empty", "brush_pointer",
+              "save", "save_list",                                   # 省钱 S2 卡片 (有数据的那一支)
               "f_p", "f_m", "f_s", "f_x", "f_d", "f_h", "f_wd", "f_c", "f_k", "f_e",
               # 审查修复的回归 (触屏半截框选 / 悬停坐标 / 未知单价项目 / 图例自筛 / 切窗口在途与失败 / 今天按星期的假基线 / 按时段不外推)
               "touch_cancel", "burn_hover", "ghost", "legend_self", "switch_inflight", "switch_fail",
