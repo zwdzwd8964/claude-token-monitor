@@ -137,6 +137,6 @@ def test_workflow_page_runs_clean(session, tmp_path):
     assert report["drawers"] >= 10
     seen = report["seen"]
     for k in ("stage_strip", "band", "dep_badge", "script_view", "glossary", "full_text",
-              "stats", "dots", "mcp_causes", "trends", "trend_pts", "drill_jump", "changes", "chg_jump", "risks", "risk_jump"):
+              "stats", "dots", "mcp_causes", "trends", "trend_pts", "drill_jump", "changes", "chg_jump", "risks", "risk_jump", "context", "context_jump"):
         assert seen[k], f"页面没有渲染出 {k}"
     assert report["stat_drills"] >= 15 and report["stat_jumps"] >= 15, report

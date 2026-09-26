@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import activity, billing, context_view, control, notify, procmon, remote, runner, tokens_view, trace
 from .aggregate import Agg, filter_since, group_by, summarize
-from .event_sources import activity_source, cost_source, risk_source
+from .event_sources import activity_source, context_source, cost_source, risk_source
 from .events import bus as event_bus
 from .parser import load_records
 from .pricing import cost_usd
@@ -499,6 +499,10 @@ def _wf_scrub_summary(sm):
             x["detail"] = _wf_red(x["detail"])
     for m in sm.get("moments") or []:
         m["label"] = _wf_red(m.get("label"))
+    C = sm.get("context")                            # 上下文曲线 (省钱 S3): 调用标签里可能有路径 / 命令片段
+    if C:
+        for c in [c for j in C.get("jumps") or [] for c in j.get("calls") or []] + list(C.get("top_calls") or []):
+            c["label"] = _wf_red(c.get("label"))
     for kind, d in (sm.get("glossary") or {}).items():
         sm["glossary"][kind] = {k: _wf_red(v) for k, v in d.items()}
     _wf_cost(sm.get("tokens"))
@@ -701,7 +705,7 @@ def _brief_nowait(path: str, running: bool):
     return brief
 
 
-_ATTN_TYPES = ["PERMISSION_NEEDED", "QUESTION_PENDING"]
+_ATTN_TYPES = ["PERMISSION_NEEDED", "QUESTION_PENDING", "CONTEXT_LARGE"]   # 最后一种只有页面上勾了才弹
 
 
 def _attention(base, since: int) -> dict:
@@ -1066,6 +1070,7 @@ def run_serve(base: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     activity_source.start_pump(Path(base), live_factory=procmon.live_claude_index)   # M2: 对话活动事件 pump (5s, 带活性消歧)
     cost_source.start_pump(Path(base))        # M3.5: 成本预算 pump (60s)
     risk_source.start_pump(Path(base), live_factory=procmon.live_claude_index)   # 改动与风险 S3: 风险事件 pump (15s, 只发 info)
+    context_source.start_pump(Path(base))      # 省钱 S3: 正在跑的会话上下文刚过 30 万 (30s, 只发 info)
     billing.start_pump()                      # B1: 厂商账单 pump (5min; 未配 key 则零外发)
     trace.start_warmer(Path(base))            # /workflow: 后台把 transcript 读进缓存 + 算耗时基线 (冷启动约 6-10s)
     notifier = notify.start_notifier()        # M3: 通知层订阅总线 (默认仅本地, 配 token 才外发)
@@ -1183,10 +1188,15 @@ _BELL = r"""<button type="button" class="bell" id="mcbell" title="等你时提�
     ls(mark, String(Date.now()));
     var b = null;
     for (var i = 0; i < blocked.length; i++) if (blocked[i].session_id === e.session) b = blocked[i];
-    var p = e.payload || {}, what = e.type === "PERMISSION_NEEDED" ? "等你授权" : "等你回答";
-    var n = new Notification(what + " · " + ((b && b.project) || e.project || "Claude Code"), {
-      body: ((b && b.title) ? b.title + "\n" : "") + (p.state_label || what) + "（已等 " + Math.max(1, Math.round((p.age_s || 60) / 60)) + " 分钟）",
-      tag: e.dedup_key, renotify: false});
+    var p = e.payload || {}, what = e.type === "PERMISSION_NEEDED" ? "等你授权" : "等你回答", body;
+    if (e.type === "CONTEXT_LARGE") {             // 省钱 S3: 只有在 /sessions 勾了「上下文过 30 万也提醒」才弹
+      if (ls("mc.notify.ctx") !== "1") return;
+      what = "上下文过 30 万";
+      body = "这一轮 " + Math.round((p.count || 0) / 10000) + " 万 token，之后每一轮都要把它再读一遍。合适的时候 /compact，或者换新会话。";
+    } else {
+      body = ((b && b.title) ? b.title + "\n" : "") + (p.state_label || what) + "（已等 " + Math.max(1, Math.round((p.age_s || 60) / 60)) + " 分钟）";
+    }
+    var n = new Notification(what + " · " + ((b && b.project) || e.project || "Claude Code"), {body: body, tag: e.dedup_key, renotify: false});
     bump("shown");
     n.onclick = function () { bump("clicked"); window.focus(); location.href = "/sessions#s-" + encodeURIComponent(e.session || ""); n.close(); };
   }

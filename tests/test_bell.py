@@ -46,8 +46,9 @@ def test_attention_only_waiting_events_after_cursor(attn):
     mk("TOOL_ERROR", "b")
     mk("PERMISSION_NEEDED", "c")
     mk("DESTRUCTIVE_OP", "d")                                             # 风险事件继续静默
+    mk("CONTEXT_LARGE", "e")                                              # 上下文过 30 万: 下发, 页面上勾了才弹
     d = serve._attention(None, seq)
-    assert [e["dedup_key"] for e in d["events"]] == ["c"] and d["seq"] == 4
+    assert [e["dedup_key"] for e in d["events"]] == ["c", "e"] and d["seq"] == 5
     assert serve._attention(None, d["seq"])["events"] == []
 
 
@@ -66,4 +67,4 @@ def test_bell_script_behaviour(tmp_path):
     assert proc.stdout.strip(), proc.stderr
     report = json.loads(proc.stdout.strip().splitlines()[-1])
     assert report["errors"] == [], report
-    assert len(report["checks"]) >= 15 and all(report["checks"].values())
+    assert len(report["checks"]) >= 19 and all(report["checks"].values())

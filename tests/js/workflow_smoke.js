@@ -57,7 +57,7 @@ const errors = [];
 let drawers = 0;
 const seen = { stage_strip: false, band: false, dep_badge: false, script_view: false, glossary: false, full_text: false,
                stats: false, dots: false, mcp_causes: false, trends: false, trend_pts: false, drill_jump: false, changes: false, chg_jump: false,
-               risks: false, risk_jump: false };
+               risks: false, risk_jump: false, context: false, context_jump: false };
 let statDrills = 0, statJumps = 0;
 function run(label, fn) {
   try { fn(); } catch (e) {
@@ -146,6 +146,16 @@ async function statsSmoke() {
     if (replay.includes("流程（推断")) seen.stage_strip = true;
     if (replay.includes('class="r band"')) seen.band = true;
     if (replay.includes('class="fl dep"')) seen.dep_badge = true;
+    if (replay.includes('class="ctxb"')) {                      // 省钱 S3 上下文块: 曲线 + 点一条跳到那一步
+      seen.context = true;
+      const cid = attrs(replay, /data-ctx="([^"]+)"/g).map(x => x[0])[0];
+      if (cid) {
+        ctx.__X = cid;
+        run("ctx jump " + name, () => vm.runInContext("reveal(__X); openDrawer(__X)", ctx));
+        if (vm.runInContext("DRAWER", ctx) === cid) seen.context_jump = true;
+        else errors.push(`上下文块跳转没打开明细: ${cid}`);
+      }
+    }
     if (replay.includes('class="risk"')) {                      // S5 风险块: 点一条跳到那一处
       seen.risks = true;
       const rid = attrs(replay, /data-risk="([^"]+)"/g).map(x => x[0])[0];

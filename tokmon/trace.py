@@ -2174,6 +2174,7 @@ class _Ctx:
         self.running = running
         self.usage: dict = {}                # resp key -> (usage 元组, model)  —— 整个任务的去重登记簿
         self.resp_ts: dict = {}              # resp key -> 第一次出现的时刻 (「近 10 分钟烧了多少」用)
+        self.resp_depth: dict = {}           # resp key -> 时间线深度 (0 = 主线程; 上下文曲线只画主线程)
         self.synthetic: set = set()          # 占位消息的 resp key (0 token, 不算 API 响应次数)
         self.call_loc: dict = {}             # tool_use_id -> (path, call_off, result_off)
         self.text_loc: dict = {}             # say/think 节点 id -> (path, off, block_index, kind)
@@ -2288,6 +2289,7 @@ def _timeline(rows: list[dict], ft: FileTrace, ctx: _Ctx, depth: int) -> tuple[l
             ctx.usage[key] = (ft.resp.get(key), ft.resp_model.get(key, "unknown"))
             if r.get("ts") is not None:
                 ctx.resp_ts.setdefault(key, r["ts"])
+            ctx.resp_depth.setdefault(key, depth)
             if r.get("synthetic"):
                 ctx.synthetic.add(key)
             elif r.get("cwd"):
@@ -2434,6 +2436,7 @@ def _call_node(r: dict, res: dict | None, ft: FileTrace, ctx: _Ctx, depth: int, 
         "issue_est": int((resp_u[1] if resp_u else 0) / n_par + 0.5), "result_est": r_est,
         "meta": {"key": r["key"], "result_chars": r_chars, "in_chars": r.get("in_chars", 0),
                  "async": is_async, "parallel": n_par, "wait": bool(r.get("wait")), "stage": r.get("stage"),
+                 "depth": depth,
                  "media": media, "skill_body": bool(body),
                  "out_sig": (hashlib.sha1((res.get("preview") or "").encode("utf-8", "replace")).hexdigest()[:12]
                              + f":{res.get('chars', 0)}") if res else None},
@@ -2686,6 +2689,7 @@ def build_task(task: dict, now: float | None = None, running: bool = False,
         "glossary": _used_glossary(ctx, nodes),
         "changes": build_ledger(ctx.changes, ctx.calls, ctx.cwds | {task["prompt"].get("cwd")}),
     }
+    summary["context"] = context_story(ctx, task_keys)
     summary["risks"] = risk_markers(summary["changes"], ctx.calls, ctx.changes,
                                     ctx.cwds | {task["prompt"].get("cwd")}, ctx.err_text)
     for c in ctx.calls:
@@ -2697,6 +2701,78 @@ def build_task(task: dict, now: float | None = None, running: bool = False,
                       if k in ctx.resp_ts and ctx.usage.get(k) and ctx.usage[k][0])
     return {"summary": summary, "tree": root, "call_loc": ctx.call_loc, "text_loc": ctx.text_loc,
             "script_loc": ctx.script_loc, "keys": task_keys, "errs": ctx.errs, "usage_ts": usage_ts}
+
+
+# ================================================================ 省钱 S3: 上下文是怎么涨起来的 (CONTEXT_COST_PLAN)
+CTX_COMPACT_RATIO = 0.6          # 这一轮上下文不到上一轮的 60% (且上一轮 >= 5 万) -> 压缩 / 清空
+CTX_JUMP_MIN = 20_000            # 一步涨 2 万以上才列进「撑大上下文的几步」
+CTX_POINTS_MAX = 300             # 曲线最多下发的点数 (长任务按桶抽样, 保留每桶的最高最低)
+CTX_REBUILD_MIN = 20_000
+_TTL_1H, _TTL_5M = 3600, 300     # 与 context_view 同口径: 看最近一次写的是哪种缓存
+
+
+def context_story(ctx: _Ctx, task_keys) -> dict | None:
+    """任务主线程的上下文曲线: 每一轮 = 新输入 + 缓存读 + 缓存写 (usage 真值)。
+    相邻两轮之间涨了多少也是真值; 涨出来的部分拆成「期间回来的工具结果 (按字符估算)」+「上一轮自己的输出 (真值)」+ 其余
+    (你的消息、系统提示、估算误差)。另标出压缩 (骤降) 与离开超过缓存有效期后的整段重建。"""
+    pts = []
+    for k in task_keys:
+        if ctx.resp_depth.get(k) != 0 or k in ctx.synthetic or k not in ctx.resp_ts:
+            continue
+        u = (ctx.usage.get(k) or (None,))[0]
+        if not u:
+            continue
+        c = u[0] + u[2] + u[3] + u[4]
+        if c > 0:
+            pts.append((ctx.resp_ts[k], c, u[1], u[2], u[3]))      # (时刻, 上下文, 输出, 5m 写, 1h 写)
+    if not pts:
+        return None
+    pts.sort()
+    calls = sorted((c for c in ctx.calls if (c.get("meta") or {}).get("depth") == 0 and c.get("t1") is not None),
+                   key=lambda c: c["t1"])
+    t1s = [c["t1"] for c in calls]
+    compactions, rebuilds, jumps = [], [], []
+    ttl, growth, explained = None, 0, 0
+    for a, b in zip(pts, pts[1:]):
+        if a[3] or a[4]:
+            ttl = _TTL_1H if a[4] >= a[3] else _TTL_5M
+        if a[1] >= 50_000 and b[1] < CTX_COMPACT_RATIO * a[1]:
+            compactions.append({"t": b[0], "from": a[1], "to": b[1]})
+            continue
+        if ttl and b[1] >= CTX_REBUILD_MIN and b[3] + b[4] >= 0.5 * b[1] and b[0] - a[0] > ttl:
+            rebuilds.append({"t": b[0], "ctx": b[1], "gap": round(b[0] - a[0])})
+        d = b[1] - a[1]
+        if d <= 0:
+            continue
+        between = calls[bisect.bisect_right(t1s, a[0]):bisect.bisect_right(t1s, b[0])]   # 结果在这两轮之间回来的调用
+        est = sum(c.get("result_est") or 0 for c in between)
+        growth += d
+        explained += min(d, est + a[2])
+        if d >= CTX_JUMP_MIN:
+            jumps.append({"t": b[0], "from": a[1], "to": b[1], "out": a[2], "tool_est": est,
+                          "calls": [{"id": c["id"], "name": c["name"], "label": c["label"], "est": c.get("result_est")}
+                                    for c in sorted(between, key=lambda c: -(c.get("result_est") or 0))[:4]]})
+    jumps = sorted(sorted(jumps, key=lambda j: -(j["to"] - j["from"]))[:8], key=lambda j: j["t"])
+    top = sorted((c for c in calls if c.get("result_est")), key=lambda c: -c["result_est"])[:5]
+    if len(pts) > CTX_POINTS_MAX:                      # 按桶抽样: 每桶留最高与最低, 骤降 / 尖峰不会被抽没
+        n = len(pts)
+        per = n / (CTX_POINTS_MAX / 2)
+        keep = set()
+        for i in range(int(CTX_POINTS_MAX / 2) + 1):
+            chunk = range(int(i * per), min(n, int((i + 1) * per)))
+            if chunk:
+                keep.add(max(chunk, key=lambda j: pts[j][1]))
+                keep.add(min(chunk, key=lambda j: pts[j][1]))
+        keep |= {0, n - 1}
+        sampled = [pts[i] for i in sorted(keep)]
+    else:
+        sampled = pts
+    return {"points": [[round(p[0], 3), p[1]] for p in sampled], "n": len(pts),
+            "first": pts[0][1], "last": pts[-1][1], "max": max(p[1] for p in pts),
+            "compactions": compactions, "rebuilds": rebuilds, "jumps": jumps,
+            "top_calls": [{"id": c["id"], "name": c["name"], "label": c["label"], "est": c["result_est"], "t": c["t1"]}
+                          for c in top],
+            "growth": growth, "coverage": round(explained / growth, 4) if growth else None}
 
 
 def _used_glossary(ctx: _Ctx, nodes: list[dict]) -> dict:

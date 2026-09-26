@@ -48,6 +48,7 @@ def session_contexts(records) -> dict:
         write_mult = CACHE_WRITE_1H_MULT if ttl == TTL_1H else CACHE_WRITE_5M_MULT
         out[sid] = {
             "ctx": ctx, "t": last.timestamp.timestamp(), "model": last.model, "known": known, "ttl": ttl,
+            "project": last.project,
             "per_turn": round(median(r.cost_usd for r in rs[-TAIL:]), 4),
             "tax_per_turn": round(max(0, ctx - TAX_LINE) * rate * CACHE_READ_MULT / 1e6, 4),
             "rebuild": round(ctx * rate * write_mult / 1e6, 4),

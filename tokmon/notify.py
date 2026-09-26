@@ -37,7 +37,7 @@ _TYPE_LABEL = {
     "SESSION_IDLE": "空闲", "SESSION_STUCK": "久未返回", "PERMISSION_NEEDED": "等待授权", "QUESTION_PENDING": "等你回答",
     "TOKEN_BUDGET_WARNING": "预算告警", "PROCESS_CRASHED": "进程崩溃", "COMMAND_ISSUED": "已下指令",
     "DESTRUCTIVE_OP": "破坏性操作", "ERROR_SPIKE": "连续失败", "REPEATED_FILE_EDIT": "改了又改没通过",
-    "LARGE_DIFF": "大改动",
+    "LARGE_DIFF": "大改动", "CONTEXT_LARGE": "上下文过大",
 }
 
 
@@ -135,6 +135,8 @@ def summarize(ev: dict) -> str:
     elif t == "LARGE_DIFF":
         detail = (f"一个任务动了 {p.get('count')} 个文件" if p.get("rule") == "large-task"
                   else f"单次大改动 {p.get('count') or '?'} 次")
+    elif t == "CONTEXT_LARGE":
+        detail = f"上下文 {round((p.get('count') or 0) / 10000)} 万 token"
     elif t == "TOKEN_BUDGET_WARNING":
         scope_zh = {"daily": "今日", "weekly": "近7天", "project": "项目"}.get(p.get("scope"), p.get("scope") or "")
         detail = f"{scope_zh}预算已用 {p.get('pct')}%"

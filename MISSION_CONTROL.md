@@ -105,6 +105,7 @@ agentic coding 工具最大的痛点不是不够聪明，而是：
 | **成本** | `TOKEN_BUDGET_WARNING` | Warning(70%)→Critical(90/95%) | 接近/越过预算阈值 |
 | | `BURN_RATE_SPIKE` | Warning | 每分钟 token burn 异常飙升 |
 | | `DAILY_BUDGET_EXCEEDED` | Warning | 某项目/今日累计越线 |
+| | `CONTEXT_LARGE` | Info | 正在跑的会话主线程上下文刚过 30 万（每越过一次一条；浏览器铃铛勾了才弹）· ✅ 0.21.0 |
 | **质量/风险** | `DESTRUCTIVE_OP` | Info（**当前**） | rm -rf / git reset --hard / 强推 / 整棵树还原 / MCP 删除类 / DROP（只标不拦）· ✅ 0.15.0 |
 | | `ERROR_SPIKE` | Critical（**当前 Info**） | 连续多次失败（同一时间线严格相邻 ≥ 3）· ✅ 0.15.0 |
 | | `REPEATED_FILE_EDIT` | Warning（**当前 Info**） | 反复编辑同一文件（改 → 验证失败且失败点了它的名 ≥ 3 轮）· ✅ 0.15.0 |

@@ -71,3 +71,31 @@ def test_no_cache_writes_means_unknown_ttl(tmp_path):
 def test_unknown_model_is_flagged(tmp_path):
     cx = context_view.session_contexts(recs(tmp_path, [say(0, 0, u(inp=9000, c1h=1000), model="mystery-9")]))[SID]
     assert cx["known"] is False and cx["rebuild"] == 0 and cx["per_turn"] == 0
+
+
+# ------------------------------------------------------------------ 省钱 S3: 「上下文过 30 万」事件源 (纯逻辑)
+
+def test_context_large_fires_once_per_crossing_and_rearms():
+    from tokmon.event_sources import context_source as cs
+    now = 1_000_000.0
+    st: dict = {}
+    c = lambda ctx, age=5: {"ctx": ctx, "t": now - age, "project": "demo"}
+    assert cs.derive({"s": c(250_000)}, now, st, emit=True) == []
+    (ev,) = cs.derive({"s": c(310_000)}, now, st, emit=True)             # 越过 30 万: 一条
+    assert ev.type == "CONTEXT_LARGE" and ev.severity == "info" and ev.payload == {"count": 310_000}
+    assert ev.session == "s" and ev.project == "demo" and ev.timestamp == now - 5
+    assert cs.derive({"s": c(420_000)}, now, st, emit=True) == []        # 还在线上: 不再发
+    assert cs.derive({"s": c(260_000)}, now, st, emit=True) == []        # 掉到 30 万以下但没到 24 万: 不重置
+    assert cs.derive({"s": c(330_000)}, now, st, emit=True) == []
+    assert cs.derive({"s": c(90_000)}, now, st, emit=True) == []         # 压缩到 24 万以下: 重置
+    assert len(cs.derive({"s": c(301_000)}, now, st, emit=True)) == 1     # 再越过: 算新的一次
+
+
+def test_context_large_only_for_running_sessions_and_silent_when_seeding():
+    from tokmon.event_sources import context_source as cs
+    now = 1_000_000.0
+    st: dict = {}
+    assert cs.derive({"old": {"ctx": 500_000, "t": now - 3600, "project": "p"}}, now, st, emit=True) == []   # 放着没动的不吵
+    st2: dict = {}
+    assert cs.derive({"s": {"ctx": 500_000, "t": now, "project": "p"}}, now, st2, emit=False) == []          # 冷启动: 只记状态
+    assert st2 == {"s": True}

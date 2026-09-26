@@ -100,11 +100,22 @@ const blk = [{ session_id: "S1", project: "demo", title: "修登录页", state_l
     expect("title clears when nobody waits", A.ctx.document.title === "Session 状态", A.ctx.document.title);
     expect("page told when the count changes", JSON.stringify(A.dispatched) === "[1,0]", JSON.stringify(A.dispatched));
 
+    // 6b) 「上下文过 30 万」: 没勾就不弹; 勾了才弹 (标题 / 正文带万 token)
+    const big = { seq: 0, type: "CONTEXT_LARGE", session: "S1", project: "demo", dedup_key: "CTX1", payload: { count: 580000 } };
+    responses.push({ blocked: [], events: [big], seq: 9 });
+    A.poll(); await tick(); await tick();
+    expect("context alert off by default", shown.length === 3, String(shown.length));
+    localStorage.setItem("mc.notify.ctx", "1");
+    responses.push({ blocked: [], events: [Object.assign({}, big, { dedup_key: "CTX2" })], seq: 10 });
+    A.poll(); await tick(); await tick();
+    const cn = shown[3];
+    expect("context alert when opted in", cn && cn.title === "上下文过 30 万 · demo" && cn.opts.body.includes("58 万"), cn && (cn.title + " | " + cn.opts.body));
+
     // 7) 关掉之后不再弹
     A.bell.handlers.click(); await tick();
-    responses.push({ blocked: blk, events: [ev("K4", "QUESTION_PENDING", "S1")], seq: 9 });
+    responses.push({ blocked: blk, events: [ev("K4", "QUESTION_PENDING", "S1")], seq: 11 });
     A.poll(); await tick(); await tick();
-    expect("turned off -> silent", localStorage.getItem("mc.notify.on") === "0" && shown.length === 3, String(shown.length));
+    expect("turned off -> silent", localStorage.getItem("mc.notify.on") === "0" && shown.length === 4, String(shown.length));
   } catch (e) {
     errors.push("exception: " + (e && e.stack ? e.stack.split("\n").slice(0, 3).join(" | ") : e));
   }

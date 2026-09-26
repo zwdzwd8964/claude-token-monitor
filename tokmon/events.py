@@ -37,6 +37,8 @@ _DEFAULT_SEVERITY = {
     "ERROR_SPIKE": "info",
     "REPEATED_FILE_EDIT": "info",
     "LARGE_DIFF": "info",
+    # 省钱 (CONTEXT_COST_PLAN S3): 正在跑的会话上下文刚过 30 万; 浏览器铃铛只有你勾了才弹
+    "CONTEXT_LARGE": "info",
 }
 EVENT_TYPES = set(_DEFAULT_SEVERITY)
 

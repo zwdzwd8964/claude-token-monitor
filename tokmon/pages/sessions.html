@@ -91,6 +91,7 @@
     <span class="muted" style="font-size:12px">活跃时间窗</span>
     <select id="agewin"><option value="">全部</option><option value="3600">近 1h</option><option value="86400">近 24h</option><option value="604800">近 7d</option></select>
     <label class="chk"><input type="checkbox" id="auto" checked> 自动刷新 30s</label>
+    <label class="chk" title="正在跑的会话，主线程上下文刚过 30 万 token 时弹一条（每越过一次一条；压缩后再越过算新的一次）。要先打开右上角的铃铛。默认关。"><input type="checkbox" id="ctxalert"> 上下文过 30 万也提醒</label>
     <button id="refresh">刷新</button>
   </div>
   <div id="projchips" class="chips"></div>
@@ -115,7 +116,8 @@ function fmtDur(s){ if(s==null||isNaN(s)) return ''; s=Math.max(0,+s); if(s<9.95
   const mm=Math.round(s/60); return Math.floor(mm/60)+'h'+String(mm%60).padStart(2,'0')+'m'; }
 const EVT_LABEL = {SESSION_STARTED:'会话开始', TASK_COMPLETED:'任务完成', TOOL_ERROR:'工具出错',
   SESSION_IDLE:'空闲', SESSION_STUCK:'久未返回', PERMISSION_NEEDED:'等待授权', QUESTION_PENDING:'等你回答', TOKEN_BUDGET_WARNING:'预算告警', PROCESS_CRASHED:'进程崩溃', COMMAND_ISSUED:'已下指令',
-  DESTRUCTIVE_OP:'破坏性操作', ERROR_SPIKE:'连续失败', REPEATED_FILE_EDIT:'改了又改没通过', LARGE_DIFF:'大改动'};
+  DESTRUCTIVE_OP:'破坏性操作', ERROR_SPIKE:'连续失败', REPEATED_FILE_EDIT:'改了又改没通过', LARGE_DIFF:'大改动',
+  CONTEXT_LARGE:'上下文过 30 万'};
 let EVENTS=[], evCursor=0, evDropped=0;
 function evDetail(e){   // 返回纯文本; 转义由唯一的外层 esc(evDetail(e)) 负责, 这里不再 esc 以免双重转义
   const p=e.payload||{};
@@ -128,6 +130,7 @@ function evDetail(e){   // 返回纯文本; 转义由唯一的外层 esc(evDetai
   if(e.type==='DESTRUCTIVE_OP') return (p.kind||'?')+'（规则判断，只标不拦）';
   if(e.type==='ERROR_SPIKE') return '连着失败 '+(p.count||'?')+' 次';
   if(e.type==='REPEATED_FILE_EDIT') return '同一个文件来回 '+(p.count||'?')+' 轮都没通过';
+  if(e.type==='CONTEXT_LARGE') return '这一轮 '+Math.round((p.count||0)/10000)+' 万 token（之后每轮都要再读一遍）';
   if(e.type==='LARGE_DIFF') return p.rule==='large-task'?('一个任务动了 '+p.count+' 个文件'):('单次大改动 '+(p.count||'?')+' 次');
   return '';
 }
@@ -347,6 +350,8 @@ function setAuto(){ if(timer){clearInterval(timer);timer=null;} if($('#auto').ch
 ['filter','hideidle'].forEach(id=>$('#'+id).addEventListener('input', render));
 $('#hideidle').addEventListener('change', render);
 $('#auto').addEventListener('change', setAuto);
+try { $('#ctxalert').checked = localStorage.getItem('mc.notify.ctx') === '1'; } catch (e) {}
+$('#ctxalert').addEventListener('change', e => { try { localStorage.setItem('mc.notify.ctx', e.target.checked ? '1' : '0'); } catch (x) {} });
 $('#refresh').addEventListener('click', tickAll);
 // 事件委托挂在稳定容器上 (pill/chip 每帧重建, 委托不受影响; 选中态从 FILTERS 恢复 §3.1)
 $('#app').addEventListener('click', e=>{

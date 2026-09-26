@@ -164,6 +164,21 @@
 
   /* ---------- S4: 改动清单 ---------- */
   .chg { border:1px solid var(--line); border-radius:10px; background:var(--panel); padding:8px 12px 10px; margin-bottom:12px; }
+  .ctxb { border:1px solid var(--line); border-radius:10px; background:var(--panel); padding:8px 12px 10px; margin-bottom:12px; }
+  .ctxb .mh { font-size:11.5px; color:var(--dim); display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; margin-bottom:4px; }
+  .ctxb .mh b { color:var(--fg); font-weight:600; }
+  .ctxs { display:block; width:100%; height:72px; margin:4px 0 2px; }
+  .ctxs .cln { fill:none; stroke:var(--accent); stroke-width:1.6; vector-effect:non-scaling-stroke; }
+  .ctxs .cref { stroke:#5a6275; stroke-dasharray:3 3; stroke-width:1; vector-effect:non-scaling-stroke; }
+  .ctxs .cmk { stroke:var(--dim); stroke-dasharray:2 2; stroke-width:1.4; vector-effect:non-scaling-stroke; }
+  .ctxs .crb { stroke:var(--warn); stroke-width:2; vector-effect:non-scaling-stroke; }
+  .ctxax { display:flex; font-size:10.5px; color:var(--dim); } .ctxax span:last-child { margin-left:auto; }
+  .cj { display:flex; gap:8px; align-items:baseline; font-size:12px; padding:2px 4px; border-radius:6px; }
+  .cj[data-ctx] { cursor:pointer; } .cj[data-ctx]:hover { background:#171c26; }
+  .cj .off { color:var(--dim); white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .cj .up { color:var(--warn); white-space:nowrap; font-variant-numeric:tabular-nums; min-width:52px; }
+  .cj .tx { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dim); }
+  .cj .tx b { color:var(--fg); font-weight:500; }
   .chg .mh { font-size:11.5px; color:var(--dim); display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
   .chg .mh b { color:var(--fg); font-weight:600; }
   .chg .mh .sp { flex:1; }
@@ -848,6 +863,7 @@ function render() {
     ${stageStrip(s.stages, true)}
     ${changesBox(s.changes)}
     ${risksBox(s.risks)}
+    ${ctxBox(s.context)}
     <div class="chips">${catTxt.map(x => `<span class="chip">${esc(x)}</span>`).join("")}${(s.skills || []).map(x => `<span class="chip" style="color:#9ece6a">◆ ${esc(x)}</span>`).join("")}${wfTxt.map(x => `<span class="chip" style="color:var(--model)">${esc(x)}</span>`).join("")}</div>
     <div class="chips">${anomChips || '<span class="chip ok">✓ 没有失败、打转或超大结果</span>'}${slowChip}</div>
     ${(s.moments || []).length ? `<div class="moments"><div class="mh">关键时刻（点击跳到那一步）</div>${s.moments.map(m =>
@@ -1144,6 +1160,40 @@ function risksBox(rs) {
   };
   return `<div class="risk"><div class="mh">风险（规则判断，推断；只标不拦。悬浮看凭什么这么判；有对应调用的点一下跳到第一处）</div>`
     + rs.map(line).join("") + `</div>`;
+}
+
+// 省钱 S3: 上下文是怎么涨起来的 —— 主线程每一轮的上下文 (真值) + 大涨归到期间回来的调用 (估算) + 压缩 / 离开后重建
+function ctxBox(C) {
+  if (!C || !C.points || C.points.length < 2) return "";
+  const P = C.points, t0 = P[0][0], t1 = P[P.length - 1][0], W = 600, H = 72, top = Math.max(C.max, 1) * 1.05;
+  const X = t => (t1 > t0 ? (t - t0) / (t1 - t0) * W : 0).toFixed(1), Y = v => (H - v / top * (H - 2)).toFixed(1);
+  const path = P.map((p, i) => (i ? "L" : "M") + X(p[0]) + "," + Y(p[1])).join("");
+  const ref = v => v < top ? `<line class="cref" x1="0" x2="${W}" y1="${Y(v)}" y2="${Y(v)}"><title>${esc(fmtTok(v))}</title></line>` : "";
+  const vline = (cls, t, tip) => `<line class="${cls}" x1="${X(t)}" x2="${X(t)}" y1="0" y2="${H}"><title>${esc(tip)}</title></line>`;
+  const marks = (C.compactions || []).map(c => vline("cmk", c.t, `${fmtClock(c.t)} 压缩 / 清空：${fmtTok(c.from)} → ${fmtTok(c.to)}`)).join("")
+    + (C.rebuilds || []).map(r => vline("crb", r.t, `${fmtClock(r.t)} 离开 ${fmtDur(r.gap)} 后回来：整段 ${fmtTok(r.ctx)} 重写缓存`)).join("");
+  const head = `<div class="mh">上下文　<b>${esc(fmtTok(C.first))} → ${esc(fmtTok(C.last))}</b>`
+    + `<span>最高 ${esc(fmtTok(C.max))} · 主线程 ${C.n} 轮</span>`
+    + ((C.compactions || []).length ? `<span>压缩 / 清空 ${C.compactions.length} 次</span>` : "")
+    + ((C.rebuilds || []).length ? `<span class="warn" title="空了超过缓存有效期再回来，这一轮把整段上下文重写一遍">离开后重建 ${C.rebuilds.length} 次</span>` : "")
+    + `<span class="muted">虚线 = 15 万 / 30 万</span></div>`;
+  const svg = `<svg class="ctxs" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="上下文曲线">${ref(150000)}${ref(300000)}<path class="cln" d="${path}"></path>${marks}</svg>`
+    + `<div class="ctxax"><span>${esc(fmtClock(t0))}</span><span>${esc(fmtClock(t1))}</span></div>`;
+  const callTxt = c => `<b>${esc(c.name)}</b> ${esc(c.label || "")} ≈${esc(fmtTok(c.est))}`;
+  const jumps = (C.jumps || []).map(j => {
+    const d = j.to - j.from, rest = Math.max(0, d - j.tool_est - j.out), c0 = (j.calls[0] || {}).id;
+    const parts = (j.calls.length ? `工具结果 ≈${fmtTok(j.tool_est)}：` + j.calls.filter(c => c.est).map(callTxt).join("、") + "；" : "")
+      + `上一轮的输出 ${fmtTok(j.out)}` + (rest > 0 ? `；其余 ≈${fmtTok(rest)}` : "");
+    return `<div class="cj"${c0 ? ` data-ctx="${esc(c0)}"` : ""} title="${esc(fmtTok(j.from) + " → " + fmtTok(j.to) + "\n" + parts.replace(/<[^>]+>/g, "") + (c0 ? "\n点击跳到那一步" : ""))}">`
+      + `<span class="off">${esc(fmtClock(j.t))}</span><span class="up">+${esc(fmtTok(d))}</span><span class="tx">${parts}</span></div>`;
+  }).join("");
+  const tops = (C.top_calls || []).map(c => `<div class="cj" data-ctx="${esc(c.id)}" title="${esc("这次调用的结果约 " + fmtTok(c.est) + " token（按字符估算），之后每一轮都要再读一遍\n点击跳到那一步")}">`
+    + `<span class="off">${esc(fmtClock(c.t))}</span><span class="up">≈${esc(fmtTok(c.est))}</span><span class="tx">${callTxt(c)}</span></div>`).join("");
+  const cov = C.coverage == null ? "" : `<div class="note" style="margin-top:6px">涨出来的 ${esc(fmtTok(C.growth))} 里，约 ${Math.round(C.coverage * 100)}% 能归到具体来源`
+    + `（工具结果按字符估算，上一轮的输出是真值）；其余是你的消息、系统提示和估算误差。曲线上每一点是那一轮真的送进模型的 token。</div>`;
+  return `<div class="ctxb">${head}${svg}`
+    + (jumps ? `<div class="mh" style="margin-top:6px">撑大上下文的几步（点一条跳到那一步）</div>${jumps}` : "")
+    + (tops ? `<div class="mh" style="margin-top:6px">结果最大的几次调用</div>${tops}` : "") + cov + `</div>`;
 }
 
 function changesBox(L) {
@@ -1597,6 +1647,8 @@ document.addEventListener("click", e => {
   if (dr) { openDrill(dr.dataset.drill, dr.dataset.flag, dr.dataset.sort, dr.dataset.title); return; }
   const fr = e.target.closest("tr.f[data-file]");
   if (fr) { const k = fr.dataset.file; CHG_OPEN.has(k) ? CHG_OPEN.delete(k) : CHG_OPEN.add(k); render(); return; }
+  const cxj = e.target.closest("[data-ctx]");
+  if (cxj && CUR) { reveal(cxj.dataset.ctx); openDrawer(cxj.dataset.ctx); return; }
   const rk = e.target.closest("[data-risk]");
   if (rk && CUR) { const id = rk.dataset.risk; if (id) { reveal(id); openDrawer(id); } return; }
   const cg = e.target.closest("[data-chg]");
