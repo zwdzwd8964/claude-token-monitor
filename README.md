@@ -118,7 +118,8 @@ python -m tokmon serve
 | [docs/atlas.html](docs/atlas.html) | 系统图谱（离线 Mermaid） | 📜 停在 07-01，不含 billing/steer |
 | [WORKFLOW_TAB_PLAN.md](WORKFLOW_TAB_PLAN.md) | **`/workflow` 工作流追踪器一页规格** | ✅ S1–S3 全部验收（0.10.0 → 0.12.0） |
 | [CHANGE_RISK_PLAN.md](CHANGE_RISK_PLAN.md) | **改动与风险一页规格**（当前优先级：它改了什么 / 有没有乱改 / 在变好吗） | ✅ S1–S3 全部验收（0.13.0 → 0.15.0） |
-| [SESSIONS_COCKPIT_PLAN.md](SESSIONS_COCKPIT_PLAN.md) | **会话驾驶舱一页规格**（当前优先级：`/sessions` 一行看全四件事 + 等你时叫你） | 🟡 S0 ✅ · S1 ✅（0.17.0）· S2 ✅（0.18.0）；待你验收，S2 的权限弹窗与一周实测待补 |
+| [CONTEXT_COST_PLAN.md](CONTEXT_COST_PLAN.md) | **省钱：上下文体检一页规格**（当前优先级：上下文多大、每轮多少钱、离开多久会重建、是什么把它撑大的） | 🟡 已定方向，S1 进行中 |
+| [SESSIONS_COCKPIT_PLAN.md](SESSIONS_COCKPIT_PLAN.md) | **会话驾驶舱一页规格**（`/sessions` 一行看全四件事 + 等你时叫你） | ✅ 全部验收（0.17.0 → 0.18.0） |
 | [RUNNER_SDK_PLAN.md](RUNNER_SDK_PLAN.md) | steer 改用 Agent SDK | ✅ 已实施 |
 | [SESSIONS_FILTER_PLAN.md](SESSIONS_FILTER_PLAN.md) | `/sessions` 过滤器 V1 | ✅ 已实施 |
 | [REMOTE_CONTROL_PLAN.md](REMOTE_CONTROL_PLAN.md) | 远程 steer + 上手机 | 🟡 S1/S0 已实施，S2/S3 未做 |
