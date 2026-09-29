@@ -76,7 +76,11 @@ async function load(){
     const r=await fetch('/api/control'); const d=await r.json();
     if(my!==reqId) return;
     const on=!!d.remote_mode;
-    const sw=$('#modesw'); sw.className='switch '+(on?'on':'off'); sw.textContent=on?'开 (审批转到这里/手机)':'关 (本地弹窗照常)';
+    const sw=$('#modesw'); sw.className='switch '+(on?'on':'off');
+    const left=d.mode_expires_in_s, lm=left==null?0:Math.ceil(left/60), lh=Math.floor(lm/60), lr=lm%60;   // 先取整再拆, 不会出现「7 小时 60 分钟」
+    const hl=left==null?'':(' · '+(lh?lh+' 小时 ':'')+(lr||!lh?lr+' 分钟':'')+'后自动关');
+    sw.textContent=on?('开 (审批转到这里/手机)'+hl):'关 (本地弹窗照常)';
+    sw.title=on?'开启只管 8 小时, 到期自动关; 在本机再点一次关、再开 = 续期':'只能在本机打开 (手机上可以关)';
     const pend=d.pending||[];
     $('#pendmeta').textContent = pend.length?('共 '+pend.length+' 条等你'):'';
     $('#pending').innerHTML = pend.length ? pend.map(p=>`<div class="pend">
@@ -107,7 +111,9 @@ async function loadHook(){   // hook 片段现需令牌才可取 (含 token, 只
     if($('#hooknote')) $('#hooknote').textContent=d.note||''; }
   catch(e){ $('#snippet').textContent='读取失败'; }
 }
-async function setMode(on){ await ctlPost('/api/control/mode',{on}); load(); }
+async function setMode(on){ const r=await ctlPost('/api/control/mode',{on});
+  if(r&&r.reason==='local-only') alert('远程审批模式只能在本机打开（手机上可以关掉）：打开后持令牌者能经隧道 steer 会话，所以收回到本机。');
+  load(); }
 async function decide(id,decision){ await ctlPost('/api/control/decide',{id,decision}); load(); }
 
 // --- S1-v2 待答问题: Claude 的多选题 -> 按钮 -> 选齐后提交, 会话带着你的选择继续 ---

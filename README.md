@@ -118,6 +118,7 @@ python -m tokmon serve
 | [docs/atlas.html](docs/atlas.html) | 系统图谱（离线 Mermaid） | 📜 停在 07-01，不含 billing/steer |
 | [WORKFLOW_TAB_PLAN.md](WORKFLOW_TAB_PLAN.md) | **`/workflow` 工作流追踪器一页规格** | ✅ S1–S3 全部验收（0.10.0 → 0.12.0） |
 | [CHANGE_RISK_PLAN.md](CHANGE_RISK_PLAN.md) | **改动与风险一页规格**（当前优先级：它改了什么 / 有没有乱改 / 在变好吗） | ✅ S1–S3 全部验收（0.13.0 → 0.15.0） |
+| [INSTANCES_PLAN.md](INSTANCES_PLAN.md) | **实例管理一页规格**（重启不用重新部署：`/processes` 顶部的实例清单 + 启停 + 开机拉起 + tokmon 自启） | 🟡 0.22.0 已交付 —— 待你验收 |
 | [CONTEXT_COST_PLAN.md](CONTEXT_COST_PLAN.md) | **省钱：上下文体检一页规格**（当前优先级：上下文多大、每轮多少钱、离开多久会重建、是什么把它撑大的） | 🟡 S1 ✅（0.19.0）· S2 ✅（0.20.0）· S3 ✅（0.21.0）—— 待你验收 |
 | [SESSIONS_COCKPIT_PLAN.md](SESSIONS_COCKPIT_PLAN.md) | **会话驾驶舱一页规格**（`/sessions` 一行看全四件事 + 等你时叫你） | ✅ 全部验收（0.17.0 → 0.18.0） |
 | [RUNNER_SDK_PLAN.md](RUNNER_SDK_PLAN.md) | steer 改用 Agent SDK | ✅ 已实施 |

@@ -38,6 +38,7 @@ _TYPE_LABEL = {
     "TOKEN_BUDGET_WARNING": "预算告警", "PROCESS_CRASHED": "进程崩溃", "COMMAND_ISSUED": "已下指令",
     "DESTRUCTIVE_OP": "破坏性操作", "ERROR_SPIKE": "连续失败", "REPEATED_FILE_EDIT": "改了又改没通过",
     "LARGE_DIFF": "大改动", "CONTEXT_LARGE": "上下文过大",
+    "INSTANCE_BOOT_PENDING": "实例待拉起",
 }
 
 
@@ -50,7 +51,7 @@ class NotifyConfig:
     push_min_severity: str = "warning"   # info|warning|critical 起步门槛 (info 永不推送, 只进时间线)
     quiet_start: int | None = None       # 静默时段本地小时 [start,end); None=不启用
     quiet_end: int | None = None
-    debounce_s: int = 120                # 同 (类型,会话) 去抖窗口
+    debounce_s: int = 120                # 同 (类型, 会话) 或 (类型, 实例名, 项目) 去抖窗口 (见 debounce_key)
     rate_max: int = 10                   # rate_window_s 内最多推送条数
     rate_window_s: int = 300
     enabled_types: set | None = None     # None = 全部类型; 否则只推这些
@@ -137,11 +138,29 @@ def summarize(ev: dict) -> str:
                   else f"单次大改动 {p.get('count') or '?'} 次")
     elif t == "CONTEXT_LARGE":
         detail = f"上下文 {round((p.get('count') or 0) / 10000)} 万 token"
+    elif t == "PROCESS_CRASHED":        # 实例层 v0.22: 只带你给实例起的名字 + 退出码, 不带命令/路径/日志
+        detail = f"{p.get('instance') or '?'} 意外退出"
+        if p.get("exit_code") is not None:
+            detail += f" (退出码 {p['exit_code']})"
+    elif t == "INSTANCE_BOOT_PENDING":
+        detail = f"重启后 {p.get('count')} 个实例等你确认拉起"
     elif t == "TOKEN_BUDGET_WARNING":
         scope_zh = {"daily": "今日", "weekly": "近7天", "project": "项目"}.get(p.get("scope"), p.get("scope") or "")
         detail = f"{scope_zh}预算已用 {p.get('pct')}%"
     out = f"{label} · {who}" if who else label
     return out + (f" · {detail}" if detail else "")
+
+
+def debounce_key(ev: dict) -> tuple:
+    """去抖键 = (类型, 谁)。有会话按会话; 没会话的 (实例崩溃 / 预算 ...) 按 (实例名, 项目) 区分 ——
+    两个实例前后脚崩 (比如共同依赖挂了), 第二个不能被第一个的去抖吞掉, 否则你以为只挂了一个。
+    实例名不唯一 (只有 id 唯一, 第二个「api」的 id 是 api-2), 所以项目也进键: 两个项目各有一个「api」照样各推一条。"""
+    if ev.get("session"):
+        return (ev.get("type"), ev.get("session"))
+    if ev.get("pillar") == "instances" and str(ev.get("dedup_key") or "").count(":") >= 2:
+        return (ev.get("type"), "instance", str(ev["dedup_key"]).split(":")[1])   # dedup_key = 类型:实例 id:… —— id 才唯一 (同名同项目也分得开)
+    p = ev.get("payload") or {}
+    return (ev.get("type"), p.get("instance"), ev.get("project"))
 
 
 def decide(ev: dict, cfg: NotifyConfig, last_push: dict, recent_count: int, now: float):
@@ -156,7 +175,7 @@ def decide(ev: dict, cfg: NotifyConfig, last_push: dict, recent_count: int, now:
         return False, ("quiet-hours" if quiet and sev >= base else "below-threshold")
     # critical = 优先推送 (§7): 既不被去抖也不被限流挡掉 —— 重要的事必须主动找到你
     is_critical = sev >= SEV_RANK["critical"]
-    last = last_push.get((ev.get("type"), ev.get("session")), 0)
+    last = last_push.get(debounce_key(ev), 0)
     if not is_critical and now - last < cfg.debounce_s:
         return False, "debounce"
     if not is_critical and recent_count >= cfg.rate_max:
@@ -237,7 +256,7 @@ class Notifier:
             }
             self.feed.append(rec)
             if push:
-                self._last_push[(ev.get("type"), ev.get("session"))] = now
+                self._last_push[debounce_key(ev)] = now
                 self._window.append(now)
                 self._q.put((ev, rec))
             else:

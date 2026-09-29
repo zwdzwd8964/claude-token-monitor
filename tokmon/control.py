@@ -33,6 +33,7 @@ from .project import workspace_identity
 _TOKEN_PATH = Path.home() / ".tokmon" / "control_token"
 _WAIT_S = 25.0          # 阻塞等远程决定的上限 (要 < hook 的 timeout, 给回退留余量)
 _MAX_PENDING = 32       # 并发待审批硬上限 (超出 -> defer 失败安全, 防 hook 洪水耗尽线程)
+MODE_TTL_S = 8 * 3600  # 控制模式开启后多久自动关 (0.22: 你选的 8 小时)
 
 
 def _load_or_create_token() -> str:
@@ -97,8 +98,9 @@ class _Pending:
 class ControlPlane:
     def __init__(self):
         self.token = _load_or_create_token()
-        self.remote_mode = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()       # 可重入: 读 remote_mode 可能顺手做到期关闭 (要记审计, 审计也拿这把锁)
+        self._mode_on = False
+        self._mode_until: float | None = None
         self._pending: dict[str, _Pending] = {}
         self._audit: deque = deque(maxlen=200)
         self._seq = 0
@@ -106,24 +108,48 @@ class ControlPlane:
     def check_token(self, tok) -> bool:
         return bool(tok) and secrets.compare_digest(str(tok), self.token)
 
+    # 控制模式一开, 持令牌者就能经隧道 steer 会话 (steer 的本意) —— 忘了关, 这扇门就一直开着。
+    # 所以开启只管 MODE_TTL_S (你选的 8 小时), 到期自动关并记审计; 在本机再开一次 = 续期。
+    @property
+    def remote_mode(self) -> bool:
+        with self._lock:
+            if self._mode_on and self._mode_until is not None and time.time() >= self._mode_until:
+                until = self._mode_until
+                self._mode_on, self._mode_until = False, None
+                # 到期是读的时候才发现的 (可能过了一夜): 审计记**真正到期的那一刻**, 不是这次读的时刻
+                self.audit_action("control-mode", "off", "expired", ts=until)
+            return self._mode_on
+
+    @remote_mode.setter
+    def remote_mode(self, on) -> None:
+        with self._lock:
+            self._mode_on = bool(on)
+            self._mode_until = time.time() + MODE_TTL_S if self._mode_on else None
+
+    def mode_expires_in(self) -> int | None:
+        with self._lock:
+            if not self.remote_mode or self._mode_until is None:
+                return None
+            return max(0, int(self._mode_until - time.time()))
+
     def set_mode(self, on: bool) -> bool:
         with self._lock:
             self.remote_mode = bool(on)
-            return self.remote_mode
+            return self._mode_on
 
-    def _record(self, action: str, session, tool, outcome: str):
-        self._audit.append({"ts": int(time.time()), "action": action,
+    def _record(self, action: str, session, tool, outcome: str, ts: float | None = None):
+        self._audit.append({"ts": int(time.time() if ts is None else ts), "action": action,
                             "session": session, "tool": tool, "outcome": outcome})
 
-    def audit_action(self, kind: str, target: str, outcome: str, session=None, project=None):
+    def audit_action(self, kind: str, target: str, outcome: str, session=None, project=None, ts: float | None = None):
         """记录一次控制动作 (终止/释放端口) 到审计 + 发 COMMAND_ISSUED (每次唯一 dedup, 不会被总线去重吞掉)。
         payload 只带 state_label (§6 允许); target 是 pid/name/port 这类非敏感描述, 不含 cmdline/路径。"""
         with self._lock:
             self._seq += 1
             seq = self._seq
-        self._record(kind, session, target, outcome)
+        self._record(kind, session, target, outcome, ts=ts)
         bus.emit(Event.make("COMMAND_ISSUED", pillar="control", session=session, project=project,
-                            severity="info", timestamp=time.time(),
+                            severity="info", timestamp=time.time() if ts is None else ts,
                             dedup_key=f"COMMAND_ISSUED:{kind}:{seq}",
                             state_label=f"{kind} {target} · {outcome}"))
 
@@ -184,7 +210,8 @@ class ControlPlane:
                      "summary": p.summary, "age_s": int(time.time() - p.created)}
                     for p in self._pending.values()]
             audit = list(self._audit)[-60:]
-        return {"remote_mode": self.remote_mode, "pending": pend, "audit": audit,
+        return {"remote_mode": self.remote_mode, "mode_expires_in_s": self.mode_expires_in(),
+                "pending": pend, "audit": audit,
                 "token_set": bool(self.token)}      # 绝不回显 token 本体
 
     def hook_config(self, base_url: str) -> dict:

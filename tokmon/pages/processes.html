@@ -42,15 +42,93 @@
   .modebtn { font-size:12px; padding:4px 12px; border-radius:8px; border:1px solid var(--line); background:var(--panel); color:var(--dim); cursor:pointer; }
   .modebtn.on { color:var(--good); border-color:#2c3a23; background:#151d12; }
   footer { padding:14px 24px; color:var(--dim); font-size:12px; border-top:1px solid var(--line); }
+  /* ---- 实例 (v0.22): 你登记的本机服务 —— 卡片 / 备用表 / 日志抽屉 / 编辑弹窗 ---- */
+  #instances { display:flex; flex-direction:column; gap:10px; }
+  .ihd { display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; }
+  .ihd h2.sec { margin:0 4px 0 0; }
+  .grow { flex:1 1 auto; }
+  .ibtn { font-size:12px; padding:4px 11px; border-radius:8px; }
+  .ibtn.go { color:var(--good); border-color:#2c3a23; } .ibtn.stop { color:var(--bad); border-color:#4a2730; }
+  .ibtn:disabled, .mini:disabled { opacity:.5; cursor:default; }
+  .mini { font-size:11px; padding:1px 8px; border-radius:6px; }
+  .mini.go { color:var(--good); border-color:#2c3a23; }
+  .pin { font-size:11px; padding:1px 6px; border-radius:6px; margin-right:4px; }
+  .ibanner { border:1px solid var(--line); border-radius:10px; padding:8px 12px; font-size:13px; background:var(--panel);
+      display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; }
+  .ibanner.bad { border-color:#4a2730; background:#1b1113; } .ibanner.warn { border-color:#3a3320; background:#1d1a12; }
+  .inote { font-size:12px; color:var(--dim); } .inote.warn { color:var(--warn); }
+  .igrid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr)); }
+  .icard { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px;
+      display:flex; flex-direction:column; gap:7px; min-width:0; }
+  .icard.run { border-color:#2c3a23; } .icard.bad { border-color:#4a2730; } .icard.warn { border-color:#3a3320; }
+  .inm { font-weight:600; font-size:14px; word-break:break-word; }
+  .idesc { color:var(--dim); font-size:12.5px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .irow { display:flex; flex-wrap:wrap; gap:6px; align-items:center; min-width:0; }
+  .chip { font-size:11.5px; padding:1px 8px; border-radius:999px; border:1px solid var(--line); white-space:nowrap; color:var(--dim); }
+  .chip.ok { color:var(--good); border-color:#2c3a23; } .chip.bad { color:var(--bad); border-color:#4a2730; }
+  .chip.warn { color:var(--warn); border-color:#3a3320; } .chip.proj { color:var(--fg); }
+  .chip a { text-decoration:none; } .chip .mini { margin-left:4px; }
+  .pill { font-size:12.5px; padding:2px 10px; border-radius:7px; border:1px solid var(--line); }
+  .pill.ok { color:var(--good); border-color:#2c3a23; background:#151d12; }
+  .pill.bad { color:var(--bad); border-color:#4a2730; background:#1b1113; }
+  .pill.warn { color:var(--warn); border-color:#3a3320; background:#1d1a12; }
+  .pill.self { color:var(--accent); border-color:#2a3a5c; background:#131a2a; }
+  .pill.dim { color:var(--dim); }
+  .pill.busy { animation:ipulse 1.2s ease-in-out infinite; }
+  @keyframes ipulse { 50% { opacity:.45; } }
+  .iwarn { font-size:12px; color:var(--warn); } .ierr { font-size:12px; color:var(--bad); word-break:break-word; }
+  .icmd { font:11.5px/1.4 ui-monospace,Consolas,monospace; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .imsg { font-size:12px; } .imsg.ok { color:var(--good); } .imsg.bad { color:var(--bad); } .imsg.warn { color:var(--warn); }
+  select.iboot { font-size:12px; padding:3px 6px; }
+  .iact { display:inline-flex; flex-wrap:wrap; gap:6px; justify-content:flex-end; align-items:center; margin-left:auto; }   /* 按钮成组换行, 不拆散 */
+  details.imenu { position:relative; display:inline-block; }
+  details.imenu summary { list-style:none; cursor:pointer; border:1px solid var(--line); border-radius:8px; padding:3px 10px; font-size:12px; }
+  details.imenu summary::-webkit-details-marker { display:none; }
+  details.imenu .ilist { position:absolute; right:0; top:calc(100% + 4px); z-index:40; display:flex; flex-direction:column; gap:3px;
+      min-width:110px; background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:4px; box-shadow:0 8px 24px rgba(0,0,0,.45); }
+  details.imenu .ilist button { font-size:12px; text-align:left; border-color:transparent; }
+  details.imenu .ilist button.danger { color:var(--bad); }
+  details#inst-backup > summary { cursor:pointer; color:var(--dim); font-size:13px; padding:2px 0; }
+  .ibk { border:1px solid var(--line); border-radius:10px; margin-top:8px; }
+  .ibk td { vertical-align:top; } .ibk td.act { white-space:normal; }
+  .ibk .pill { white-space:normal; }
+  #inst-log { position:fixed; left:0; right:0; bottom:0; height:min(46vh,440px); z-index:70; background:#0b0d12;
+      border-top:1px solid var(--line); display:flex; flex-direction:column; box-shadow:0 -8px 24px rgba(0,0,0,.45); }
+  #inst-log .lh { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; padding:8px 16px; border-bottom:1px solid var(--line); }
+  #inst-log pre { flex:1; margin:0; padding:10px 16px; overflow:auto; font:12px/1.45 ui-monospace,Consolas,monospace;
+      white-space:pre-wrap; word-break:break-all; }
+  #inst-modal { position:fixed; inset:0; z-index:80; background:rgba(0,0,0,.55); display:flex; align-items:flex-start;
+      justify-content:center; padding:4vh 12px; overflow:auto; }
+  #inst-modal form { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px 18px;
+      width:min(720px,100%); display:flex; flex-direction:column; gap:10px; }
+  #inst-log[hidden], #inst-modal[hidden], #inst-backup[hidden], .ibanner[hidden] { display:none; }
+  .mh, .mf { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .fgrid { display:grid; gap:10px 14px; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); }
+  .fld { display:flex; flex-direction:column; gap:3px; min-width:0; } .fld.wide { grid-column:1/-1; }
+  .fld label { font-size:12px; color:var(--dim); }
+  .fld input, .fld textarea, .fld select { width:100%; background:var(--bg); color:var(--fg); border:1px solid var(--line);
+      border-radius:8px; padding:6px 9px; font-size:13px; }
+  .fld textarea { font:12.5px/1.45 ui-monospace,Consolas,monospace; resize:vertical; min-height:52px; }
+  .fld textarea.prose { font:13px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .fld .hint { font-size:11px; color:var(--dim); }
+  .ferr { font-size:12px; color:var(--bad); }
+  .ferr:empty { display:none; }
 </style></head>
 <body>
 <header>
-  <h1>进程 / 端口监控 <span>只读 · 本机 (终止需开控制模式)</span></h1>
+  <h1>进程 / 端口监控 <span>本机 · 实例启停需控制令牌 · 终止进程需开控制模式</span></h1>
   <div class="nav">
     __NAV__
   </div>
 </header>
 <main>
+  <section id="instances">
+    <div class="ihd" id="ix-head"><h2 class="sec">★ 我的实例</h2></div>
+    <div id="ix-notes"></div>
+    <div id="ix-banners"></div>
+    <div id="ix-core" class="igrid"><div class="muted">加载中…</div></div>
+    <details id="inst-backup" hidden><summary id="ix-bk-sum">备用实例</summary><div id="ix-bk-body"></div></details>
+  </section>
   <div class="controls">
     <input type="text" id="filter" placeholder="过滤: 进程名 / 端口 / 命令行 / 远端地址…" style="min-width:280px">
     <span class="muted">进程排序</span>
@@ -63,6 +141,35 @@
   <div id="app"><div class="muted">加载中…</div></div>
 </main>
 <footer id="foot"></footer>
+<aside id="inst-log" hidden aria-label="实例日志">
+  <div class="lh"><b id="ix-log-title">日志</b><span id="ix-log-meta" class="muted" style="font-size:12px"></span><span class="grow"></span>
+    <button type="button" id="ix-log-more" class="mini">更多 (500 行)</button><button type="button" id="ix-log-close" class="mini">关闭 ✕</button></div>
+  <pre id="ix-log-pre"></pre>
+</aside>
+<div id="inst-modal" hidden role="dialog" aria-modal="true" aria-labelledby="ix-m-title">
+  <form id="ix-form" autocomplete="off" novalidate>
+    <div class="mh"><b id="ix-m-title">新增实例</b><span class="grow"></span><button type="button" id="ix-m-x" class="mini">关闭 ✕</button></div>
+    <div id="ix-m-warn" class="ibanner warn" hidden></div>
+    <div class="fgrid">
+      <div class="fld"><label for="ixf-name">名字 *</label><input type="text" id="ixf-name" maxlength="40" placeholder="比如：示例 API"><div class="ferr" id="ixe-name"></div></div>
+      <div class="fld"><label for="ixf-project">项目</label><input type="text" id="ixf-project" maxlength="60"><div class="ferr" id="ixe-project"></div></div>
+      <div class="fld wide"><label for="ixf-description">描述</label><textarea id="ixf-description" class="prose" rows="2" maxlength="300" placeholder="它是干什么的 / 什么时候需要开着"></textarea><div class="ferr" id="ixe-description"></div></div>
+      <div class="fld"><label for="ixf-group">分组</label><select id="ixf-group"><option value="core">核心（卡片）</option><option value="backup">备用（默认收起）</option></select><div class="ferr" id="ixe-group"></div></div>
+      <div class="fld"><label for="ixf-boot">开机策略</label><select id="ixf-boot"><option value="manual">手动 · 只登记</option><option value="ask">开机提醒 · 你点一下再拉起</option><option value="auto">开机自动 · 自动拉起</option></select><div class="ferr" id="ixe-boot"></div></div>
+      <div class="fld wide"><label for="ixf-cwd">工作目录 *</label><input type="text" id="ixf-cwd" spellcheck="false" placeholder="C:/path/to/project"><div class="ferr" id="ixe-cwd"></div></div>
+      <div class="fld wide"><label for="ixf-command">启动命令 *</label><textarea id="ixf-command" rows="2" maxlength="2000" spellcheck="false" placeholder="npm run dev"></textarea><div class="hint">在工作目录里后台执行（无窗口），输出写进日志。</div><div class="ferr" id="ixe-command"></div></div>
+      <div class="fld"><label for="ixf-ports">端口</label><input type="text" id="ixf-ports" spellcheck="false" placeholder="18080, 18081"><div class="hint">逗号隔开；第一个是主端口（判断运行、打开链接）</div><div class="ferr" id="ixe-ports"></div></div>
+      <div class="fld"><label for="ixf-open_path">打开路径</label><input type="text" id="ixf-open_path" spellcheck="false" placeholder="/"><div class="ferr" id="ixe-open_path"></div></div>
+      <div class="fld wide"><label for="ixf-env">环境变量</label><textarea id="ixf-env" rows="2" spellcheck="false" placeholder="KEY=VALUE（一行一个）"></textarea><div class="hint">只存在本机 ~/.tokmon/instances；状态接口只给变量名，不给值。</div><div class="ferr" id="ixe-env"></div></div>
+      <div class="fld wide"><label for="ixf-deps">依赖（要先就绪的外部程序）</label><textarea id="ixf-deps" rows="2" spellcheck="false" placeholder="数据库:15432（一行一个 名字:端口）"></textarea><div class="hint">只看它的端口在不在监听；tokmon 不会去启动它。</div><div class="ferr" id="ixe-deps"></div></div>
+      <div class="fld"><label for="ixf-stop_grace_s">停止宽限（秒）</label><input type="text" inputmode="numeric" id="ixf-stop_grace_s" placeholder="10"><div class="ferr" id="ixe-stop_grace_s"></div></div>
+      <div class="fld"><label for="ixf-start_timeout_s">启动超时（秒）</label><input type="text" inputmode="numeric" id="ixf-start_timeout_s" placeholder="60"><div class="ferr" id="ixe-start_timeout_s"></div></div>
+      <div class="fld"><label for="ixf-id">id（可留空）</label><input type="text" id="ixf-id" maxlength="40" spellcheck="false" placeholder="留空按名字自动生成"><div class="hint">小写字母 / 数字 / 连字符</div><div class="ferr" id="ixe-id"></div></div>
+    </div>
+    <div id="ix-m-err" class="ferr"></div>
+    <div class="mf"><button type="submit" id="ix-m-save" class="ibtn go">保存</button><button type="button" id="ix-m-cancel" class="ibtn">取消</button></div>
+  </form>
+</div>
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -94,6 +201,7 @@ let DATA=null, HEALTH={}, reqId=0;
 async function load(){
   const my=++reqId;
   try{
+    await loadCtrl();                        // 控制模式可能已在服务端到期 (8 小时) 或被手机关掉: 每次刷新都重读
     const r=await fetch('/api/processes'); const d=await r.json();
     if(my!==reqId) return;
     if(d.error){ $('#app').innerHTML='<div class="card warn">进程监控不可用: '+esc(d.error)+
@@ -104,6 +212,7 @@ async function load(){
 
 function render(){
   if(!DATA) return;
+  if(CTRL_UNTIL!=null && Date.now()>=CTRL_UNTIL){ CTRL_MODE=false; CTRL_UNTIL=null; }   // 本地先按截止时刻收起终止按钮
   const d=DATA, q=$('#filter').value.trim().toLowerCase(), loonly=$('#loonly').checked, sortKey=$('#sort').value;
   const h=d.host;
   const kpis=[['CPU', (h.cpu_percent||0)+'%'],['内存', (h.mem_percent||0)+'%  ·  '+fmtBytes(h.mem_used)+'/'+fmtBytes(h.mem_total)],
@@ -133,7 +242,7 @@ function render(){
       <td>${healthBadge((HEALTH[l.port] && (HEALTH[l.port].pid==null || HEALTH[l.port].pid===l.pid)) ? HEALTH[l.port] : null)}</td>
       <td>${esc(l.name)} <span class="muted">${l.pid==null?'':'· '+l.pid}</span> ${(l.category&&l.category!=='other')?'<span class="badge lo">'+esc(l.category)+'</span>':''}</td>
       <td class="cmd" title="${esc(l.cmd)}">${esc(l.cmd)}</td>
-      <td class="act">${(CTRL_MODE&&l.terminable)?`<button class="kill" data-port="${l.port}" onclick="freePort(this)" title="终止占用此端口的进程">释放</button>`:(l.pid&&!l.terminable?'<span class="muted" title="仅 VS Code/Cloudflare/Railway 可终止">🔒</span>':'')}</td></tr>`).join('');
+      <td class="act">${pinBtn(l.pid, l.create_time!=null?l.create_time:ctOf(l.pid))}${(CTRL_MODE&&l.terminable)?`<button class="kill" data-port="${l.port}" onclick="freePort(this)" title="终止占用此端口的进程">释放</button>`:(l.pid&&!l.terminable?'<span class="muted" title="仅 VS Code/Cloudflare/Railway 可终止">🔒</span>':'')}</td></tr>`).join('');
   const lisCard=`<div><h2 class="sec">监听端口 → 占用进程 <span class="count">${lis.length}/${d.listening.length}</span></h2>
     <div class="wrap"><table><thead><tr><th class="num">端口</th><th>地址</th><th>健康</th><th>进程</th><th>命令行 (已脱敏)</th><th class="act"></th></tr></thead>
     <tbody>${lisRows||'<tr><td colspan=6 class="muted">无匹配</td></tr>'}</tbody></table></div></div>`;
@@ -147,14 +256,14 @@ function render(){
         <td title="${esc(p.cmd)}">${esc(p.name)}${p.name==='claude.exe'?' <span class="badge lo">会话</span>':''}</td>
         <td class="num">${p.pid}</td><td class="num">${p.cpu||0}%</td><td class="num">${fmtBytes(p.rss)}</td>
         <td class="num">${(p.listen_ports&&p.listen_ports.length)?esc(p.listen_ports.join(',')):'—'}</td>
-        <td class="act">${CTRL_MODE?`<button class="kill" data-pid="${p.pid}" data-ct="${p.create_time}" data-name="${esc(p.name)}" onclick="killProc(this)">终止</button>`:''}</td></tr>`).join('');
+        <td class="act">${pinBtn(p.pid, p.create_time)}${CTRL_MODE?`<button class="kill" data-pid="${p.pid}" data-ct="${p.create_time}" data-name="${esc(p.name)}" onclick="killProc(this)">终止</button>`:''}</td></tr>`).join('');
     return `<div class="catcard"><h3>${icon} ${esc(label)} <span class="count">${c.count} 进程 · ${fmtBytes(c.rss)}${(c.listen_ports&&c.listen_ports.length)?' · 端口 '+esc(c.listen_ports.slice(0,12).join(',')):''}</span></h3>
       ${c.count?`<div class="wrap"><table><thead><tr><th>进程</th><th class="num">PID</th><th class="num">CPU</th><th class="num">内存</th><th class="num">监听</th><th class="act"></th></tr></thead><tbody>${rows||'<tr><td colspan=6 class="muted">无匹配</td></tr>'}</tbody></table></div>`:'<div class="muted">未运行</div>'}</div>`;
   }
   const other=(d.categories&&d.categories.other)||{count:0,rss:0};
   const otherRow=`<div class="catcard other"><h3>▦ 其他 <span class="count">${other.count} 个进程 · 总内存 ${fmtBytes(other.rss)} · 只读, 不可终止</span></h3></div>`;
   const modeBtn=CTRL_MODE
-    ? `<button class="modebtn on" onclick="toggleMode()" title="这也是 M4 的远程审批模式: 同时会把 Claude Code 的 permission 请求路由到网页(每条最多阻塞 25s 再回退本地)。用完记得关。">● 控制模式开 · 点击关闭</button>`
+    ? `<button class="modebtn on" onclick="toggleMode()" title="这也是 M4 的远程审批模式: 同时会把 Claude Code 的 permission 请求路由到网页(每条最多阻塞 25s 再回退本地)。开启只管 8 小时, 到期自动关。">● 控制模式开${ctrlLeftText()} · 点击关闭</button>`
     : `<button class="modebtn" onclick="toggleMode()" title="开启后才出现终止按钮 (需本机控制令牌; 服务端 kill 时仍二次校验类别+身份)。注意: 这也是远程审批模式, 开着会把 permission 请求路由到网页并阻塞至多 25s。">○ 只读 · 开控制模式启用终止</button>`;
   const catsCard=`<div><h2 class="sec">分类进程 <span class="count">只这三类可终止 · 其余汇总为"其他" · 终止 = 先 terminate 不掉再强制</span> &nbsp;${modeBtn}</h2>
     <div class="catgrid">${catCard('vscode','VS Code','🟦')}${catCard('cloudflare','Cloudflare','🟧')}${catCard('railway','Railway','🚝')}${otherRow}</div></div>`;
@@ -191,7 +300,11 @@ async function probeHealth(){
 
 // --- 控制面 (P7): 终止进程/释放端口。默认只读; 开控制模式 + 令牌 + 服务端二次校验 + 审计 ---
 // 令牌不再经 HTTP 下发 (评审: 防本机他进程/网页窃取): 首次操作时粘贴一次(见服务器控制台/~/.tokmon/control_token), 存浏览器。
-let CTRL_TOKEN=localStorage.getItem('mc_ctl_token')||'', CTRL_MODE=false;
+let CTRL_TOKEN=localStorage.getItem('mc_ctl_token')||'', CTRL_MODE=false, CTRL_UNTIL=null;
+// 控制模式剩余时间: 服务端给剩余秒数, 这里换成本地截止时刻, 渲染时现算 (页面开着一整晚也不会停在开的那一刻)
+function ctrlLeftText(){ if(CTRL_UNTIL==null) return ''; const left=Math.max(0,(CTRL_UNTIL-Date.now())/1000);
+  if(left<=0) return ''; const m=Math.ceil(left/60), h=Math.floor(m/60), mm=m%60;
+  return ' · '+(h?h+'h':'')+(mm||!h?mm+'m':'')+' 后自动关'; }
 function ctrlHeaders(){ return {'Content-Type':'application/json','X-Control-Token':CTRL_TOKEN}; }
 function ensureToken(){
   if(!CTRL_TOKEN){ const t=prompt('粘贴控制令牌以启用控制操作\n(见服务器控制台启动输出, 或 ~/.tokmon/control_token):'); if(t&&t.trim()){ CTRL_TOKEN=t.trim(); localStorage.setItem('mc_ctl_token',CTRL_TOKEN); } }
@@ -204,11 +317,14 @@ async function ctlPost(path, body){
   return res.json();
 }
 async function loadCtrl(){
-  try{ const c=await (await fetch('/api/control')).json(); CTRL_MODE=!!c.remote_mode; }catch(e){}
+  try{ const c=await (await fetch('/api/control')).json(); CTRL_MODE=!!c.remote_mode;
+    CTRL_UNTIL=c.mode_expires_in_s==null?null:Date.now()+c.mode_expires_in_s*1000; }catch(e){}
 }
 async function toggleMode(){
   const r=await ctlPost('/api/control/mode',{on:!CTRL_MODE});
+  if(r&&r.reason==='local-only') alert('控制模式只能在本机打开（手机上可以关掉）。');
   if(r) CTRL_MODE=!!r.remote_mode;
+  await loadCtrl();
   render();
 }
 async function killProc(btn){
@@ -243,6 +359,586 @@ async function freePort(btn){
   }catch(e){ btn.disabled=false; btn.textContent=old; }
 }
 
+// ---- 实例 (v0.22) 开始 ----
+// 你登记的本机服务: 看状态 / 启停 / 开机拉起。自己一条轮询 (4 秒, 页面藏起来就停), 与上面的「自动刷新」无关。
+// 权限: 启停 / 编辑只要控制令牌 (X-Control-Token), **不看**控制模式 —— 那是远程审批开关, 与实例无关;
+// 远程 (手机隧道) 一律只读: 按钮不画, 服务端也会以 local-only 拒绝。服务端给的字符串一律过 esc(), 按钮只带 data-*,
+// 不把 id 拼进 onclick 的 JS 字符串 (HTML 转义挡不住 JS 上下文)。
+// 卡片 / 备用行 id = ic-<id> (不用 inst-: 实例 id 可以叫 log / modal / backup, 撞上 #inst-log / #inst-modal 的
+// position:fixed 样式会盖住整页); 其余容器用 ix- 前缀。三个定位容器 (inst-log/inst-modal/inst-backup) 启动时就抓住引用。
+// 旧深链 #inst-<id> 仍认 (instJumpHash 映射到 ic-<id>)。
+const IX={log:document.getElementById('inst-log'), modal:document.getElementById('inst-modal'), backup:document.getElementById('inst-backup')};
+const INST_FIELDS=['id','name','project','description','group','boot','cwd','command','ports','open_path','env','deps','stop_grace_s','start_timeout_s'];
+const BOOT_LABEL={auto:'开机自动', ask:'开机提醒', manual:'手动'};
+const FIELD_ERR={required:'必填','too-long':'太长','bad-format':'格式不对','cwd-missing':'目录不存在','bad-port':'端口无效',
+  'dup-port':'端口重复','too-many':'太多','bad-choice':'选项无效',range:'超出范围',
+  'portless-auto':'没有端口的实例认不出外部启动的副本，开机策略只能用「手动」'};
+const INST_REASON={'not-found':'找不到这个实例（可能刚被删了）','self':'这是 tokmon 自己，不在这里启停','already-running':'已经在运行',
+  'busy':'上一个启动 / 停止还没做完','port-busy':'端口被占用','deps-not-ready':'依赖未就绪','launch-failed':'启动命令没跑起来',
+  'no-psutil':'缺 psutil','not-running':'没在运行','local-only':'只能在本机操作（远程只读）','invalid':'有字段不对',
+  'id-exists':'id 已被占用','pid-reused':'进程已变（PID 被复用）','gone':'进程已经不在了','access-denied':'没权限读这个进程（可能要管理员）',
+  'identity-required':'进程信息过期了','bad-create-time':'进程信息不完整','bad-pid':'PID 无效','bad-group':'分组无效',
+  'bad-action':'动作无效','bad-on':'参数无效','bad-port':'端口无效','unsupported':'这个系统不支持',
+  'not-owner':'不归这边管','degraded':'进程还在但端口没在监听，请用「重启」',
+  'ambiguous':'端口上的进程认不准是哪个实例的，不敢动它','unknown':'状态未知（读不到端口表）',
+  'portless-confirm':'没有端口，认不出它是不是已经在别处跑着','portless':'没有端口、认不出是不是已在别处跑，批量不替你起（要起请单独点「启动」）'};
+const INST_TRANSIENT=['starting','stopping','waiting_deps'];
+// INST_LOCAL: 本机访问 (远程只读); INST_CAN: 能改 = 本机 且 这个 tokmon 就是实例的管理者 (另一个 tokmon 在管时这边只读)
+let INST=null, INST_LOCAL=false, INST_CAN=false, INST_FETCH_ERR='', INST_REQ=0, INST_TIMER=null, INST_DRAWN=0;
+const INST_MSG={}, INST_BUSY={}, INST_HTML={};
+let MODAL={original_id:null, kind:'service'}, LOG={id:null, n:200, timer:null, req:0};
+let INST_DISMISSED=[];
+try{ const x=JSON.parse(localStorage.getItem('mc.inst.dismissed')||'[]'); if(Array.isArray(x)) INST_DISMISSED=x; }catch(e){}
+
+function instById(id){ return ((INST&&INST.instances)||[]).find(i=>i.id===id)||null; }
+function instByName(id){ const i=instById(id); return i?i.name:String(id); }   // 冲突里的 by / with 是实例 id: 显示成你起的名字
+function instReason(r){   // 原因码 -> 中文; 服务端 detail 跟在后面 (和中文说的是同一句就不重复)
+  const k=r&&r.reason, base=INST_REASON[k]||k||(r&&r.error)||'未知原因', dt=r&&r.detail?String(r.detail):'';
+  return base+(dt&&base.indexOf(dt)<0?' · '+dt:'');
+}
+function instOtherOwner(d){ const o=d&&d.owner; return !!(o && o.is_owner===false); }   // 另一个 tokmon 在管实例: 这边只看不改
+function safeUrl(u){ return (typeof u==='string' && /^https?:\/\/[^\s"'<>`]+$/i.test(u)) ? u : null; }   // 只放 http(s), 挡 javascript:
+function setHTML(sel,html){ if(INST_HTML[sel]===html) return; INST_HTML[sel]=html; $(sel).innerHTML=html; }   // 没变就不动 DOM
+function instSay(id,t,cls){ INST_MSG[id]={t:String(t), cls:cls||'', at:Date.now()}; renderInstances(true); }
+function instMsg(id){ const m=INST_MSG[id]; return (!m||Date.now()-m.at>15000) ? '' : `<div class="imsg ${esc(m.cls)}">${esc(m.t)}</div>`; }
+function instInteracting(){   // 下拉框正拿着焦点 / ⋯ 菜单开着: 这一拍先不重画, 免得把它们关掉 (最多拖 20 秒)
+  try{
+    const a=document.activeElement;
+    if(a && a.tagName==='SELECT' && a.closest && a.closest('#instances')) return true;
+    return !!document.querySelector('#instances details.imenu[open]');
+  }catch(e){ return false; }
+}
+function pinBtn(pid, ct){   // 📌 把正在跑的进程记为实例 (目录 / 命令 / 端口预填)。登记只能本机 + 管理者改, 所以只在那时出现
+  if(!INST_CAN || !pid) return '';
+  return `<button class="pin" data-pid="${+pid}" data-ct="${ct==null?'':+ct}" onclick="instPin(this)" title="记为实例：用这个进程的目录 / 命令 / 端口预填一条实例登记">📌</button>`;
+}
+function ctOf(pid){   // 监听行缺 create_time 时, 从分类进程里找同一个 pid 的 (身份锚)
+  const c=(DATA&&DATA.categories)||{};
+  for(const k in c){ const p=((c[k]&&c[k].procs)||[]).find(x=>x.pid===pid); if(p) return p.create_time; }
+  return null;
+}
+
+async function loadInstances(){
+  const my=++INST_REQ;
+  try{
+    const r=await fetch('/api/instances');
+    if(!r.ok){ let m='HTTP '+r.status; try{ const j=await r.json(); if(j&&j.error) m+=' · '+j.error; }catch(e){} throw new Error(m); }
+    const d=await r.json();
+    if(my!==INST_REQ) return;
+    const was=INST_CAN, first=!INST;
+    INST=d; INST_LOCAL=d.local===true; INST_CAN=INST_LOCAL && !instOtherOwner(d); INST_FETCH_ERR='';
+    renderInstances(false);
+    if(was!==INST_CAN && DATA) render();            // 📌 只在能改时出现: 一变, 下面的端口表 / 进程表跟着重画
+    if(first) instJumpHash();
+  }catch(e){
+    if(my!==INST_REQ) return;
+    INST_FETCH_ERR='实例状态读取失败：'+e+(INST?'（下面是上一次的）':'');
+    if(INST) renderInstances(true); else setHTML('#ix-core', `<div class="card muted">${esc(INST_FETCH_ERR)}</div>`);
+  }finally{ if(my===INST_REQ) instSchedule(); }
+}
+function instSchedule(){   // 有实例在启动 / 停止 / 等依赖时 1.5 秒一拍, 平时 4 秒; 页面藏起来就只空转不请求
+  clearTimeout(INST_TIMER);
+  const busy=((INST&&INST.instances)||[]).some(i=>INST_TRANSIENT.includes(i.state))
+    || !!(INST&&INST.owner&&INST.owner.stale===true);   // 正在接管: 快点看到「能改了」
+  INST_TIMER=setTimeout(()=>{ if(document.hidden) instSchedule(); else loadInstances(); }, busy?1500:4000);
+}
+function instJumpHash(){   // 铃铛点进来是 /processes#instances; 卡片深链 #ic-<id> (旧的 #inst-<id> 也认) 等画出来再滚过去
+  try{
+    const m=decodeURIComponent(location.hash||'').match(/^#(?:ic|inst)-(.+)$/); if(!m) return;
+    const el=document.getElementById('ic-'+m[1]); if(!el) return;
+    if(IX.backup.contains && IX.backup.contains(el)) IX.backup.open=true;   // 在收起的备用表里: 先展开才看得见
+    if(el.scrollIntoView) el.scrollIntoView();
+  }catch(e){}
+}
+
+function renderInstances(force){
+  const d=INST; if(!d) return;
+  if(!force && instInteracting() && Date.now()-INST_DRAWN<20000) return;
+  INST_DRAWN=Date.now();
+  const list=d.instances||[], core=list.filter(i=>i.group!=='backup'), backup=list.filter(i=>i.group==='backup');
+  const names={}; list.forEach(i=>{ names[i.id]=i.name; });
+  setHTML('#ix-head', instHead(d,list,core));
+  setHTML('#ix-notes', instNotes(d));
+  setHTML('#ix-banners', instBanners(d,list,names));
+  setHTML('#ix-core', core.length ? core.map(i=>instCard(i,names)).join('') : instEmpty(list.length, backup.length));
+  IX.backup.hidden=!backup.length;                  // 备用默认收起 (details 不带 open), 展开状态由你决定, 重画不动它
+  $('#ix-bk-sum').textContent='备用实例 ('+backup.length+')';
+  setHTML('#ix-bk-body', backup.length ? instBackupTable(backup) : '');
+}
+function instHead(d,list,core){
+  const run=list.filter(i=>i.state==='running'||i.state==='self').length;
+  const startable=core.filter(i=>i.can_control && ['stopped','failed','crashed'].includes(i.state)).length;
+  let h=`<h2 class="sec">★ 我的实例 <span class="count">${list.length} 个 · ${run} 个在跑</span></h2>`;
+  if(INST_CAN) h+=`<button class="ibtn go" data-act="start-core"${startable&&!INST_BUSY._group?'':' disabled'} title="按顺序拉起所有没在运行的核心实例（间隔 5 秒；依赖没就绪的会等着）">▶ 全部拉起核心</button>`+
+    `<button class="ibtn" data-act="new" title="登记一个本机服务：目录 + 命令 + 端口">+ 新增实例</button>`;
+  return h+'<span class="grow"></span>'+instAutostartPill(d.autostart, d.boot);
+}
+function instAutostartPill(a, boot){   // tokmon 自己的开机自启 (任务计划程序 / 注册表 Run); 不支持的系统不显示
+  if(!a || !a.supported) return '';
+  const how={task:'任务计划程序','run-key':'注册表 Run'}[a.method]||a.method||'';
+  const dis=INST_BUSY._autostart?' disabled':'';
+  const hd=boot&&+boot.handled>0 ? '上次开机拉起：'+new Date(boot.handled*1000).toLocaleString() : '';   // 开机序列跑过的时间 (展示用)
+  if(a.installed) return `<span class="chip ok" title="${esc([a.detail,hd].filter(Boolean).join(' · '))}">开机自启 ✓${how?' ('+esc(how)+')':''}</span>`+
+    (INST_CAN?`<button class="mini" data-act="autostart-off"${dis}>卸载</button>`:'');
+  return `<span class="chip" title="${esc([a.detail||'登录后 30 秒在后台启动 tokmon，再按各实例的开机策略拉起 / 提醒',hd].filter(Boolean).join(' · '))}">开机自启 ✗</span>`+
+    (INST_CAN?`<button class="mini go" data-act="autostart-on"${dis}>安装</button>`:'');
+}
+function instNotes(d){
+  const out=[];
+  if(d.local===false) out.push('<div class="inote">📱 手机/远程只读 · 启停请在本机操作</div>');
+  if(d.available===false) out.push('<div class="ibanner warn">实例管理需要 psutil（看运行状态、启停都靠它）：<code>pip install psutil</code>，装好后重启 tokmon。</div>');
+  if(INST_FETCH_ERR) out.push(`<div class="inote warn">${esc(INST_FETCH_ERR)}</div>`);
+  return out.join('')+instMsg('_');
+}
+function instDismissKey(i){ return i.id+'@'+(i.last_at||0); }
+function instOwnerBanner(d){   // 两个 tokmon 同时开着 (比如另一个端口的开发版): 只有拿到锁的那个管实例, 这边只读
+  const o=d.owner||{}, pid=Number(o.pid), port=Number(o.port);
+  // 原来的主人已经退出 (锁空了): 这个 tokmon 几秒内自己接管, 别再指向一个已经不在的 tokmon
+  if(o.stale===true) return '<div class="ibanner warn">⏳ 原来管理实例的 tokmon 已退出，正在接管…（几秒后这边就能启停 / 编辑）</div>';
+  const okPort=Number.isInteger(port) && port>0 && port<65536;
+  const who=[Number.isInteger(pid)&&pid>0?'pid '+pid:'', okPort?'端口 '+port:''].filter(Boolean).join(' · ');
+  return `<div class="ibanner warn">🔒 只读：另一个 tokmon${who?'（'+esc(who)+'）':''}在管理实例，启停 / 编辑请在它的页面操作`+
+    (INST_LOCAL&&okPort?` <a href="http://localhost:${port}/processes#instances">去它的页面 ↗</a>`:'')+'</div>';
+}
+function instBanners(d,list,names){
+  const out=[], L=INST_CAN;
+  if(instOtherOwner(d)) out.push(instOwnerBanner(d));
+  if(d.manifest_error) out.push(`<div class="ibanner bad">⚠ 实例清单文件读不了，先按空清单显示：${esc(d.manifest_error)} <span class="muted">（坏文件不会被悄悄覆盖：下次保存前先另存一份 .corrupt）</span></div>`);
+  const pend=(d.boot&&d.boot.pending)||[];
+  if(pend.length) out.push(`<div class="ibanner warn">⏰ 重启后有 ${pend.length} 个实例等你确认拉起：${pend.map(id=>esc(names[id]||id)).join('、')}`+
+    (L?`<button class="mini go" data-act="boot-start"${INST_BUSY._boot?' disabled':''}>全部拉起</button><button class="mini" data-act="boot-dismiss"${INST_BUSY._boot?' disabled':''}>忽略</button>`:'')+'</div>');
+  list.filter(i=>(i.state==='crashed'||i.state==='failed') && !INST_DISMISSED.includes(instDismissKey(i))).forEach(i=>{
+    const what=i.state==='crashed'?'意外退出':'启动失败';
+    out.push(`<div class="ibanner bad">✕ ${esc(i.name)} ${what}${i.exit_code!=null?'（退出码 '+esc(i.exit_code)+'）':''}`+
+      `${i.last_at?' <span class="muted">'+esc(new Date(i.last_at*1000).toLocaleTimeString())+'</span>':''}`+
+      `${i.last_error?' <span class="muted">'+esc(i.last_error)+'</span>':''}`+
+      `${i.log_exists?'<button class="mini" data-act="log" data-id="'+esc(i.id)+'">看日志</button>':''}`+
+      `${L&&i.can_control?'<button class="mini go" data-act="start" data-id="'+esc(i.id)+'"'+(INST_BUSY[i.id]?' disabled':'')+'>重启</button>':''}`+
+      `<button class="mini" data-act="dismiss" data-id="${esc(i.id)}" title="这次的不再提示（下次再出事还会提示）">知道了</button></div>`);
+  });
+  return out.join('');
+}
+function instEmpty(n, nb){
+  if(n) return `<div class="card muted">核心里还没有实例（备用里有 ${nb} 个，在下面展开）。</div>`;
+  return INST_CAN
+    ? '<div class="card muted">还没有登记实例。点「+ 新增实例」，或者在下面的端口表 / 进程表里点 📌，把正在跑的服务记下来。</div>'
+    : '<div class="card muted">还没有登记实例（登记请在本机、在管实例的那个 tokmon 页面上操作）。</div>';
+}
+function instAmbiguous(i){ return (i.conflicts||[]).find(c=>c.kind==='ambiguous')||null; }
+function instPill(i){
+  const st=i.state, pid=i.pid?` <span class="muted" style="font-size:12px">pid ${+i.pid}</span>`:'';
+  if(st==='running') return `<span class="pill ok">● ${esc(i.state_label||'运行中')}${i.uptime_s!=null?' · '+esc(fmtUp(Math.floor(i.uptime_s))):''}${i.started_by==='external'?' · 外部启动':''}</span>`+pid;
+  if(st==='self') return `<span class="pill self">● ${esc(i.state_label||'本服务')}</span>`;
+  if(INST_TRANSIENT.includes(st)) return `<span class="pill warn busy">◌ ${esc(i.state_label||st)}…</span>`;
+  // 进程还活着, 但声明的端口没人 (属于它的) 在听: 不算运行中 (真实优先), 给停止 / 重启
+  if(st==='degraded') return `<span class="pill warn" title="进程还在，但声明的端口没有在监听：可能卡住了 / 应用崩了但外壳还在">◐ ${esc(i.state_label||'进程在 · 端口没在监听')}</span>`+pid;
+  if(st==='unknown') return `<span class="pill dim" title="这一拍读不到系统的端口表，没法判断它在不在跑">? ${esc(i.state_label||'状态未知')}</span>`;
+  if(st==='failed'||st==='crashed') return `<span class="pill bad">✕ ${esc(i.state_label||st)}${i.exit_code!=null?' · 退出码 '+esc(i.exit_code):''}</span>`;
+  const amb=instAmbiguous(i);
+  if(st==='port_busy' && amb) return `<span class="pill warn">端口 ${esc(amb.port)} 上的进程认不准是谁的</span>`;
+  if(st==='port_busy'){
+    const cs=(i.conflicts||[]).filter(c=>c.kind==='port-busy'), c=cs.find(x=>x.port===(i.ports||[])[0])||cs[0], o=(c&&c.owner)||{};
+    const port=esc(c?c.port:(i.ports||[])[0]);
+    if(c&&c.by) return `<span class="pill bad" title="${esc((o.name||'')+(o.pid?' pid '+o.pid:''))}">端口 ${port} 被实例「${esc(instByName(c.by))}」占用</span>`;   // 占着的是另一个登记过的实例
+    return `<span class="pill bad">端口 ${port} 被 ${esc(o.name||'别的进程')}${o.pid?' (pid '+esc(o.pid)+')':''} 占用</span>`;
+  }
+  return `<span class="pill dim">○ ${esc(i.state_label||'未运行')}</span>`;
+}
+function instPorts(i){
+  const ps=i.ports||[];
+  if(!ps.length) return '<span class="chip" title="没登记端口：按进程是否还活着判断">无端口</span>';
+  const live=(i.state==='running'||i.state==='self') && INST_LOCAL, url=safeUrl(i.open_url);   // 远程时 localhost 链接没意义
+  return ps.map((p,k)=>{
+    const l=(i.listening||[]).find(x=>x.port===p), by=(i.conflicts||[]).find(c=>c.kind==='port-busy'&&c.port===p&&c.by);
+    const tip=l?(l.mine?'在监听':(by?'被实例「'+instByName(by.by)+'」占用':'被 '+(l.name||'?')+' 占用')):'没在监听';
+    const open=(k===0&&live&&url)?` <a href="${esc(url)}" target="_blank" rel="noopener">打开 ↗</a>`:'';
+    return `<span class="chip ${l?(l.mine?'ok':'bad'):''}" title="${esc(tip)}">:${esc(p)}${open}</span>`;
+  }).join('');
+}
+function instDeps(i){
+  return (i.deps||[]).map(x=>`<span class="chip ${x.ready?'ok':'bad'}" title="${x.ready?'端口在监听':'端口没在监听（tokmon 不会替你启动它）'}">依赖 ${esc(x.name)} :${esc(x.port)} ${x.ready?'✓':'✗'}</span>`).join('');
+}
+function instTunnel(i){
+  const t=i.tunnel; if(!t) return '';
+  const url=safeUrl(t.url);
+  if(!url) return '<span class="chip" title="cloudflared 命名隧道：地址在 Cloudflare 后台配置，本机看不到">🛰️ 命名隧道</span>';
+  const host=url.replace(/^https?:\/\//i,'').replace(/[\/?#].*$/,'');
+  return `<span class="chip ok">🛰️ <a href="${esc(url)}" target="_blank" rel="noopener">${esc(host)}</a><button class="mini" data-act="copy" data-url="${esc(url)}">复制</button></span>`;
+}
+function instConflicts(i,names){
+  const prim=(i.ports||[])[0];
+  const out=(i.conflicts||[]).map(c=>{
+    if(c.kind==='shared-port') return `与 ${esc(names[c.with]||c.with)} 共用端口 ${esc(c.port)}（同时开会有一个起不来）`;
+    if(c.kind==='ambiguous'){   // 同目录 / 同端口的几个实例都像它的主人, 命令行也分不出: 谁都不认领, 也不许停
+      const others=(Array.isArray(c.with)?c.with:(c.with?[c.with]:[])).map(x=>names[x]||x);
+      const who=[i.name].concat(others).map(esc).join(' 和 ');
+      return `端口 ${esc(c.port)} 的进程同时像 ${who}，认不准，不显示为运行中`;
+    }
+    if(c.kind==='port-busy' && !(i.state==='port_busy'&&c.port===prim))
+      return `端口 ${esc(c.port)} `+(c.by?`被实例「${esc(names[c.by]||c.by)}」占用`:`被 ${esc((c.owner||{}).name||'别的进程')} 占用`);
+    return '';
+  }).filter(Boolean);
+  return out.length ? '<div class="iwarn">'+out.map(x=>'⚠ '+x).join('<br>')+'</div>' : '';
+}
+function instBoot(i){
+  if(i.kind==='self'){
+    const a=INST&&INST.autostart;
+    return (a&&a.supported)?`<span class="chip ${a.installed?'ok':''}" title="tokmon 自己靠「开机自启」起来（见上方）">开机自启 ${a.installed?'✓':'✗'}</span>`:'';
+  }
+  if(!INST_CAN) return `<span class="chip">开机：${esc(BOOT_LABEL[i.boot]||i.boot||'?')}</span>`;
+  return `<select class="iboot" data-act="boot" data-id="${esc(i.id)}" title="重启电脑后：自动拉起 / 提醒你点一下 / 不管"${INST_BUSY[i.id]?' disabled':''}>`+
+    ['auto','ask','manual'].map(v=>`<option value="${v}"${v===i.boot?' selected':''}>${BOOT_LABEL[v]}</option>`).join('')+'</select>';
+}
+function instButtons(i){
+  const id=esc(i.id), dis=INST_BUSY[i.id]?' disabled':'', st=i.state, b=[];
+  const btn=(act,label,cls)=>`<button class="ibtn${cls?' '+cls:''}" data-act="${act}" data-id="${id}"${act==='log'?'':dis}>${label}</button>`;
+  if(INST_CAN && i.can_control){   // unknown: 读不到端口表, 两个都给 (启动前再确认一次), 服务端自己还会查
+    if(['stopped','failed','crashed','unknown'].includes(st)) b.push(btn('start','启动','go'));
+    if(['running','starting','waiting_deps','degraded','unknown'].includes(st)) b.push(btn('stop','停止','stop'));
+    if(st==='running'||st==='degraded') b.push(btn('restart','重启'));
+  }
+  if(i.log_exists) b.push(btn('log','日志'));
+  if(INST_CAN){
+    b.push(btn('edit','编辑'));
+    const to=i.group==='backup'?'core':'backup';
+    b.push(`<details class="imenu"><summary title="更多">⋯</summary><div class="ilist">`+
+      `<button data-act="group" data-id="${id}" data-group="${to}"${dis}>${to==='core'?'移到核心':'移到备用'}</button>`+
+      `<button class="danger" data-act="delete" data-id="${id}"${dis}>删除登记</button></div></details>`);
+  }
+  return b.join('');
+}
+function instCard(i,names){
+  const st=i.state, amb=st==='port_busy'&&instAmbiguous(i);
+  const cls=(st==='degraded'||amb)?' warn':(['failed','crashed','port_busy'].includes(st)?' bad':(st==='running'?' run':''));
+  const err=i.last_error&&i.last_error!==i.note ? i.last_error : '';   // 和 note 同一句就只说一次
+  return `<div class="icard${cls}" id="ic-${esc(i.id)}">`+
+    `<div class="irow"><span class="inm">${esc(i.name)}</span>${i.project?'<span class="chip proj">'+esc(i.project)+'</span>':''}${i.boot_pending?'<span class="chip warn">等你确认拉起</span>':''}</div>`+
+    `${i.description?'<div class="idesc" title="'+esc(i.description)+'">'+esc(i.description)+'</div>':''}`+
+    `<div class="irow">${instPill(i)}</div>`+
+    `<div class="irow">${instPorts(i)}${instDeps(i)}${instTunnel(i)}</div>`+
+    instConflicts(i,names)+
+    `${i.note?'<div class="inote">ⓘ '+esc(i.note)+'</div>':''}`+   // 比如「端口由 xxx 代理」: 为什么认它是这个实例的
+    `${err?'<div class="'+(st==='failed'||st==='crashed'?'ierr':'iwarn')+'">'+esc(err)+'</div>':''}`+   // 进程在但端口没开 / 停不干净也写在这 (真实优先)
+    `${i.command_display?'<div class="icmd" title="'+esc((i.cwd||'')+'\n'+i.command_display)+'">'+esc(i.command_display)+'</div>':''}`+
+    `<div class="irow">${instBoot(i)}<span class="iact">${instButtons(i)}</span></div>`+
+    instMsg(i.id)+'</div>';
+}
+function instBackupTable(rows){
+  return '<div class="ibk"><table><thead><tr><th>名字</th><th>项目</th><th>端口</th><th>状态</th><th class="act"></th></tr></thead><tbody>'+
+    rows.map(i=>`<tr id="ic-${esc(i.id)}"><td title="${esc(i.description||'')}">${esc(i.name)}</td><td>${esc(i.project||'')}</td>`+
+      `<td>${(i.ports||[]).map(p=>':'+esc(p)).join(' ')||'—'}</td><td>${instPill(i)}${instMsg(i.id)}</td>`+
+      `<td class="act"><span class="iact">${instButtons(i)}</span></td></tr>`).join('')+
+    '</tbody></table></div>';
+}
+
+// -- 动作: 只认令牌 (ensureToken/ctrlHeaders, 与终止进程同一把), 不看控制模式; 服务端还会校验本机 + 审计 --
+async function instPost(path, body){
+  if(!ensureToken()) return null;
+  const res=await fetch(path,{method:'POST',headers:ctrlHeaders(),body:JSON.stringify(body)});
+  if(res.status===403){
+    let j=null; try{ j=await res.json(); }catch(e){}
+    if(j && j.reason==='local-only') return j;        // 不是令牌的错 (远程只读), 别把令牌清掉
+    localStorage.removeItem('mc_ctl_token'); CTRL_TOKEN=''; alert('控制令牌无效, 请重新粘贴'); return null;
+  }
+  return res.json();
+}
+async function instCall(key, path, body, reload){   // 同一实例一次只跑一个动作; 做完立刻拉一次状态
+  if(INST_BUSY[key]) return null;
+  INST_BUSY[key]=true; renderInstances(true);
+  try{ return await instPost(path, body); }
+  catch(e){ instSay(key.charAt(0)==='_'?'_':key, '请求失败：'+e, 'bad'); return null; }
+  finally{ delete INST_BUSY[key]; if(reload!==false) loadInstances(); else renderInstances(true); }
+}
+function instClick(e){
+  const b=e.target&&e.target.closest ? e.target.closest('[data-act]') : null;
+  if(!b || b.tagName==='SELECT') return;
+  const m=b.closest('details.imenu'); if(m) m.open=false;
+  instDo(b.dataset.act, b.dataset.id||'', b);
+}
+function instChange(e){
+  const s=e.target;
+  if(!s || !s.dataset || s.dataset.act!=='boot') return;
+  const v=s.value; try{ s.blur(); }catch(x){}
+  instPatch(s.dataset.id, {boot:v}, '开机策略改为「'+(BOOT_LABEL[v]||v)+'」');
+}
+function instDo(act,id,el){
+  switch(act){
+    case 'start': return instStart(id,false);
+    case 'stop': return instStop(id);
+    case 'restart': return instRestart(id);
+    case 'log': return instLogOpen(id);
+    case 'edit': return instEdit(id);
+    case 'group': return instPatch(id, {group:el.dataset.group}, el.dataset.group==='core'?'已移到核心':'已移到备用');
+    case 'delete': return instDelete(id);
+    case 'copy': return instCopy(el.dataset.url);
+    case 'dismiss': return instDismiss(id);
+    case 'start-core': return instStartGroup('core');
+    case 'new': return instNew();
+    case 'boot-start': return instBootAck('start');
+    case 'boot-dismiss': return instBootAck('dismiss');
+    case 'autostart-on': return instAutostart(true);
+    case 'autostart-off': return instAutostart(false);
+  }
+}
+async function instStart(id, force){
+  const i=instById(id); if(!i) return;
+  if(!force && i.state==='unknown' &&
+     !confirm('「'+i.name+'」状态未知：读不到端口表，没法确认它是不是已经在跑。\n仍然启动？（要是它其实在跑，可能会再起一份）')) return;
+  const r=await instCall(id, '/api/instances/start', {id, force:!!force});
+  if(!r) return;
+  if(r.ok){ instSay(id, r.state==='waiting_deps'?'已排队：依赖就绪后自动启动':'已发出启动：端口开始监听才算运行中', 'ok'); return; }
+  if(r.reason==='deps-not-ready'){
+    const deps=(r.deps||i.deps||[]).filter(x=>!x.ready).map(x=>x.name+' :'+x.port).join('、');
+    if(confirm('依赖未就绪：'+(deps||'?')+'\n仍然启动「'+i.name+'」？')) return instStart(id, true);
+    instSay(id, '没启动：依赖未就绪', 'warn'); return;
+  }
+  if(r.reason==='portless-confirm'){   // 没有端口: 服务端认不出外部起的副本, 由你确认要不要再起一份 (force 只在你点了确定后带)
+    const deps=(i.deps||[]).filter(x=>!x.ready).map(x=>x.name+' :'+x.port).join('、');
+    const msg='「'+i.name+'」'+(r.detail?String(r.detail):'没有端口，认不出它是不是已经在别处跑着；确定要再起一份吗？')+
+      (deps?'\n\n另外依赖未就绪：'+deps+'（确定后不再等依赖，直接启动）':'');
+    if(confirm(msg)) return instStart(id, true);
+    instSay(id, '没启动：没有端口，你取消了', 'warn'); return;
+  }
+  if(r.reason==='port-busy'){
+    // 占着端口的是另一个登记过的实例 (by): 说它的名字, 别只说 python.exe; 回执没带 by 就用卡片上同一个 pid 的冲突
+    const o=r.owner||{}, c=(i.conflicts||[]).find(x=>x.kind==='port-busy'&&x.by&&x.owner&&o.pid&&x.owner.pid===o.pid);
+    const byId=r.by||(c&&c.by)||null, byName=byId?instByName(byId):'';
+    const who=byId ? '被实例「'+byName+'」占用' : '被 '+(o.name||'别的进程')+(o.pid?' (pid '+o.pid+')':'')+' 占用';
+    alert('「'+i.name+'」的端口'+who+'。\n\n'+(byId
+      ? '要换着用，先把「'+byName+'」停掉，或者给这个实例换个端口。'
+      : 'tokmon 不会去结束不认识的进程：先把它停掉，或者给实例换个端口。'));
+    instSay(id, byId?'没启动：端口被实例「'+byName+'」占用':'没启动：端口被占用', 'bad'); return;
+  }
+  instSay(id, '没启动：'+instReason(r), 'bad');
+}
+function instGrace(i){   // 宽限按这个实例自己的 stop_grace_s 说 (0 = 不等); 没给就不报数字, 不许一个错的诺
+  const g=Number(i.stop_grace_s);
+  if(i.stop_grace_s==null || i.stop_grace_s==='' || !isFinite(g)) return '先发 Ctrl+C 让它自己收尾，宽限期内不退再强制结束';
+  if(g<=0) return '先发 Ctrl+C，不等（宽限 0 秒）直接强制结束';
+  return '先发 Ctrl+C 让它自己收尾，'+g+' 秒不退再强制结束';
+}
+async function instStop(id){
+  const i=instById(id); if(!i) return;
+  const msg=i.state==='waiting_deps'
+    ? '不等了？取消「'+i.name+'」的排队启动。'
+    : '停止「'+i.name+'」？'+instGrace(i)+'。'+
+      (i.started_by==='external'?'\n\n它不是 tokmon 启动的：只停占着它端口的进程和它们的子进程，不碰启动它的终端。':'');
+  if(!confirm(msg)) return;
+  const r=await instCall(id, '/api/instances/stop', {id});
+  if(!r) return;
+  instSay(id, r.ok?'停止中…':'没停：'+instReason(r), r.ok?'ok':'bad');
+}
+async function instRestart(id){
+  const i=instById(id); if(!i) return;
+  if(!confirm('重启「'+i.name+'」？先停（'+instGrace(i)+'），再重新启动（依赖没就绪会等着）。')) return;
+  const r=await instCall(id, '/api/instances/restart', {id});
+  if(!r) return;
+  if(r.reason==='portless-confirm') return instStart(id);   // 它刚退出、tokmon 已不追踪: 重启 = 再起一份, 走启动那套确认
+  instSay(id, r.ok?'重启中…':'没重启：'+instReason(r), r.ok?'ok':'bad');
+}
+async function instPatch(id, fields, okText){
+  const r=await instCall(id, '/api/instances/patch', {id, fields});
+  if(!r) return;
+  if(r.ok) instSay(id, okText||'已保存', 'ok');
+  else instSay(id, '没改成：'+instReason(r)+(r.errors?' · '+Object.keys(r.errors).map(k=>k+' '+(FIELD_ERR[r.errors[k]]||r.errors[k])).join('，'):''), 'bad');
+}
+async function instDelete(id){
+  const i=instById(id); if(!i) return;
+  if(!confirm('删除「'+i.name+'」的登记？\n只删登记：不会停掉正在跑的进程，也不删任何文件和日志。')) return;
+  const r=await instCall(id, '/api/instances/delete', {id});
+  if(!r) return;
+  if(r.ok){ if(LOG.id===id) instLogClose(); instSay('_', '已删除登记「'+i.name+'」', 'ok'); }
+  else instSay(id, '没删掉：'+instReason(r), 'bad');
+}
+async function instStartGroup(group){
+  if(!confirm('按顺序拉起所有没在运行的核心实例？\n每个间隔 5 秒；依赖没就绪的会等着（最多 15 分钟）。')) return;
+  const r=await instCall('_group', '/api/instances/start-group', {group});
+  if(!r) return;
+  if(!r.ok){ instSay('_', '没拉起：'+instReason(r), 'bad'); return; }
+  const nm=id=>{ const i=instById(id); return i?i.name:id; };
+  const q=r.queued||[], sk=r.skipped||[];
+  instSay('_', (q.length?'已排队 '+q.length+' 个：'+q.map(nm).join('、')+'（间隔 5 秒依次启动）':'没有要拉起的')+
+    (sk.length?'；跳过 '+sk.length+' 个：'+sk.map(s=>nm(s.id)+' '+instReason(s)).join('、'):''), q.length?'ok':'warn');
+}
+async function instBootAck(action){
+  const r=await instCall('_boot', '/api/instances/boot-ack', {action});
+  if(!r) return;
+  if(!r.ok){ instSay('_', '没办成：'+instReason(r), 'bad'); return; }
+  if(action!=='start'){ instSay('_', '已忽略这次开机提醒', 'ok'); return; }
+  // 跳过的也说出来 (比如没有端口的: 认不出是不是已在别处跑, 不替你起) —— 提醒已清空, 不说就再没地方知道了
+  const sk=r.skipped||[], q=r.queued||[];
+  instSay('_', '开机提醒里的实例开始依次拉起'+(q.length?'（'+q.length+' 个）':'')+
+    (sk.length?'；跳过 '+sk.length+' 个：'+sk.map(s=>instByName(s.id)+' '+instReason(s)).join('、'):''), (q.length||!sk.length)?'ok':'warn');
+}
+async function instAutostart(on){
+  const msg=on
+    ? '登记 tokmon 开机自启？\n登录后 30 秒在后台启动 tokmon（无窗口），再按各实例的开机策略拉起 / 提醒你。\n随时可以在这里卸载。'
+    : '卸载 tokmon 开机自启？\n现在跑着的 tokmon 和实例不受影响；只是下次开机不会自己起来。';
+  if(!confirm(msg)) return;
+  const r=await instCall('_autostart', '/api/autostart', {on:!!on});
+  if(!r) return;
+  if(r.ok) instSay('_', on ? '已登记开机自启'+(r.method==='run-key'?'（任务计划程序不让建，改用注册表 Run）':'') : '已卸载开机自启', 'ok');
+  else instSay('_', (on?'没装上：':'没卸载：')+instReason(r), 'bad');
+}
+function instDismiss(id){
+  const i=instById(id); if(!i) return;
+  INST_DISMISSED=INST_DISMISSED.concat(instDismissKey(i)).slice(-50);
+  try{ localStorage.setItem('mc.inst.dismissed', JSON.stringify(INST_DISMISSED)); }catch(e){}
+  renderInstances(true);
+}
+function instCopy(url){
+  const fb=()=>{ try{ prompt('复制隧道地址：', url); }catch(e){} };
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(url).then(()=>instSay('_','已复制隧道地址','ok'), fb); return; }
+  }catch(e){}
+  fb();
+}
+async function instPin(btn){   // 📌: 从进程预填登记。create_time 是身份锚, 服务端据此防 PID 复用
+  const pid=+btn.dataset.pid, ct=btn.dataset.ct===''||btn.dataset.ct==null ? null : +btn.dataset.ct;
+  btn.disabled=true;
+  try{
+    const r=await instPost('/api/instances/draft', {pid, create_time:ct});
+    if(!r) return;
+    if(!r.ok){
+      if(['identity-required','pid-reused','bad-create-time'].includes(r.reason)){ load(); alert(instReason(r)+'：列表已刷新，请再点一次 📌'); }
+      else alert('没法记为实例：'+instReason(r));
+      return;
+    }
+    instModalOpen(r.draft||{}, null, r.warning||null, '记为实例 · 从进程预填，核对后保存');
+  }catch(e){ alert('请求失败：'+e); }
+  finally{ btn.disabled=false; }
+}
+
+// -- 编辑弹窗: 读原始登记走 /api/instances/get (本机 + 令牌), 绝不拿状态接口里脱敏过的命令回填 --
+function instNew(){ instModalOpen({group:'core', boot:'manual', kind:'service'}, null, null, '新增实例'); }
+async function instEdit(id){
+  const r=await instCall(id, '/api/instances/get', {id}, false);
+  if(!r) return;
+  if(r.ok && r.instance) instModalOpen(r.instance, id, null);
+  else instSay(id, '读不到登记：'+instReason(r), 'bad');
+}
+function instModalOpen(rec, originalId, warning, title){
+  MODAL={original_id:originalId||null, kind:rec.kind==='self'?'self':'service'};
+  const set=(k,v)=>{ $('#ixf-'+k).value=(v==null?'':String(v)); };
+  ['name','project','description','cwd','command','open_path','stop_grace_s','start_timeout_s'].forEach(k=>set(k, rec[k]));
+  set('id', originalId ? rec.id : '');               // 新增 / 📌 预填: id 留空, 服务端按名字生成
+  set('group', rec.group==='backup'?'backup':'core');
+  set('boot', ['auto','ask','manual'].includes(rec.boot)?rec.boot:'manual');
+  set('ports', (rec.ports||[]).join(', '));
+  set('env', Object.keys(rec.env||{}).map(k=>k+'='+rec.env[k]).join('\n'));
+  set('deps', (rec.deps||[]).map(x=>x.name+':'+x.port).join('\n'));
+  $('#ix-m-title').textContent=title||('编辑实例 · '+(rec.name||originalId));
+  const warn=[warning, MODAL.kind==='self'?'这是 tokmon 自己：只登记、看状态，不在这里启停（开机自启看页面上方）。':''].filter(Boolean).join('\n');
+  const w=$('#ix-m-warn'); w.textContent=warn?'⚠ '+warn:''; w.hidden=!warn;
+  instFormErrors({});
+  $('#ix-m-save').disabled=false;
+  IX.modal.hidden=false;
+  try{ $('#ixf-name').focus(); }catch(e){}
+}
+function instModalClose(){ IX.modal.hidden=true; }
+function instFormRead(){
+  const v=k=>String($('#ixf-'+k).value||''), errs={};
+  const rec={name:v('name').trim(), project:v('project').trim(), description:v('description').trim(),
+    group:v('group')||'core', boot:v('boot')||'manual', kind:MODAL.kind||'service',
+    cwd:v('cwd').trim(), command:v('command').trim(), open_path:v('open_path').trim(), env:{}, ports:[], deps:[]};
+  const id=v('id').trim(); if(id) rec.id=id;
+  v('env').split(/\r?\n/).forEach(line=>{
+    const s=line.trim(); if(!s || s.charAt(0)==='#') return;
+    const k=s.indexOf('='), key=k<0?'':s.slice(0,k).trim();
+    if(!key){ errs.env='每行 KEY=VALUE'; return; }
+    rec.env[key]=s.slice(k+1).trim();                 // 值两头的空格也去掉 (与服务端 KEY=VALUE 文本解析一致): 粘贴带出的空格不该进密钥 / 路径
+  });
+  v('ports').split(/[\s,，;；]+/).filter(Boolean).forEach(p=>{
+    const n=Number(p); if(!Number.isInteger(n)) errs.ports='端口要是整数，用逗号隔开'; else rec.ports.push(n);
+  });
+  v('deps').split(/\r?\n/).forEach(line=>{
+    const s=line.trim(); if(!s) return;
+    const m=s.match(/^(.*?)\s*[:：]\s*(\d+)$/);
+    if(!m || !m[1].trim()){ errs.deps='每行「名字:端口」'; return; }
+    rec.deps.push({name:m[1].trim(), port:Number(m[2])});
+  });
+  ['stop_grace_s','start_timeout_s'].forEach(k=>{
+    const s=v(k).trim(); if(!s) return;                // 留空 = 用默认值
+    const n=Number(s); if(!isFinite(n)) errs[k]='要是数字'; else rec[k]=n;
+  });
+  return {rec, errs};
+}
+function instFormErrors(errs){   // 服务端错误码 -> 中文, 贴在对应字段下面; 认不出的字段放底部
+  INST_FIELDS.forEach(k=>{ $('#ixe-'+k).textContent=''; });
+  const gen=[];
+  Object.keys(errs||{}).forEach(k=>{
+    const base=String(k).split(/[.\[]/)[0], msg=FIELD_ERR[errs[k]]||String(errs[k]);
+    if(INST_FIELDS.includes(base)){ const e=$('#ixe-'+base); e.textContent=e.textContent?e.textContent+'；'+msg:msg; }
+    else gen.push(k+'：'+msg);
+  });
+  $('#ix-m-err').textContent=gen.join('；');
+}
+async function instSave(ev){
+  if(ev && ev.preventDefault) ev.preventDefault();
+  const {rec, errs}=instFormRead();
+  instFormErrors(errs);
+  if(Object.keys(errs).length) return;
+  const btn=$('#ix-m-save'); btn.disabled=true;
+  try{
+    const r=await instPost('/api/instances/save', {instance:rec, original_id:MODAL.original_id});
+    if(!r) return;
+    if(r.ok){
+      instModalClose();
+      const n=r.instance||{};
+      if(n.id) instSay(n.id, MODAL.original_id?'已保存':'已登记', 'ok');
+      loadInstances(); return;
+    }
+    if(r.reason==='invalid') instFormErrors(r.errors||{});
+    else if(r.reason==='id-exists') instFormErrors({id:'这个 id 已经被别的实例用了'});
+    else $('#ix-m-err').textContent='没保存：'+instReason(r);
+  }catch(e){ $('#ix-m-err').textContent='请求失败：'+e; }
+  finally{ btn.disabled=false; }
+}
+
+// -- 日志抽屉: 最后 200 行 (可要 500), 开着时每 3 秒刷新; 服务端已脱敏, 这里用 textContent 原样显示 --
+function instLogOpen(id){
+  const i=instById(id);
+  LOG.id=id; LOG.n=200;
+  $('#ix-log-title').textContent='日志 · '+(i?i.name:id);
+  $('#ix-log-pre').textContent='加载中…';
+  $('#ix-log-meta').textContent='';
+  IX.log.hidden=false;
+  instLogLoad(true);
+  clearInterval(LOG.timer); LOG.timer=setInterval(()=>instLogLoad(false), 3000);
+}
+async function instLogLoad(jump){
+  const id=LOG.id; if(!id || (!jump && document.hidden)) return;
+  const my=++LOG.req;
+  try{
+    const r=await fetch('/api/instances/log?id='+encodeURIComponent(id)+'&n='+LOG.n);
+    const d=await r.json();
+    if(my!==LOG.req || LOG.id!==id) return;
+    const pre=$('#ix-log-pre'), atEnd=jump || pre.scrollTop+pre.clientHeight>=pre.scrollHeight-24;   // 你往上翻着看时不抢滚动条
+    if(d.ok===false || d.error) pre.textContent='读不到日志：'+(d.error||instReason(d));
+    else if(!d.exists) pre.textContent='（还没有日志：由 tokmon 启动后才会写）';
+    else pre.textContent=(d.lines||[]).join('\n')||'（日志是空的）';
+    $('#ix-log-meta').textContent=d.exists?('最后 '+(d.lines||[]).length+' 行 · 文件 '+fmtBytes(d.size)+' · 每 3 秒刷新 · 已脱敏'):'';
+    if(atEnd) pre.scrollTop=pre.scrollHeight;
+  }catch(e){ if(my===LOG.req) $('#ix-log-meta').textContent='刷新失败：'+e; }
+}
+function instLogMore(){ LOG.n=500; instLogLoad(true); }
+function instLogClose(){ LOG.id=null; clearInterval(LOG.timer); LOG.timer=null; IX.log.hidden=true; }
+
+$('#instances').addEventListener('click', instClick);
+$('#instances').addEventListener('change', instChange);
+$('#ix-form').addEventListener('submit', instSave);
+$('#ix-m-x').addEventListener('click', instModalClose);
+$('#ix-m-cancel').addEventListener('click', instModalClose);
+$('#ix-log-close').addEventListener('click', instLogClose);
+$('#ix-log-more').addEventListener('click', instLogMore);
+document.addEventListener('keydown', e=>{ if(e.key==='Escape' && !IX.log.hidden) instLogClose(); });
+document.addEventListener('click', e=>{   // 点别处收起 ⋯ 菜单
+  document.querySelectorAll('#instances details.imenu[open]').forEach(m=>{ if(!m.contains(e.target)) m.open=false; });
+});
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) loadInstances(); });
+window.addEventListener('hashchange', instJumpHash);   // 页面已开着时再点深链, 也滚过去
+// ---- 实例 (v0.22) 结束 ----
+
 let timer=null;
 function setAuto(){ if(timer){clearInterval(timer);timer=null;} if($('#auto').checked) timer=setInterval(load,5000); }
 ['filter','sort','loonly'].forEach(id=>$('#'+id).addEventListener('input', render));
@@ -252,5 +948,6 @@ $('#auto').addEventListener('change', setAuto);
 $('#probe').addEventListener('click', probeHealth);
 $('#refresh').addEventListener('click', load);
 loadCtrl().then(load);
+loadInstances();
 </script>
 </body></html>

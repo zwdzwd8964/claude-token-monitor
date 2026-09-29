@@ -17,10 +17,24 @@ from tokmon import activity, events, procmon, serve
 HARNESS = Path(__file__).parent / "js" / "bell_smoke.js"
 
 
+class _NoInstances:
+    """实例层的替身: 这里只测会话的「等你」; 绝不去读你真实的 ~/.tokmon/instances。"""
+    pending: list = []
+    owner = True
+
+    def available(self):
+        return True
+
+    def status_all(self, serve_port=None):
+        return {"owner": {"is_owner": self.owner, "pid": 1, "port": serve_port},
+                "boot": {"handled": 1700000000.5, "pending": list(self.pending)}}
+
+
 @pytest.fixture
 def attn(monkeypatch):
     bus = events.EventBus()
     monkeypatch.setattr(serve, "event_bus", bus)
+    monkeypatch.setattr(serve, "instances", _NoInstances())
     snap = {"sessions": [
         {"session_id": "S1", "project": "demo", "title": "修登录页", "state": "BLOCKED_ON_USER",
          "state_label": "等你回答 · Claude 在问你", "file": "x", "last_text": "不该外泄的正文"},
@@ -52,6 +66,17 @@ def test_attention_only_waiting_events_after_cursor(attn):
     assert serve._attention(None, d["seq"])["events"] == []
 
 
+def test_attention_boot_pending_is_a_standing_condition(attn):
+    """重启后有实例等你确认: 不是一次性事件 (开机那几秒页面多半没开) —— 每次轮询都带, 首次轮询也带, 由页面按键去重。"""
+    assert "instances" not in serve._attention(None, -1)
+    serve.instances.pending = ["demo-api"]
+    first = serve._attention(None, -1)
+    assert first["events"] == [] and first["instances"] == {"pending": 1, "key": "INSTANCE_BOOT_PENDING:1700000000.5"}
+    assert serve._attention(None, first["seq"])["instances"]["pending"] == 1
+    serve.instances.owner = False                                   # 另一个 tokmon 在管实例: 由它的页面去响
+    assert "instances" not in serve._attention(None, -1)
+
+
 def test_every_nav_page_carries_the_bell():
     for name in ("SESS_PAGE", "PROC_PAGE", "WORKFLOW_PAGE", "PAGE", "DOCTOR_PAGE"):
         page = getattr(serve, name)
@@ -67,4 +92,4 @@ def test_bell_script_behaviour(tmp_path):
     assert proc.stdout.strip(), proc.stderr
     report = json.loads(proc.stdout.strip().splitlines()[-1])
     assert report["errors"] == [], report
-    assert len(report["checks"]) >= 19 and all(report["checks"].values())
+    assert len(report["checks"]) >= 24 and all(report["checks"].values())

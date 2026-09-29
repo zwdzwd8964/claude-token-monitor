@@ -1,5 +1,5 @@
 // 会话驾驶舱 S2: 导航里「等你时提醒」脚本的 Node 冒烟 —— 桩掉 DOM / fetch / Notification / localStorage,
-// 两个 vm 上下文共用一份 localStorage = 两个标签页。用法: node bell_smoke.js <bell.js>
+// 几个 vm 上下文共用一份 localStorage = 几个标签页。用法: node bell_smoke.js <bell.js>
 // 输出一行 JSON {errors: [...], checks: {...}}; 有错误时退出码 1。
 "use strict";
 const fs = require("fs");
@@ -116,6 +116,30 @@ const blk = [{ session_id: "S1", project: "demo", title: "修登录页", state_l
     responses.push({ blocked: blk, events: [ev("K4", "QUESTION_PENDING", "S1")], seq: 11 });
     A.poll(); await tick(); await tick();
     expect("turned off -> silent", localStorage.getItem("mc.notify.on") === "0" && shown.length === 4, String(shown.length));
+
+    // 8) 实例层: 「重启后有实例等你确认」是常驻状况 (/api/attention 的 instances 字段), 不是事件 ——
+    //    关着不弹; 打开后新标签页的首次轮询也弹; 同一次开机拉起只弹一次 (跨标签页); 事件那条路不弹; 下次开机 (新键) 再弹
+    const boot = { pending: 2, key: "INSTANCE_BOOT_PENDING:1700000000.5" };
+    responses.push({ blocked: [], events: [], seq: 11, instances: boot });
+    A.poll(); await tick(); await tick();
+    expect("boot pending silent when off", shown.length === 4, String(shown.length));
+    A.bell.handlers.click(); await tick(); await tick();            // 重新打开 -> 「已打开」一条
+    expect("turned on again", shown.length === 5 && shown[4].opts.tag === "mc-hello", String(shown.length));
+    responses.push({ blocked: [], events: [], seq: 11, instances: boot });
+    const C = tab("C");                                             // 新标签页: 首次轮询
+    await tick(); await tick();
+    const bn = shown[5];
+    expect("boot pending fires on first poll", shown.length === 6 && bn && bn.title === "重启后有 2 个实例等你确认拉起" && bn.opts.tag === boot.key, bn && bn.title);
+    const bootEv = { seq: 12, type: "INSTANCE_BOOT_PENDING", pillar: "instances", session: null, project: null,
+                     dedup_key: "INSTANCE_BOOT_PENDING:other", payload: { count: 2 } };
+    responses.push({ blocked: [], events: [bootEv], seq: 12, instances: boot });
+    A.poll(); await tick(); await tick();
+    expect("boot pending once across tabs, event path silent", shown.length === 6, String(shown.length));
+    bn && bn.onclick();
+    expect("boot click goes to instances", C.href === "/processes#instances" && bn.closed, C.href);
+    responses.push({ blocked: [], events: [], seq: 12, instances: { pending: 1, key: "INSTANCE_BOOT_PENDING:1700090000.5" } });
+    C.poll(); await tick(); await tick();
+    expect("next boot fires again", shown.length === 7 && shown[6].title === "重启后有 1 个实例等你确认拉起", String(shown.length));
   } catch (e) {
     errors.push("exception: " + (e && e.stack ? e.stack.split("\n").slice(0, 3).join(" | ") : e));
   }

@@ -15,10 +15,13 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
 import math
+import os
 import queue
 import re
+import sys
 import threading
 import time
 from datetime import datetime, timedelta
@@ -26,8 +29,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import activity, billing, context_view, control, notify, procmon, remote, runner, tokens_view, trace
+from . import (activity, autostart, billing, context_view, control, instances, notify, procmon, remote, runner,
+               tokens_view, trace)
 from .aggregate import Agg, filter_since, group_by, summarize
+from .discovery import default_base
 from .event_sources import activity_source, context_source, cost_source, risk_source
 from .events import bus as event_bus
 from .parser import load_records
@@ -250,6 +255,219 @@ def _do_free_port(body: dict) -> dict:
     r = procmon.free_port(port, action=action)
     control.plane.audit_action("free-port", f"port {port}", "ok" if r.get("ok") else r.get("reason"))
     return r
+
+
+# ---- 实例层 v0.22 (instances / autostart): 策略与审计在这里, 机械在 instances.py ----
+# 闸门 (P7): 令牌头 (_ctl_guard, 永不认 Cookie) + **只认本机 Host** (手机经隧道只读) —— 两道都在 Handler 里;
+# 刻意**不看控制模式** (用户决定 #4: 启停自己登记的服务不该先去开一个远程审批开关)。
+# 审计: 每个变更 (含 draft: 它读原始命令行) 都记一笔; target 只写实例名 / id / 组名, 绝不写命令行 / 路径。
+_INST_POSTS = {
+    "/api/instances/start": "instance-start", "/api/instances/stop": "instance-stop",
+    "/api/instances/restart": "instance-restart", "/api/instances/start-group": "instance-start-group",
+    "/api/instances/save": "instance-save", "/api/instances/patch": "instance-patch",
+    "/api/instances/delete": "instance-delete", "/api/instances/get": None,     # get: 只读 (本机+令牌), 不审计
+    "/api/instances/draft": "instance-draft", "/api/instances/boot-ack": "instance-boot-ack",
+    "/api/autostart": "autostart",
+}
+_FORWARD_HEADERS = ("Cf-Connecting-Ip", "Cf-Ray", "X-Forwarded-For", "X-Forwarded-Host", "Forwarded")
+_AUTOSTART_TTL = 20.0                  # 页面每 4 秒轮询一次; schtasks 查询要起子进程, 缓存一下
+_AUTOSTART_CACHE: dict = {"t": 0.0, "v": None}
+
+
+def _peer_is_loopback(addr) -> bool:
+    """TCP 对端是不是本机回环。Host 头是客户端自己写的: 远程模式绑到 0.0.0.0 时, 局域网里谁都能直连并写
+    `Host: localhost` —— 只有对端地址骗不了。反过来它**单独不够**: cloudflared 这类本机隧道也从回环进来,
+    所以 _is_local 还要配合 Host / 转发头。解析不了 (怪地址) 一律算不是本机 (只收紧)。"""
+    try:
+        host = addr[0] if isinstance(addr, (tuple, list)) else addr
+        ip = ipaddress.ip_address(str(host).split("%", 1)[0])     # 去掉 IPv6 的 %scope
+    except (ValueError, TypeError, IndexError):
+        return False
+    ip = getattr(ip, "ipv4_mapped", None) or ip                    # 双栈监听: ::ffff:127.0.0.1 也是回环
+    return ip.is_loopback
+
+
+def _claude_dir_arg(base) -> str | None:
+    """开机任务要不要带 --claude-dir: 这个 serve 用的不是默认目录, 开机那次也得用它 —— 否则一进来就
+    「找不到 Claude 数据目录」。给绝对路径 (开机任务的工作目录是仓库根, 相对路径会指错地方); 默认目录就不带。"""
+    if base is None:
+        return None
+    b = os.path.abspath(str(base))
+    try:
+        same = os.path.normcase(b) == os.path.normcase(os.path.abspath(str(default_base())))
+    except Exception:
+        same = False
+    return None if same else b
+
+
+def _attn_instances(serve_port=None) -> dict | None:
+    """铃铛的「重启后有实例等你确认」: 这是**常驻状况** (不是一次性事件) —— 开机后的事件只在那几秒发一次,
+    页面多半还没打开; 所以每次轮询都带上, 页面按「这次开机拉起」的时刻去重, 首次轮询也弹。
+    只由实例层的主人报 (两个 tokmon 各开一页也只响一次); 与 /api/instances 同一个 serve_port -> 共用它的状态缓存。
+    查不到就当没有 (铃铛不因实例层出错而坏)。"""
+    try:
+        if not instances.available():
+            return None
+        st = instances.status_all(serve_port=serve_port)
+    except Exception:
+        return None
+    owner = st.get("owner")
+    if isinstance(owner, dict) and owner.get("is_owner") is False:
+        return None
+    boot = st.get("boot") or {}
+    pending = boot.get("pending") or []
+    if not pending:
+        return None
+    return {"pending": len(pending), "key": f"INSTANCE_BOOT_PENDING:{boot.get('handled')}"}
+
+
+def _autostart_status(fresh: bool = False) -> dict:
+    now = time.time()
+    if not fresh and _AUTOSTART_CACHE["v"] is not None and now - _AUTOSTART_CACHE["t"] < _AUTOSTART_TTL:
+        return _AUTOSTART_CACHE["v"]
+    try:
+        v = autostart.status()
+    except Exception as e:             # 查不到不拖垮实例区: 如实说查询失败
+        v = {"supported": False, "installed": False, "method": None, "detail": f"查询失败: {type(e).__name__}"}
+    _AUTOSTART_CACHE.update(t=now, v=v)
+    return v
+
+
+def _instances_status(port, local: bool) -> dict:
+    """GET /api/instances = 实例状态 + 开机自启状态 + 这次请求是不是本机 (页面据此藏掉启停按钮)。"""
+    d = dict(instances.status_all(serve_port=port))
+    d["autostart"] = _autostart_status()
+    d["local"] = local
+    return d
+
+
+def _instances_log(q) -> dict:
+    iid = (q.get("id") or [""])[0]
+    try:
+        n = int((q.get("n") or ["200"])[0])
+    except ValueError:
+        n = 200
+    return instances.log_tail(iid, n)            # n 的夹紧 (1..500) 与逐行脱敏在 instances 里
+
+
+def _inst_name(iid: str) -> str:
+    """审计里的目标: 你给实例起的名字, 取不到就用 id。只取 name, 别的字段 (命令 / 环境变量) 一概不碰。"""
+    try:
+        rec = instances.get_instance(iid) if iid else None
+    except Exception:
+        rec = None
+    return str((rec or {}).get("name") or iid or "?")
+
+
+def _inst_audited(kind: str, target: str, fn) -> dict:
+    """跑一个实例动作并审计 (无论成败; 抛异常也记一笔 "error" 再抛给 _json 回 500)。"""
+    try:
+        r = fn()
+    except Exception:
+        control.plane.audit_action(kind, target, "error")
+        raise
+    control.plane.audit_action(kind, target, "ok" if r.get("ok") else str(r.get("reason") or "failed"))
+    return r
+
+
+def _do_instance(path: str, body: dict, serve_port=None, base=None) -> dict:
+    """实例层 POST 的分发 (闸门已在 Handler 里过完)。参数不对 -> 明确 reason, 不猜。
+    实例层回 not-owner (另一个 tokmon 在管实例) 原样透传给页面, 审计结果记 not-owner。"""
+    kind = _INST_POSTS[path]
+    iid = str(body.get("id") or "").strip()
+    if path == "/api/instances/get":             # 完整记录 (含环境变量原值) —— 只给本机持令牌的编辑框
+        rec = instances.get_instance(iid) if iid else None
+        return {"ok": True, "instance": rec} if rec else {"ok": False, "reason": "not-found"}
+    if path == "/api/instances/start":
+        return _inst_audited(kind, _inst_name(iid), lambda: instances.start(iid, force=body.get("force") is True))
+    if path == "/api/instances/stop":
+        return _inst_audited(kind, _inst_name(iid), lambda: instances.stop(iid))
+    if path == "/api/instances/restart":
+        return _inst_audited(kind, _inst_name(iid), lambda: instances.restart(iid))
+    if path == "/api/instances/start-group":
+        group = str(body.get("group") or "core")
+        if group not in ("core", "backup"):
+            return {"ok": False, "reason": "bad-group"}
+        return _inst_audited(kind, f"group {group}", lambda: instances.start_group(group))
+    if path == "/api/instances/save":
+        data = body.get("instance")
+        if not isinstance(data, dict):
+            return {"ok": False, "reason": "invalid", "errors": {"instance": "required"}}
+        orig = str(body.get("original_id") or "").strip() or None
+        target = str(data.get("name") or data.get("id") or orig or "?")[:40]   # 提交的名字 (已知是你自己起的标签)
+        return _inst_audited(kind, target, lambda: instances.save_instance(data, original_id=orig))
+    if path == "/api/instances/patch":
+        fields = body.get("fields")
+        if not isinstance(fields, dict):
+            return {"ok": False, "reason": "invalid", "errors": {"fields": "required"}}
+        return _inst_audited(kind, _inst_name(iid), lambda: instances.patch_instance(iid, fields))
+    if path == "/api/instances/delete":
+        target = _inst_name(iid)                 # 删之前取名字, 删完就查不到了
+        return _inst_audited(kind, target, lambda: instances.delete_instance(iid))
+    if path == "/api/instances/draft":
+        try:
+            pid = int(body.get("pid"))
+        except (TypeError, ValueError):
+            return {"ok": False, "reason": "bad-pid"}
+        ct = body.get("create_time")
+        if ct is None:                           # 没有 create_time 就核不了身份 (pid 可能已被复用) -> 让页面刷新后重试
+            control.plane.audit_action(kind, f"pid {pid}", "identity-required")
+            return {"ok": False, "reason": "identity-required"}
+        try:
+            ct = float(ct)
+        except (TypeError, ValueError):
+            ct = math.nan
+        if not math.isfinite(ct):                # NaN 跟谁比都「不超差」-> 会把身份核对整个绕过去 (json 认 NaN 字面量)
+            return {"ok": False, "reason": "bad-create-time"}
+        return _inst_audited(kind, f"pid {pid}", lambda: instances.draft_from_pid(pid, ct))
+    if path == "/api/instances/boot-ack":
+        action = str(body.get("action") or "")
+        if action not in ("start", "dismiss"):
+            return {"ok": False, "reason": "bad-action"}
+        return _inst_audited(kind, action, lambda: instances.boot_ack(action))
+    # /api/autostart: 开 = 登记到任务计划程序 (失败退到注册表 Run); 关 = 两处都删。开机实例一律绑本机回环。
+    on = body.get("on")
+    if not isinstance(on, bool):                 # 缺字段 / 写成字符串: 不猜是装还是卸
+        return {"ok": False, "reason": "bad-on"}
+    try:
+        p = int(body.get("port") or serve_port or 8765)
+    except (TypeError, ValueError):
+        p = 0
+    if not 1 <= p <= 65535:
+        return {"ok": False, "reason": "bad-port"}
+    kw = {}
+    cd = _claude_dir_arg(base)
+    if cd:                                       # 非默认数据目录: 开机那次也用它 (默认目录就不带, 老接口照样能用)
+        kw["claude_dir"] = cd
+    try:
+        return _inst_audited(kind, "install" if on else "uninstall",
+                             (lambda: autostart.install(port=p, host="127.0.0.1", **kw)) if on else autostart.uninstall)
+    finally:
+        _AUTOSTART_CACHE.update(t=0.0, v=None)   # 装/卸之后下一次轮询重新查, 页面马上看到真实状态
+
+
+def _serve_instances_note(boot: bool, port=None) -> str:
+    """启动横幅里实例那一行的尾巴。只用纯文字 (GBK 控制台写不出 ✓ 这类符号, 会在启动时崩)。"""
+    if not instances.available():
+        return "   (缺 psutil, 实例区只读提示)"
+    st = _autostart_status(fresh=True)
+    how = {"task": "任务计划程序", "run-key": "注册表 Run"}.get(st.get("method"), "")
+    note = (f"   开机自启: 已装 ({how})" if st.get("installed")
+            else ("   开机自启: 未装 (tokmon autostart install)" if st.get("supported") else ""))
+    try:                                         # 另一个 tokmon 拿着实例层的锁: 这个只看不管, 开机拉起也不归它
+        owner = instances.status_all(serve_port=port).get("owner")
+    except Exception:
+        owner = None
+    if isinstance(owner, dict) and owner.get("is_owner") is False:
+        if owner.get("stale"):                   # 锁的主人已经退出: 这个 tokmon 几秒内自己接管 (不补做开机拉起)
+            return note + "   · 原来管理实例的 tokmon 已退出, 正在接管 (几秒后这边就能启停)"
+        who = " · ".join(x for x in (f"pid {owner['pid']}" if owner.get("pid") else "",
+                                     f"端口 {owner['port']}" if owner.get("port") else "") if x)
+        return note + (f"   · 只读: 另一个 tokmon{' (' + who + ')' if who else ''}"
+                       " 在管理实例, 启停 / 开机拉起请在它那边")
+    if boot:
+        note += "   · --boot: 本次由实例层拉起 auto 实例 / 提醒 ask 实例"
+    return note
 
 
 def _set_provider_keys(body: dict) -> dict:
@@ -705,20 +923,28 @@ def _brief_nowait(path: str, running: bool):
     return brief
 
 
-_ATTN_TYPES = ["PERMISSION_NEEDED", "QUESTION_PENDING", "CONTEXT_LARGE"]   # 最后一种只有页面上勾了才弹
+_ATTN_TYPES = ["PERMISSION_NEEDED", "QUESTION_PENDING", "CONTEXT_LARGE",   # CONTEXT_LARGE 只有页面上勾了才弹
+               "PROCESS_CRASHED"]                                          # 实例层 v0.22: 实例意外退出
+# INSTANCE_BOOT_PENDING 故意不走事件这条路: 它是常驻状况, 由 _attn_instances 每次轮询带上 (两条路都走会弹两次)。
 
 
-def _attention(base, since: int) -> dict:
+def _attention(base, since: int, serve_port=None) -> dict:
     """「等你」的轻量轮询 (各页导航里的提醒开关, 每 5 秒): 此刻卡在你身上的会话 + 游标之后新的「等你」事件。
-    只读 activity 快照 (2 秒共享缓存) 与事件总线, 不解析会话、不扫记录。since < 0 = 刚打开页面: 只给游标, 不补旧事件。"""
+    只读 activity 快照 (2 秒共享缓存) 与事件总线, 不解析会话、不扫记录。since < 0 = 刚打开页面: 只给游标, 不补旧事件。
+    另: 有实例在等你确认拉起时带 "instances" (常驻状况, 首次轮询也带)。"""
     snap = activity.snapshot(base, live=procmon.live_claude_index())
     blocked = [{"session_id": r.get("session_id"), "project": r.get("project"), "title": r.get("title"),
                 "state_label": r.get("state_label")}
                for r in snap.get("sessions", []) if r.get("state") == "BLOCKED_ON_USER"]
     if since < 0:
-        return {"blocked": blocked, "events": [], "seq": event_bus.snapshot_meta()["last_seq"]}
-    ev = event_bus.since(since, types=_ATTN_TYPES)
-    return {"blocked": blocked, "events": ev["events"], "seq": ev["last_seq"]}
+        out = {"blocked": blocked, "events": [], "seq": event_bus.snapshot_meta()["last_seq"]}
+    else:
+        ev = event_bus.since(since, types=_ATTN_TYPES)
+        out = {"blocked": blocked, "events": ev["events"], "seq": ev["last_seq"]}
+    inst = _attn_instances(serve_port)
+    if inst:
+        out["instances"] = inst
+    return out
 
 
 def _sessions_with_briefs(base) -> dict:
@@ -761,8 +987,9 @@ def _sessions_with_briefs(base) -> dict:
     return out
 
 
-def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
+def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None, port: int | None = None):
     rcfg = rcfg or remote.RemoteConfig()          # 默认 = 本机模式 (零行为变化)
+    serve_port = port                             # 实例层: 认出「本服务自己」那条实例 (kind=self) 用
     throttle = remote.LoginThrottle()
 
     class Handler(BaseHTTPRequestHandler):
@@ -803,6 +1030,18 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
                 return False
             return True
 
+        def _is_local(self) -> bool:
+            """这次请求是不是从本机来的: TCP 对端是回环 **且** Host 是回环写法 **且** 没带转发头。
+            实例层的全部变更只认本机 (用户决定 #5: 手机只读), 哪怕令牌对、远程模式开着。
+            - 对端: 远程模式绑到 0.0.0.0 时, 局域网设备能直连并自称 `Host: localhost` —— Host 头骗得了, 对端地址骗不了;
+            - Host: 隧道 (cloudflared) 在本机, 对端也是回环, 只能靠它带的隧道域名认出来;
+            - 转发头: 只收紧不放宽的保险 —— 万一隧道被配成把 Host 改写成 localhost, 手机照样只读。本机伪造只会把自己降成只读。"""
+            if not _peer_is_loopback(self.client_address):
+                return False
+            if any(self.headers.get(h) for h in _FORWARD_HEADERS):
+                return False
+            return remote.normalize_host(self.headers.get("Host")) in remote.LOCAL_HOSTS
+
         def _read_guard(self, is_page: bool = False) -> bool:
             """读门: 本机模式下恒放行 (零行为变化); 远程模式下**读页/读 API 也要令牌**。
 
@@ -830,7 +1069,7 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
                      "/api/workflow/text", "/api/workflow/script", "/api/workflow/stats", "/api/workflow/drill",
                      "/api/summary", "/api/tokens/cube", "/api/processes", "/api/health", "/api/sessions", "/api/attention", "/api/events",
                      "/api/notifications", "/api/notify-test", "/api/control", "/api/budget", "/api/doctor",
-                     "/api/backtest", "/api/billing"}
+                     "/api/backtest", "/api/billing", "/api/instances", "/api/instances/log"}
             p = urlparse(self.path).path
             code = 200 if p in known else 404
             if code == 200 and rcfg.enabled and not control.plane.check_token(
@@ -924,6 +1163,13 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
             if path == "/api/processes":
                 self._json(procmon.snapshot)
                 return
+            if path == "/api/instances":          # 实例层: 已过读门 (远程模式要令牌); 命令已脱敏, 不含环境变量值
+                local = self._is_local()
+                self._json(lambda: _instances_status(serve_port, local))
+                return
+            if path == "/api/instances/log":
+                self._json(lambda: _instances_log(parse_qs(parsed.query)))
+                return
             if path == "/api/sessions":
                 # 组合层在这里把 process 支柱的活性索引注入 activity —— activity 本身不 import procmon;
                 # 再把 trace 支柱的「当前任务简报」挂上 (角标 + 实时回放入口)。
@@ -935,7 +1181,7 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
                     since = int(q.get("since", ["-1"])[0] or -1)
                 except ValueError:
                     since = -1
-                self._json(lambda: _attention(base, since))
+                self._json(lambda: _attention(base, since, serve_port))
                 return
             if path == "/api/events":
                 q = parse_qs(parsed.query)
@@ -989,7 +1235,8 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
             # 且**只在本机 Host 上**接受 —— 经隧道来的请求一律要 header。
             if path == "/hook/permission":
                 token = self.headers.get("X-Control-Token")
-                if not token and remote.normalize_host(self.headers.get("Host")) in remote.LOCAL_HOSTS:
+                if (not token and remote.normalize_host(self.headers.get("Host")) in remote.LOCAL_HOSTS
+                        and _peer_is_loopback(self.client_address)):   # 绑到 0.0.0.0 时局域网也能自称 localhost, 对端地址骗不了
                     token = q.get("token", [None])[0]
                 result = control.plane.handle_permission(body, token)
                 self._json(lambda: control.shape_hook_response(result))
@@ -1038,7 +1285,15 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
                     self._json(lambda: _set_provider_keys(body))
                     return
                 if path == "/api/control/mode":
-                    self._json(lambda: {"ok": True, "remote_mode": control.plane.set_mode(bool(body.get("on")))})
+                    on = bool(body.get("on"))
+                    if on and not self._is_local():
+                        # 「打开」只认本机 (0.22 评审 + 你的决定): 控制模式一开, 持令牌者就能经隧道 steer 出命令执行;
+                        # 关掉 / 审批仍可在手机上做。回 200 + ok:false (不是 403), 免得页面把令牌当失效清掉。
+                        control.plane.audit_action("control-mode", "on", "local-only")
+                        self._json(lambda: {"ok": False, "reason": "local-only",
+                                            "remote_mode": control.plane.remote_mode})
+                        return
+                    self._json(lambda: {"ok": True, "remote_mode": control.plane.set_mode(on)})
                 elif path == "/api/control/decide":
                     self._json(lambda: {"ok": control.plane.resolve(body.get("id"), body.get("decision"))})
                 elif path == "/api/control/terminate":
@@ -1052,21 +1307,60 @@ def _make_handler(base: Path, rcfg: remote.RemoteConfig | None = None):
                 else:   # /api/budget 设置预算
                     self._json(lambda: _set_budget(body, base))
                 return
+            # 实例层 v0.22: 令牌头 + 只认本机 Host; **不**要求控制模式 (见 _INST_POSTS 上方的说明)
+            if path in _INST_POSTS:
+                if not self._ctl_guard():
+                    return
+                if not self._is_local():          # 手机经隧道: 令牌对也只读 (用户决定 #5)
+                    self._send(403, b'{"ok":false,"reason":"local-only"}', "application/json; charset=utf-8")
+                    return
+                self._json(lambda: _do_instance(path, body, serve_port, base))
+                return
             self._send(404, b"not found", "text/plain; charset=utf-8")
 
     return Handler
 
 
-def run_serve(base: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
+def _bind_server(addr, handler):
+    """建 HTTP 服务并绑端口。Windows 上 http.server 默认开 SO_REUSEADDR, 那里它的意思是「允许别的进程同绑这个端口」
+    (实测: 第二个 serve 绑同一端口不报错, 两个进程一起收请求、各跑一套实例监督)。关掉它, 第二个就绑不上 ——
+    run_serve 靠「绑上端口」来判断自己是不是唯一的那个。POSIX 的 SO_REUSEADDR 只是允许复用 TIME_WAIT, 保留。"""
+    httpd = ThreadingHTTPServer(addr, handler, bind_and_activate=False)
+    if sys.platform == "win32":
+        httpd.allow_reuse_address = False
+    try:
+        httpd.server_bind()
+        httpd.server_activate()
+    except BaseException:
+        httpd.server_close()
+        raise
+    return httpd
+
+
+def _stdout_is_tty() -> bool:
+    """横幅是打到人眼前的终端, 还是落进日志文件 (开机自启走 pythonw, 输出重定向到 ~/.tokmon/logs/serve.log)。"""
+    try:
+        return bool(sys.stdout is not None and sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def run_serve(base: Path, host: str = "127.0.0.1", port: int = 8765, boot: bool = False) -> bool:
+    """boot=True: 开机自启任务 (`tokmon serve --boot`) 拉起的这一次 —— 实例层据此做一次开机拉起。
+    返回 False = 没起来 (目录 / 远程配置不对 / 端口绑不上): cli 据此以退出码 1 结束 —— 脚本和任务计划程序的
+    「上次运行结果」要看得出失败, 不能把一次没起来的 serve 报成成功。正常跑完 (Ctrl+C) 返回 True。"""
     if not Path(base).exists():
-        print(f"找不到 Claude 数据目录: {base}")
-        return
+        if not boot:
+            print(f"找不到 Claude 数据目录: {base}")
+            return False
+        # 开机那次不能因为这个退出: 实例拉起 / 进程页与 Claude 数据目录无关, 会话 / token 页面只是空着 (照常降级)
+        print(f"找不到 Claude 数据目录: {base} —— 开机自启照常起服务 (实例层不需要它), 会话 / token 页面会是空的")
     # 远程暴露收口 (MC_REMOTE): 配置不自洽 -> **拒绝启动**, 绝不带着半个洞跑起来 (P7 ⑤ 失败安全)。
     rcfg = remote.from_env()
     problem = remote.preflight(rcfg, host, control.plane.token)
     if problem:
         print(problem)
-        return
+        return False
     activity_source.start_pump(Path(base), live_factory=procmon.live_claude_index)   # M2: 对话活动事件 pump (5s, 带活性消歧)
     cost_source.start_pump(Path(base))        # M3.5: 成本预算 pump (60s)
     risk_source.start_pump(Path(base), live_factory=procmon.live_claude_index)   # 改动与风险 S3: 风险事件 pump (15s, 只发 info)
@@ -1074,7 +1368,17 @@ def run_serve(base: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     billing.start_pump()                      # B1: 厂商账单 pump (5min; 未配 key 则零外发)
     trace.start_warmer(Path(base))            # /workflow: 后台把 transcript 读进缓存 + 算耗时基线 (冷启动约 6-10s)
     notifier = notify.start_notifier()        # M3: 通知层订阅总线 (默认仅本地, 配 token 才外发)
-    httpd = ThreadingHTTPServer((host, port), _make_handler(Path(base), rcfg))
+    try:
+        httpd = _bind_server((host, port), _make_handler(Path(base), rcfg, port=port))
+    except OSError as e:
+        print(f"端口 {port} 绑不上 ({e.strerror or e}) —— 多半已经有一个 tokmon (或别的程序) 在用它。"
+              f"换个端口: --port <别的>")
+        return False
+    # 实例层 v0.22: 端口绑上之后才起监督线程 —— 绑不上 (已有一个 tokmon 在跑) 就不该第二个人去推进实例状态 / 做开机拉起。
+    # 换个端口起的第二个 tokmon 靠实例层自己的主人锁挡住 (它只读)。
+    # 放在通知层订阅之后: 开机提醒 / 意外退出的事件要能进 feed。
+    if instances.available():
+        instances.start_supervisor(boot=boot, serve_port=port)
     url = f"http://{host}:{port}/"
     scope = "远程模式: 读页也要令牌" if rcfg.enabled else "只监听本机"
     print(f"Claude Mission Control 已启动 ({scope}):  {url}")
@@ -1087,8 +1391,12 @@ def run_serve(base: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
         print(f"  ⚠ 外发通道已配置: {' + '.join(_chans)} —— 会话事件会推到手机 (通知页已从导航隐藏, 仍可访问 {url}notify)")
     print(f"  · 进程/端口监控       {url}processes" + ("" if procmon.available() else "   (缺 psutil, 该页会提示安装)"))
     print(f"  · 体检 (doctor)       {url}doctor   (成本契约 + 推断契约, 对真相校验)")
-    print(f"  控制令牌 (页面首次开控制模式/终止进程时粘贴一次, 之后存浏览器): {control.plane.token}")
-    print("  (令牌不再经 HTTP 下发, 只在这里/~/.tokmon/control_token 可见 —— 防本机他进程/网页窃取后终止你的进程)")
+    print(f"  · 实例 (启停/开机拉起) {url}processes#instances" + _serve_instances_note(boot, port))
+    if _stdout_is_tty():
+        print(f"  控制令牌 (页面首次开控制模式/终止进程时粘贴一次, 之后存浏览器): {control.plane.token}")
+        print("  (令牌不再经 HTTP 下发, 只在这里/~/.tokmon/control_token 可见 —— 防本机他进程/网页窃取后终止你的进程)")
+    else:   # 输出落进日志文件 (开机自启 / 重定向): 日志会被拿去排障、贴出去, 令牌原文绝不进去
+        print("  控制令牌：见 ~/.tokmon/control_token（不写进日志）")
     if rcfg.enabled:
         print(f"  ⚠ 远程模式已开: 全部页面与 /api/* 都要令牌; Host 白名单 = {', '.join(sorted(rcfg.hosts))}")
         print("    手机上先开 /login 贴一次令牌 (存 HttpOnly Cookie, 12h 过期)。")
@@ -1101,6 +1409,7 @@ def run_serve(base: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
         print("\n已停止。")
     finally:
         httpd.server_close()
+    return True
 
 
 # ---- 单页前端: 页面都在 tokmon/pages/*.html (零外部依赖, 可离线), 文件末尾统一载入。
@@ -1175,7 +1484,7 @@ _BELL = r"""<button type="button" class="bell" id="mcbell" title="等你时提�
     bell.classList.toggle("on", on());
     bell.classList.toggle("hot", n > 0);
     bell.title = (n ? "此刻有 " + n + " 个会话在等你授权 / 回答\n" : "")
-      + (on() ? "等你时提醒：开（再点一下关掉）\n会话卡在你身上超过 60 秒时弹一条通知；这个页面要开着，在后台时浏览器可能最多晚一分钟"
+      + (on() ? "等你时提醒：开（再点一下关掉）\n会话卡在你身上超过 60 秒、实例意外退出、重启后有实例等你确认时弹一条通知；这个页面要开着，在后台时浏览器可能最多晚一分钟"
               : (perm === "denied" ? "等你时提醒：浏览器没给通知权限 —— 点地址栏左边的站点设置，把「通知」改成允许，再点一下"
                                    : (perm === "unsupported" ? "这个浏览器不支持通知" : "等你时提醒：关（点一下打开）")))
       + "\n近 7 天弹了 " + s.shown.length + " 次，点开 " + s.clicked.length + " 次";
@@ -1183,22 +1492,44 @@ _BELL = r"""<button type="button" class="bell" id="mcbell" title="等你时提�
   }
   function fire(e, blocked) {
     if (!on() || !("Notification" in window) || Notification.permission !== "granted") return;
+    // 实例层 v0.22: 只认实例层发的崩溃 (别的支柱将来的 PROCESS_CRASHED 口径不同, 这里不猜)。
+    // 「重启后等你确认」不走事件这条路 (见 fireBoot), 万一来了也不弹, 免得弹两次。
+    if (e.type === "INSTANCE_BOOT_PENDING") return;
+    var inst = e.type === "PROCESS_CRASHED" && e.pillar === "instances";
+    if (e.type === "PROCESS_CRASHED" && !inst) return;
     var mark = "mc.notified." + e.dedup_key;
     if (ls(mark)) return;                          // 别的标签页已经弹过这一段等待
     ls(mark, String(Date.now()));
     var b = null;
     for (var i = 0; i < blocked.length; i++) if (blocked[i].session_id === e.session) b = blocked[i];
-    var p = e.payload || {}, what = e.type === "PERMISSION_NEEDED" ? "等你授权" : "等你回答", body;
-    if (e.type === "CONTEXT_LARGE") {             // 省钱 S3: 只有在 /sessions 勾了「上下文过 30 万也提醒」才弹
+    var p = e.payload || {}, what = e.type === "PERMISSION_NEEDED" ? "等你授权" : "等你回答", body, title = null,
+        go = "/sessions#s-" + encodeURIComponent(e.session || "");
+    if (inst) {                                   // 点开 -> /processes 的实例区 (看日志 / 重启)
+      go = "/processes#instances";
+      title = "实例意外退出 · " + (p.instance || "?");
+      body = (p.state_label || "意外退出") + (p.exit_code != null ? "（退出码 " + p.exit_code + "）" : "")
+        + "。不会自动重启 —— 去实例区看日志再决定。";
+    } else if (e.type === "CONTEXT_LARGE") {             // 省钱 S3: 只有在 /sessions 勾了「上下文过 30 万也提醒」才弹
       if (ls("mc.notify.ctx") !== "1") return;
       what = "上下文过 30 万";
       body = "这一轮 " + Math.round((p.count || 0) / 10000) + " 万 token，之后每一轮都要把它再读一遍。合适的时候 /compact，或者换新会话。";
     } else {
       body = ((b && b.title) ? b.title + "\n" : "") + (p.state_label || what) + "（已等 " + Math.max(1, Math.round((p.age_s || 60) / 60)) + " 分钟）";
     }
-    var n = new Notification(what + " · " + ((b && b.project) || e.project || "Claude Code"), {body: body, tag: e.dedup_key, renotify: false});
+    var n = new Notification(title || (what + " · " + ((b && b.project) || e.project || "Claude Code")), {body: body, tag: e.dedup_key, renotify: false});
     bump("shown");
-    n.onclick = function () { bump("clicked"); window.focus(); location.href = "/sessions#s-" + encodeURIComponent(e.session || ""); n.close(); };
+    n.onclick = function () { bump("clicked"); window.focus(); location.href = go; n.close(); };
+  }
+  function fireBoot(x) {   // 实例层 v0.22: 重启后有实例等你确认 = 常驻状况 (像「等你授权」一样一直在): 首次轮询也弹,
+    // 按「这次开机拉起」的键去重 (多个标签页 / 刷新都只弹一次); 你拉起或忽略之后服务端就不再带它
+    if (!x || !(x.pending > 0) || !on() || !("Notification" in window) || Notification.permission !== "granted") return;
+    var mark = "mc.notified." + x.key;
+    if (ls(mark)) return;
+    ls(mark, String(Date.now()));
+    var n = new Notification("重启后有 " + x.pending + " 个实例等你确认拉起",
+                             {body: "点开去实例区一键拉起，或者忽略。", tag: x.key, renotify: false});
+    bump("shown");
+    n.onclick = function () { bump("clicked"); window.focus(); location.href = "/processes#instances"; n.close(); };
   }
   function poll() {
     fetch("/api/attention?since=" + seq).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
@@ -1207,6 +1538,7 @@ _BELL = r"""<button type="button" class="bell" id="mcbell" title="等你时提�
       seq = d.seq;
       paint(d.blocked.length);
       if (!first) d.events.forEach(function (e) { fire(e, d.blocked); });   // 打开页面前的旧事件不补弹
+      fireBoot(d.instances);                                                  // 常驻状况: 首次轮询也看
     }).catch(function () {});
   }
   bell.addEventListener("click", function () {
