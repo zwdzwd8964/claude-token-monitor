@@ -1361,19 +1361,24 @@ def run_serve(base: Path, host: str = "127.0.0.1", port: int = 8765, boot: bool 
     if problem:
         print(problem)
         return False
-    activity_source.start_pump(Path(base), live_factory=procmon.live_claude_index)   # M2: 对话活动事件 pump (5s, 带活性消歧)
-    cost_source.start_pump(Path(base))        # M3.5: 成本预算 pump (60s)
-    risk_source.start_pump(Path(base), live_factory=procmon.live_claude_index)   # 改动与风险 S3: 风险事件 pump (15s, 只发 info)
-    context_source.start_pump(Path(base))      # 省钱 S3: 正在跑的会话上下文刚过 30 万 (30s, 只发 info)
-    billing.start_pump()                      # B1: 厂商账单 pump (5min; 未配 key 则零外发)
-    trace.start_warmer(Path(base))            # /workflow: 后台把 transcript 读进缓存 + 算耗时基线 (冷启动约 6-10s)
     notifier = notify.start_notifier()        # M3: 通知层订阅总线 (默认仅本地, 配 token 才外发)
+    # 先绑端口, 再起 pump —— 顺序是**故意**的 (启动速度):
+    # 各 pump 的首帧要全量扫 ~/.claude/projects (已达数千文件 / GB 级)。它们曾经排在绑定之前, 于是
+    # 看板在扫完之前根本不可达 (实测 2026-10-22: 304s)。现在绑定不依赖任何扫描, 端口秒开;
+    # 基线在各自线程里补, 头几秒 /api/budget 与活动事件还没基线 —— 这个代价远小于看板打不开。
+    # 通知层仍排在最前: 后面所有 pump (以及开机拉起) 的事件都要能进 feed。
     try:
         httpd = _bind_server((host, port), _make_handler(Path(base), rcfg, port=port))
     except OSError as e:
         print(f"端口 {port} 绑不上 ({e.strerror or e}) —— 多半已经有一个 tokmon (或别的程序) 在用它。"
               f"换个端口: --port <别的>")
         return False
+    activity_source.start_pump(Path(base), live_factory=procmon.live_claude_index)   # M2: 对话活动事件 pump (5s, 带活性消歧)
+    cost_source.start_pump(Path(base))        # M3.5: 成本预算 pump (60s)
+    risk_source.start_pump(Path(base), live_factory=procmon.live_claude_index)   # 改动与风险 S3: 风险事件 pump (15s, 只发 info)
+    context_source.start_pump(Path(base))      # 省钱 S3: 正在跑的会话上下文刚过 30 万 (30s, 只发 info)
+    billing.start_pump()                      # B1: 厂商账单 pump (5min; 未配 key 则零外发)
+    trace.start_warmer(Path(base))            # /workflow: 后台把 transcript 读进缓存 + 算耗时基线 (冷启动约 6-10s)
     # 实例层 v0.22: 端口绑上之后才起监督线程 —— 绑不上 (已有一个 tokmon 在跑) 就不该第二个人去推进实例状态 / 做开机拉起。
     # 换个端口起的第二个 tokmon 靠实例层自己的主人锁挡住 (它只读)。
     # 放在通知层订阅之后: 开机提醒 / 意外退出的事件要能进 feed。

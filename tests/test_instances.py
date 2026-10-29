@@ -1579,7 +1579,9 @@ def test_stagger_gate_ignores_a_backward_wall_clock_step(world, tmp_path, monkey
     assert inst.start(x["id"])["state"] == "starting"
     monkeypatch.setattr(inst, "time", _SteppedBackClock())
     res = inst._start(y["id"], force=False, wait_deps=False, actor="boot", internal=False, stagger=True)
-    assert res["reason"] == "stagger" and 0 < res["wait"] <= 0.3
+    # 容差 1e-6: wait = last + 0.3 - now, monotonic 量级大 (开机半月 ≈ 1.3e6 s) 且 Windows 时钟 15.6ms 一跳,
+    # now == last 时浮点舍入会给出 0.3 + 5e-11 —— 那不是闸门漏判, 不能让它把测试打红。
+    assert res["reason"] == "stagger" and 0 < res["wait"] <= 0.3 + 1e-6
     time.sleep(0.35)
     assert inst._start(y["id"], force=False, wait_deps=False, actor="boot", internal=False, stagger=True)["ok"]
 

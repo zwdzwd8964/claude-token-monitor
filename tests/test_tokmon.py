@@ -187,6 +187,59 @@ def test_parser_vscode_only_filter():
         assert only[0].project == "API"
 
 
+# ---- 按 mtime 预筛 (启动/预算只读「关键文件」) ----
+
+def test_discover_newer_than_skips_old_files_but_keeps_recent():
+    # 契约: transcript 只追加 -> mtime >= 最后一条记录的时间戳。
+    # 所以 mtime < cutoff 的文件不可能含窗口内记录, 跳过它不改变窗口内结果。
+    import os as _os
+    import time as _time
+
+    from tokmon.discovery import discover
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        _write_session(base, "c--old", "old.jsonl", r"C:\old", [_assistant("m1", "r1", 10, 1)])
+        _write_session(base, "c--new", "new.jsonl", r"C:\new", [_assistant("m2", "r2", 20, 2)])
+
+        now = _time.time()
+        old = base / "c--old" / "old.jsonl"
+        _os.utime(old, (now - 30 * 86400, now - 30 * 86400))   # 30 天前碰过
+
+        cutoff = now - 8 * 86400                                # 近 8 天
+        kept = {p.name for p, _, _ in discover(base, newer_than=cutoff)}
+        assert kept == {"new.jsonl"}                            # 老文件被跳过
+        assert {p.name for p, _, _ in discover(base)} == {"old.jsonl", "new.jsonl"}   # 不传则照旧全量
+
+        # load_records 透传: 窗口内的记录一条不少, 窗口外的不再被读
+        assert {r.message_id for r in load_records(base, newer_than=cutoff)} == {"m2"}
+        assert {r.message_id for r in load_records(base)} == {"m1", "m2"}
+
+
+def test_discover_newer_than_keeps_file_it_cannot_stat():
+    # stat 不出来 (竞态删除 / 权限) -> 宁可不跳, 交给解析层, 不能静悄悄少算。
+    from tokmon.discovery import discover
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        _write_session(base, "c--x", "x.jsonl", r"C:\x", [_assistant("m1", "r1", 10, 1)])
+        import pathlib as _pl
+        real_stat = _pl.Path.stat
+
+        def boom(self, *a, **kw):
+            if self.name == "x.jsonl":
+                raise OSError("stat failed")
+            return real_stat(self, *a, **kw)
+
+        import time as _t
+        _pl.Path.stat = boom
+        try:
+            kept = {p.name for p, _, _ in discover(base, newer_than=_t.time())}
+        finally:
+            _pl.Path.stat = real_stat
+        assert kept == {"x.jsonl"}
+
+
 # ---- doctor 体检 ----
 
 def test_doctor_scan_counts_and_warns():

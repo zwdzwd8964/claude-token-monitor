@@ -219,22 +219,26 @@ def tick(base=None, cfg=None, live_factory=None) -> int:
 
 
 def _loop(base, cfg, tick_s: float, live_factory=None):
-    while not _pump_stop.wait(tick_s):
+    # 首帧立刻跑 (不先等一个周期): 它就是基线帧 —— tick 内按 _baseline_done 自判, 只播种不发事件。
+    # 基线帧在**本线程**里跑而不是在 start_pump 里同步跑, 是为了不把 serve 的端口绑定堵在全量扫描后面。
+    while True:
         try:
             tick(base, cfg, live_factory)
         except Exception:
             pass            # 单次 tick 出错不拖垮 pump (§2.4 渐进降级)
+        if _pump_stop.wait(tick_s):
+            return
 
 
 def start_pump(base=None, cfg=None, tick_s: float = 5.0, live_factory=None):
-    """懒启动唯一的 pump 守护线程 (由 serve.run_serve 调一次)。先跑一帧基线播种, 再起循环。"""
+    """懒启动唯一的 pump 守护线程 (由 serve.run_serve 调一次)。
+
+    **不在这里同步跑基线帧**: 基线要全量扫 ~/.claude/projects (已达数千文件 / GB 级), 同步跑会把
+    serve 的 `_bind_server` 堵在后面 —— 看板要等几分钟才可达。基线改由 `_loop` 的首帧在后台跑
+    (tick 内按 `_baseline_done` 自判首帧, 语义不变: 只播种不发事件)。"""
     global _pump_thread
     if _pump_thread and _pump_thread.is_alive():
         return _pump_thread
-    try:
-        tick(base, cfg, live_factory)     # 基线: 播种记忆, 不发事件
-    except Exception:
-        pass
     _pump_stop.clear()
     _pump_thread = threading.Thread(target=_loop, args=(base, cfg, tick_s, live_factory),
                                     name="mc-event-pump", daemon=True)

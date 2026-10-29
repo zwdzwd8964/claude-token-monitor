@@ -134,14 +134,19 @@ def load_records(
     base: Path,
     include_kinds: set[str] | None = None,
     vscode_only: bool = False,
+    newer_than: float | None = None,
 ) -> list[UsageRecord]:
     """扫描全部 session 文件, 去重后返回 UsageRecord 列表。
 
     去重键 = (message_id, request_id), 避免同一条 assistant 消息被重复计数。
     vscode_only=True 时只保留位于 .vscode 之下的会话。
+
+    newer_than (epoch 秒, 可选): 按文件 mtime 预筛, 只读可能落在窗口内的文件 (见 discovery.discover)。
+    **只有「我只要最近 N 天」的调用方才传**; 要全量口径的 (/tokens 的配色名次、savings_marks 的
+    窗口外上一轮、report --since all) 必须不传, 否则会少算。
     """
     seen: dict[tuple[str, str], UsageRecord] = {}
-    for path, raw_dir, kind in discover(base):
+    for path, raw_dir, kind in discover(base, newer_than=newer_than):
         if include_kinds is not None and kind not in include_kinds:
             continue
         for rec in parse_file(path, raw_dir, kind):

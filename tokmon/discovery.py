@@ -38,8 +38,15 @@ def classify(path: Path, base: Path) -> tuple[str, str]:
     return raw_dir, kind
 
 
-def discover(base: Path) -> list[tuple[Path, str, str]]:
-    """返回 [(path, raw_dir, source_kind), ...]。跳过 workflow journal。"""
+def discover(base: Path, newer_than: float | None = None) -> list[tuple[Path, str, str]]:
+    """返回 [(path, raw_dir, source_kind), ...]。跳过 workflow journal。
+
+    newer_than (epoch 秒, 可选): 只返回 mtime >= 它的文件。**只有调用方自己有时间窗时才传**。
+
+    为什么按 mtime 筛是安全的: transcript 只追加, 文件的 mtime 必然 >= 它最后一条记录的时间戳。
+    所以 mtime < cutoff 的文件, 里面不可能有 >= cutoff 的记录 —— 跳过它不改变窗口内的任何结果。
+    调用方应当再减一点余量 (时钟漂移 / 拷贝文件保留 mtime), 别拿 cutoff 卡着边界传。
+    """
     base = Path(base)
     if not base.exists():
         return []
@@ -47,6 +54,12 @@ def discover(base: Path) -> list[tuple[Path, str, str]]:
     for path in base.rglob("*.jsonl"):
         if path.name == "journal.jsonl":
             continue  # workflow 编排日志, 不含 assistant usage
+        if newer_than is not None:
+            try:
+                if path.stat().st_mtime < newer_than:
+                    continue
+            except OSError:
+                pass        # stat 不出来 (竞态删除/权限) -> 不敢跳, 照旧交给解析层处理
         raw_dir, kind = classify(path, base)
         out.append((path, raw_dir, kind))
     return out

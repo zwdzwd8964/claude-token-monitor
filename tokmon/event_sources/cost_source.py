@@ -26,6 +26,10 @@ from ..discovery import default_base
 from ..events import Event, bus
 from ..parser import load_records
 
+# 预算窗口 = 近 7 天 (周预算的口径) + 1 天余量。只用来给 load_records 做 mtime 预筛,
+# 不参与任何计算 —— 真正的「今天 / 近 7 天」仍由 filter_today / filter_days 按记录时间戳判。
+_BUDGET_WINDOW_DAYS = 8
+
 _BUDGET_PATH = Path.home() / ".tokmon" / "budget.json"
 _DEFAULT_THRESHOLDS = (70, 90, 100)
 
@@ -123,7 +127,9 @@ def tick(base: Path | None = None) -> int:
     budgets: list[dict] = []
     emitted = 0
     if cfg.configured():
-        recs = load_records(base)
+        # 预算只看「今天」和「近 7 天」-> 按 mtime 预筛, 别为两个数字去读全部历史 (已达数千文件 / GB 级)。
+        # 余量 1 天: 时钟漂移 / 拷贝保留 mtime 时也不会漏掉边界上的文件 (见 discovery.discover)。
+        recs = load_records(base, newer_than=now - _BUDGET_WINDOW_DAYS * 86400)
         today_recs = filter_today(recs)
         today_cost = summarize(today_recs).cost
         week_cost = summarize(filter_days(recs, 7)).cost
@@ -159,22 +165,23 @@ def status() -> dict:
 
 
 def _loop(base, tick_s: float):
-    while not _pump_stop.wait(tick_s):
+    # 首帧立刻跑 (不先等一个周期): /api/budget 仍然很快就有状态, 但扫描不再堵住 serve 绑端口。
+    while True:
         try:
             tick(base)
         except Exception:
             pass            # 单次 tick 出错不拖垮 pump
+        if _pump_stop.wait(tick_s):
+            return
 
 
 def start_pump(base: Path | None = None, tick_s: float = 60.0):
-    """懒启动成本预算 pump (60s 一次, 比活动 pump 慢 —— 预算跨阈不需要秒级)。"""
+    """懒启动成本预算 pump (60s 一次, 比活动 pump 慢 —— 预算跨阈不需要秒级)。
+
+    首帧改由 `_loop` 在后台立刻跑 (不再在这里同步跑): 同步跑会把 serve 的端口绑定堵在全量扫描后面。"""
     global _pump_thread
     if _pump_thread and _pump_thread.is_alive():
         return _pump_thread
-    try:
-        tick(base)          # 先算一帧, 让 /api/budget 立刻有状态
-    except Exception:
-        pass
     _pump_stop.clear()
     _pump_thread = threading.Thread(target=_loop, args=(base, tick_s), name="mc-cost-pump", daemon=True)
     _pump_thread.start()
