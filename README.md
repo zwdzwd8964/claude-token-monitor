@@ -118,6 +118,7 @@ python -m tokmon serve
 | [docs/atlas.html](docs/atlas.html) | 系统图谱（离线 Mermaid） | 📜 停在 07-01，不含 billing/steer |
 | [WORKFLOW_TAB_PLAN.md](WORKFLOW_TAB_PLAN.md) | **`/workflow` 工作流追踪器一页规格** | ✅ S1–S3 全部验收（0.10.0 → 0.12.0） |
 | [CHANGE_RISK_PLAN.md](CHANGE_RISK_PLAN.md) | **改动与风险一页规格**（当前优先级：它改了什么 / 有没有乱改 / 在变好吗） | ✅ S1–S3 全部验收（0.13.0 → 0.15.0） |
+| [CONSOLES_PLAN.md](CONSOLES_PLAN.md) | **控制台接入迁移规格**（S0 价目对齐官方 → S1 控制台 agent 的归属 → S2 工单等你 → S3 额度与对账；本机清单在 `~/.tokmon/consoles.json`） | 🟡 方向已定（2026-10-29），S0–S3 未开工 |
 | [INSTANCES_PLAN.md](INSTANCES_PLAN.md) | **实例管理一页规格**（重启不用重新部署：`/processes` 顶部的实例清单 + 启停 + 开机拉起 + tokmon 自启） | 🟡 0.22.0 已交付 —— 待你验收 |
 | [CONTEXT_COST_PLAN.md](CONTEXT_COST_PLAN.md) | **省钱：上下文体检一页规格**（当前优先级：上下文多大、每轮多少钱、离开多久会重建、是什么把它撑大的） | 🟡 S1 ✅（0.19.0）· S2 ✅（0.20.0）· S3 ✅（0.21.0）—— 待你验收 |
 | [SESSIONS_COCKPIT_PLAN.md](SESSIONS_COCKPIT_PLAN.md) | **会话驾驶舱一页规格**（`/sessions` 一行看全四件事 + 等你时叫你） | ✅ 全部验收（0.17.0 → 0.18.0） |
@@ -135,6 +136,8 @@ python -m tokmon serve
 
 - **手机环未用真账号验证过**（已搁置）——通道、策略、线路形状都有测试守卫，只剩「你配一次账号」。
 - **`/workflow` 的「等你」只认 AskUserQuestion / ExitPlanMode**：permission 弹窗的等待在 transcript 里和工具执行分不开，算在机器执行里。
+- **单价表落后官方**（2026-10-29 发现）：`pricing.py` 按家族定价，Opus 5.5 / Sonnet 5.5 / Haiku 5.5 / Fable 5.1 的等价 $ 都偏高，主会话合计约高 1.6 倍。修正见 [CONSOLES_PLAN.md](CONSOLES_PLAN.md) S0。
+- **控制台派出的 agent 只算了钱、没认出身份**：看不出属于哪个控制台、运行、任务、角色，worker 等中控会误报「等你」。见 [CONSOLES_PLAN.md](CONSOLES_PLAN.md) S1–S3。
 - **无持久化**：每次全量重扫 transcript（数据长大后会变慢，SQLite 仍是 backlog）。
 - **`report` 没有 `--by` / `--json`**——NORTH_STAR 里标着「下一个待做」，被整个平台化跳过了。
 - **推断 doctor 的 L3（事件完整性回放）/ L4（打扰预算）未做。**
