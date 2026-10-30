@@ -1,6 +1,6 @@
 # 控制台接入 · 迁移规格
 
-> **【状态章 · 2026-10-29】S0 已验收（0.23.0）· S1 已交付（0.24.0），S2 接着做（S0 之后约好连着做到 S3）。** 你在问卷里选了：
+> **【状态章 · 2026-10-29】S0 已验收（0.23.0）· S1（0.24.0）· S2（0.25.0）已交付，S3 接着做（S0 之后约好连着做到 S3）。** 你在问卷里选了：
 > **1A** 在 tokmon 里按 S1 → S3 做 · **2A** 用配置文件列出控制台 · **3A** 先按官方价目修 `pricing.py`，控制台改读它。
 > 开工时你又定了几条：S0 也按官方价算 fast mode 和 us 推理；价目快照默认输出到 stdout，`--out` 写文件；`budget.json` 不动，在停顿点提醒你；
 > 超过 260 字符的 transcript 路径（31 个文件，现在读不到）放到 S1 修；S0 之后停一次给你看，S1→S3 连着做；每一刀都提交并推送。
@@ -97,7 +97,7 @@ tokmon 改成读清单，配置文件里只列控制台的根目录。
 | 内核改动 | `UsageRecord` 只加 `entrypoint`（这是 transcript 里本来就有的事实） | 控制台标签不进内核，在展示层按 session_id 关联（P4、I6） |
 | 项目归属修正 | 控制台标签和 scratchpad 父会话都可以修正项目归属，doctor 报告改了多少条 | `project.py` 原有规则不变；scratchpad 规则写成纯函数加在那里 |
 | 放在哪 | 融进 `/sessions`、`/tokens`、`/doctor`，不加新页面 | 和前几轨的做法一致 |
-| 新事件 | `CONSOLE_TICKET_PENDING`：warning，阻塞工单 ≥60 秒没答（和铃铛现有的 60 秒规则一致）。`CONSOLE_PARKED`、`CONSOLE_RUN_FINISHED`：info。预算复用 `TOKEN_BUDGET_WARNING`，`scope=console` | P6 对误报零容忍：只有「等你」这一种会响 |
+| 新事件 | `CONSOLE_TICKET_PENDING`：warning，阻塞工单 ≥60 秒没答（和铃铛现有的 60 秒规则一致）。`CONSOLE_PARKED`（每段停泊一次）、`CONSOLE_RUN_FINISHED`：info。预算复用 `TOKEN_BUDGET_WARNING`，`scope=console`，也是 info、不带百分比。冷启动静默按运行算（一次运行第一次被看到时只记下现状） | P6 对误报零容忍：只有「等你」这一种会响 |
 | 事件载荷 | 白名单新增 `console`、`run`、`ticket_kind` 三个 key | **不带工单正文和任务标题**（§6 内容最小化） |
 | 隐私 | 测试只用合成夹具，不提交真实的 events | 真实 events 里有提问原文 |
 
@@ -112,16 +112,23 @@ tokmon 改成读清单，配置文件里只列控制台的根目录。
 
 | 规范名 | office（C / D / E） | conductor（A） | missiond（B） | 用于 |
 |---|---|---|---|---|
-| 运行状态 | `session.status`.status：running / idle / closing / stopping / restored / waiting_quota | `run.started` / `run.finished` | `mission.state`.state：starting / planning / running / waiting / finishing / idle | S2 |
+| 运行状态 | `session.status`.status：running / idle / closing / stopping / waiting_quota（E 还有 held）；**「现在」以 `state.json` 的 status 为准**（closed = 结束）；`session.restored` 是单独的事件，不是状态 | `run.status`（running / idle / closing）+ `run.finished`；被杀掉的运行没有 run.finished | `mission.state`.state：starting / planning / running / waiting / finishing / idle / **blocked（等你）/ parked（until）/ closed / failed**；running⇄waiting 只表示有没有回合在跑 | S2 |
 | 任务 | `task.started` / `task.finished`（`status` 字段：done、partial 等） | 同左 | 同左 | S1 / S2 |
 | 角色 | `state.json` 的 `agents[].spec.kind`（E 另有 shell；`spec.critic` 为真记成 critic） | `agent.spawned` 的 kind（锦标赛 competitor / judge） | `agents/<aid>.json` 的 kind；中控是 `conductor` | S1 |
 | 用量 | `usage`（逐次响应；`reconciled` 是只补钱的行，token 全 0；`agent_cost` / `total_cost` 是累计，别加） | `usage`（逐次调用的真值；但 **A 正常收尾会删掉自己的 transcript**，只剩被杀掉的运行，所以对不上账） | 没有（只在 agents json 里有累计数） | S3 对账 |
 | 额度 | `quota`：`data.windows.five_hour` / `seven_day` 下的 `.utilization`、`.resets_at` | `quota` | `quota.reading`：`data.five_hour` / `seven_day` 是小数 | S3 |
-| 工单 | `ticket.opened`（id / kind / questions）→ `ticket.answered`（同一个 id） | 无 | `question.asked`（question_id / why_blocking）→ `question.answered` | S2 |
-| 停泊 | `agent.parked`（reason / until）、`quota.park` | 无 | `agent.parked`（reason） | S2 |
-| 预算 | `budget`（spent / cap / pct / level） | `budget` | `meter.warning` | S2 |
+| 工单 | `ticket.opened`（id / kind / questions；E 另有 blocking / blocked_since）→ `ticket.answered`（同一个 id）；E 还有 `ticket.superseded`、不阻塞的 `ticket.adopted`；**当前状态以 `state.json` 的 `tickets[id].status` 为准** | 无 | `question.asked`（question_id / why_blocking）→ `question.answered`；`approval.requested`（approval_id / kind）→ `approval.resolved` | S2 |
+| 停泊 | `quota.park`（until；E 的 `injected` 是故障注入，不认）→ `quota.resume`；`agent.parked` 只认 cause=quota；C / D 只有 `session.status`=waiting_quota；`state.json` 的 `quota.paused_until` | `quota` 的 status=rejected + resets_at（没有专门的停泊事件） | `agent.parked` 只认 reason=quota（**idle 那种是空闲收起，不是额度**）；`mission.state`=parked（until） | S2 |
+| 预算 | `budget`（spent / cap / pct / level：ok / warn / soft_stop / hard_stop） | `budget`（同左） | `meter.warning` 只认 meter ∈ five_hour / quota_share / time_box（ram / capacity / sessions 是机器负载） | S2 |
 
-**阻塞的判定**（S2 第一步核实后回填）：E 的题目分阻塞和非阻塞，非阻塞题会当场按推荐项默认采纳；B 的 `question.asked` 带 `why_blocking`；C 和 D 要看源码。
+**阻塞的判定**（S2 对照各代源码核实后回填，2026-10-29）：
+- **C、D**：工单**没有**「是否阻塞」的字段。只有中控能开工单、工具立刻返回，中控接着做不依赖答案的事；没有任何自动采纳，所以**每张开着的工单都在等你**。
+  例外只有 D 的 `paid_api` 在 allow 策略下当场被策略答掉（`answered_by=policy`），等于从没开着。
+- **E**：工单带 `blocking`。不阻塞的当场按推荐项默认采纳（紧跟一条 `ticket.adopted`），不算等你；阻塞的到 `ticket.answered`（计划类也可能是 `ticket.superseded`）为止。
+- **B**：`question.asked` 必须写 `why_blocking`，所以每一道题都是阻塞的；`approval.requested` 也要你批；`mission.state=blocked` 是运行级的等你。
+- **A**：没有工单（agent 报的 blocked 是向中控汇报，不是找你）。
+- tokmon 的规范状态（每次运行一台）：结束 > 等你（有没答的阻塞工单）> 额度停泊（停到几点）> 预算告警（warn 及以上）> 运行中 > 空闲；
+  另加「没动静」：报在跑、但事件流 2 小时没动（被杀掉的运行就停在 running）。
 
 ### 3.3 关联键
 

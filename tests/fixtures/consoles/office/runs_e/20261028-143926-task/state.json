@@ -72,5 +72,22 @@
    "calls": 1,
    "cost": 0.01
   }
+ },
+ "tickets": {
+  "Q-001": {
+   "id": "Q-001",
+   "kind": "hard_gate",
+   "blocking": true,
+   "status": "answered",
+   "opened": 7100.0,
+   "answered": 7200.0
+  },
+  "Q-002": {
+   "id": "Q-002",
+   "kind": "question",
+   "blocking": false,
+   "status": "adopted",
+   "opened": 7300.0
+  }
  }
 }

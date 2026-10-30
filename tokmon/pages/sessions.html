@@ -167,11 +167,15 @@ async function loadEvents(){
   }catch(e){}
 }
 function matches(t,q){ return !q || String(t==null?'':t).toLowerCase().includes(q); }
-const CLS = {WORKING:'live',PROCESSING:'live',BLOCKED_ON_USER:'wait',AWAITING_USER:'wait',AMBIGUOUS_PENDING:'amb',CLOSED:'closed',UNKNOWN:'unk'};
+const CLS = {WORKING:'live',PROCESSING:'live',BLOCKED_ON_USER:'wait',AWAITING_USER:'wait',AMBIGUOUS_PENDING:'amb',CLOSED:'closed',UNKNOWN:'unk',CONSOLE_WAIT:'cwait'};
 
 // ---- 过滤器: FILTERS 是唯一真相源, DOM 只是它的投影 (§1)。持久化到 localStorage, 坏数据回退默认。----
 const FKEY='mc_sess_filters';
-const STGRP_LABEL={live:'活跃',wait:'等你',amb:'久未返回',closed:'已关闭',unk:'读不出'};
+const STGRP_LABEL={live:'活跃',wait:'等你',amb:'久未返回',closed:'已关闭',unk:'读不出',cwait:'等中控'};
+// 控制台运行的规范状态 (CONSOLES_PLAN S2) -> 运行那一行的徽章
+const RUN_ST={waiting_you:['等你','blk'],parked:['额度停泊','amb'],budget:['预算告警','amb'],running:['运行中','live'],
+              idle:['空闲','wait'],stale:['没动静','unk'],finished:['已结束','closed']};
+function fmtHM(epoch){ try { const d=new Date(epoch*1000); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); } catch(e){ return ''; } }
 const AGE_LABEL={'3600':'近 1h','86400':'近 24h','604800':'近 7d'};
 let FILTERS={projects:[],states:[],ageMax:null};
 try{ const s=JSON.parse(localStorage.getItem(FKEY)||'{}');
@@ -244,6 +248,8 @@ function render(){
     ${c.background?`<span class="pill live">后台在跑 <b>${c.background}</b></span>`:''}
     ${spill('久未返回', c.ambiguous, 'amb', 'amb')}
     ${spill('等你', c.awaiting+(c.blocked||0), 'wait', '')}
+    ${(()=>{ const cw=Object.values(d.runs||{}).filter(g=>g.run_state==='waiting_you'); return cw.length?`<span class="pill amb" title="${esc('控制台的运行里有没答的阻塞工单（控制台自己记的事实）：\n'+cw.map(g=>'控制台 '+g.code+' · '+g.run+' · '+g.pending+' 张').join('\n'))}">控制台等你 <b>${cw.length}</b></span>`:''; })()}
+    ${c.console_wait?spill('等中控', c.console_wait, 'cwait', ''):''}
     ${c.blocked?`<span class="pill amb" title="「等你」的子集: 回合卡在你身上 —— 权限弹窗 / Claude 在问你 (Claude Code 进程自报)">其中等你授权/回答 <b>${c.blocked}</b></span>`:''}
     <span class="pill" title="「等你」的子集: Claude 已回复你且 >10min 无人接话 (不是并列状态)">其中等你已久 <b>${c.idle}</b></span>
     ${spill('已关闭', c.closed, 'closed', 'unk')}
@@ -283,7 +289,8 @@ function render(){
     const idleBadge = (s.state==='AWAITING_USER'&&s.idle) ? '<span class="idle" title="Claude 已回复你, 超过 10min 没人接话 —— 你欠它一句话">等你已久</span>' : '';
     const wf = s.workflow, live = s.state==='WORKING'||s.state==='PROCESSING'||s.state==='BLOCKED_ON_USER';
     const blk = s.state==='BLOCKED_ON_USER' ? ' blk' : '';
-    const src = s.state_source==='registry' ? '来源: Claude Code 进程自报' : '来源: 据 transcript 推断';
+    const src = s.state_source==='registry' ? '来源: Claude Code 进程自报'
+      : (s.state_source==='console' ? '来源: 控制台 (它派出的会话停下来是在等中控, 不是等你)' : '来源: 据 transcript 推断');
     const wfHref = wf ? '/workflow?task='+encodeURIComponent(wf.task) : '';
     const riskBadge = (wf && wf.risks.length) ? `<a class="rkb" href="${wfHref}" title="${esc('风险（规则判断，推断；只标不拦）\n'+wf.risks.map(r=>'· '+r.label).join('\n')+'\n点击看当前任务的回放')}">⚠ ${esc(wf.risks[0].label)}${wf.risks.length>1?' 等 '+wf.risks.length+' 条':''}</a>` : '';
     const wfLink = wf ? `<a class="wfl" href="${wfHref}" title="${live?'打开当前任务的实时回放（每 5 秒自动刷新）':'打开这个会话最后一个任务的回放'}">${live?'实时回放 →':'回放 →'}</a>` : '';
@@ -351,11 +358,19 @@ function render(){
     const age = Math.min(...kids.map(x=>x.last_activity_age_s==null?1e12:x.last_activity_age_s));
     const name = (g.name && g.name!==g.code) ? ' · '+esc(g.name) : '';
     const runTxt = g.run==='自测' ? '自测会话（搭控制台时的探针）' : esc(g.run||'');
-    const st = g.status ? `<span class="cchip" title="${esc('控制台自己报的这次运行的状态（原样显示；「等你」的判断在下一刀做）')}">${esc(g.status)}</span>` : '';
+    const rs = RUN_ST[g.run_state] || null;
+    const why = g.run_state==='waiting_you' ? g.pending+' 张阻塞工单没答'+(g.pending_since?'（最早的开了 '+fmtAgo(Math.round(Date.now()/1000-g.pending_since)).replace(' 前','')+'）':'')
+      : g.run_state==='parked' ? (g.park_until?'额度停泊到 '+fmtHM(g.park_until):'控制台报在等额度')
+      : g.run_state==='budget' ? '控制台报的预算级别：'+(g.budget_level||'')
+      : g.run_state==='stale' ? '控制台报在跑，但事件流 2 小时没动了（可能已经被关掉）'
+      : g.run_state==='finished' ? Object.entries(g.outcomes||{}).map(([k,v])=>k+' '+v).join(' · ')
+      : '';
+    const st = rs ? `<span class="sb ${rs[1]}" title="${esc('这次运行的状态（控制台自己写下的事实，规范化之后）'+(why?'\n'+why:'')+(g.status?'\n控制台原话：'+g.status:''))}">${esc(rs[0])}${g.run_state==='waiting_you'?' · '+g.pending+' 张工单':(g.run_state==='parked'&&g.park_until?' · 到 '+fmtHM(g.park_until):'')}</span>`
+      : (g.status ? `<span class="cchip" title="控制台自己报的这次运行的状态">${esc(g.status)}</span>` : '');
     const grain = g.grain==='run' ? `<span class="cchip grain" title="${esc('这个控制台不记会话 id：只认得出是哪次运行，分不出是哪个角色')}">运行级</span>` : '';
     const link = g.url ? `<a class="wfl" href="${esc(g.url)}" target="_blank" rel="noopener" title="打开控制台页面（链接里不带口令）">控制台 →</a>` : '';
     const money = g.tokens ? `<span class="money" title="${esc('整次运行（全部 '+total+' 个会话，不随筛选变）的累计等价成本（估算，不是账单）：transcript 的 usage 真值 × 公开单价\n'+fmtTok(g.tokens)+' tok'+(g.unpriced?'\n含单价未确认的模型（估算或按 $0），金额不准':''))}">≈${fmtUsd(g.cost)}${g.unpriced?'*':''}</span>` : '';
-    return `<div class="row runrow ${cls}${blk}" data-run="${esc(k)}">
+    return `<div class="row runrow ${cls}${blk}" data-run="${esc(k)}" id="r-${esc(k)}">
       <div class="r1 runhead" data-run="${esc(k)}">
         <span class="rtog">${open?'▾':'▸'}</span>
         <span class="title">控制台 ${esc(g.code||'')}${name} · ${runTxt}</span>
@@ -395,9 +410,13 @@ function render(){
 let hashDone='';
 function focusHash(){
   const h=decodeURIComponent((location.hash||'').slice(1));
-  if(!h.startsWith('s-') || h===hashDone) return;
+  if(!(h.startsWith('s-') || h.startsWith('r-')) || h===hashDone) return;   // r-<代号:运行>: 从控制台工单的通知点进来
   const el=document.getElementById(h);
-  if(!el) return;
+  if(!el){
+    // 控制台工单的通知点进来, 但那次运行被筛选藏起来了: 清掉筛选 (render 末尾会再进来找一次; 筛选已空, 不会再走到这里)
+    if(h.startsWith('r-') && (FILTERS.projects.length||FILTERS.states.length||FILTERS.ageMax!=null||$('#filter').value)) clearFilters();
+    return;
+  }
   const box=el.closest('.kids[hidden]');
   if(box){ const k=box.parentElement.dataset.run; if(k && !OPEN.has(k)){ OPEN.add(k); render(); return; } }   // render 末尾会再进来一次
   hashDone=h; el.scrollIntoView({block:'center'}); el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'), 2400);

@@ -94,6 +94,67 @@ class RunInfo:
     task_starts: list = field(default_factory=list)    # [(开始时刻, 任务键)] 按时间排序
     task_status: dict = field(default_factory=dict)    # 任务键 -> 结束状态
     ledger: dict | None = None                         # office: state.json ledger.total (对账用, 不当真值)
+    # ---- S2 状态机的料 (都是控制台自己写下的事实; 工单只记 id / 种类 / 开关时刻 / 是否阻塞, **不记题目和正文**)
+    tickets: dict = field(default_factory=dict)        # 工单 id -> {"kind", "opened", "closed", "blocking"}
+    park_until: float | None = None                    # 控制台报的额度停泊到几点
+    parked: bool = False                               # 控制台报的状态本身就是「等额度」(不一定知道到几点)
+    budget_level: str = ""                             # 控制台最近报的预算级别: ok / warn / soft_stop / hard_stop
+    budget_at: float | None = None                     # B: 由 meter.warning 推出的告警是什么时候 (过了 5 小时就不作数)
+    last_seen: float | None = None                     # events.jsonl 最后一次被写的时刻 (控制台还活着没有)
+
+    def pending(self) -> list:
+        """没答的阻塞工单 [(id, 种类, 开的时刻)], 按开的先后。"""
+        out = [(k, t["kind"], t["opened"]) for k, t in self.tickets.items()
+               if t["blocking"] and t["closed"] is None and t["opened"] is not None]
+        return sorted(out, key=lambda x: x[2])
+
+    def waiting_at(self, t: float) -> bool:
+        """回放用: 时刻 t 这次运行有没有没答的阻塞工单 (S2 判据 ①)。"""
+        return any(x["blocking"] and x["opened"] is not None and x["opened"] <= t
+                   and (x["closed"] is None or t < x["closed"]) for x in self.tickets.values())
+
+    def state(self, now: float) -> str:
+        """规范化的运行状态: finished / waiting_you / parked / budget / running / idle (先后即优先级)。"""
+        if self.finished is not None:
+            return "finished"
+        if self.pending():
+            return "waiting_you"
+        if self.parked or (self.park_until is not None and self.park_until > now):
+            return "parked"
+        if self.status in _RUNNING and self.last_seen is not None and now - self.last_seen > STALE_S:
+            return "stale"            # 报在跑, 但事件流很久没动: 多半是控制台被关掉了 (A 被杀掉的运行就停在 running)
+        if self.budget_level in ("warn", "soft_stop", "hard_stop") and not (
+                self.budget_at is not None and now - self.budget_at > 5 * 3600):
+            return "budget"
+        if self.status in _RUNNING:
+            return "running"
+        return "idle"
+
+    def outcomes(self) -> dict:
+        """各任务的结束状态计数 (done / partial / failed …)。"""
+        out: dict = {}
+        for v in self.task_status.values():
+            out[v] = out.get(v, 0) + 1
+        return out
+
+
+_RUNNING = frozenset({"running", "planning", "starting", "waiting", "finishing", "closing", "stopping"})
+STALE_S = 2 * 3600                  # 报在跑、但事件流这么久没动 -> 「没动静」, 不再说它在跑
+
+
+def _ticket_open(info: RunInfo, tid, kind, ts, blocking=True) -> None:
+    if tid in (None, ""):
+        return
+    t = info.tickets.setdefault(str(tid), {"kind": "", "opened": None, "closed": None, "blocking": True})
+    t["kind"] = str(kind or t["kind"] or "")
+    t["opened"] = t["opened"] if t["opened"] is not None else ts
+    t["blocking"] = bool(blocking)
+
+
+def _ticket_close(info: RunInfo, tid, ts) -> None:
+    t = info.tickets.get(str(tid)) if tid not in (None, "") else None
+    if t is not None and t["closed"] is None:
+        t["closed"] = ts if ts is not None else (t["opened"] or 0.0)
 
 
 @dataclass
@@ -251,13 +312,14 @@ def _office(snap: Snapshot, con: Console, c: dict) -> None:
             for tn in (st.get("tnums") or {}):
                 if _RE_TN.match(str(tn)):
                     run_of_tn.setdefault(tn, run)
+        status_ts = None                                          # 最近一条改状态的事件的时刻
         for ev in _events(rdir / "events.jsonl", _OFFICE_TYPES, snap):
             t, d = ev.get("type"), ev.get("data") or {}
             ts = _num(ev.get("ts"))
             if t == "session.started":
                 info.started = info.started or ts
             elif t == "session.status" and d.get("status"):
-                info.status = str(d["status"])
+                info.status, status_ts = str(d["status"]), ts
             elif t == "session.finished":
                 info.finished = ts
                 info.status = str(d.get("status") or info.status)
@@ -269,6 +331,20 @@ def _office(snap: Snapshot, con: Console, c: dict) -> None:
                 key = str(d.get("tn") or d.get("index") or "")
                 if key:
                     info.task_status[key] = str(d.get("status") or "")
+            elif t == "ticket.opened":
+                # C / D 的工单没有「是否阻塞」: 只有中控能开、开了就等你 (控制台源码核实, CONSOLES_PLAN §3.2);
+                # E 的工单带 blocking, 不阻塞的当场按推荐项默认采纳 (ticket.adopted), 不算等你
+                _ticket_open(info, d.get("id"), d.get("kind"), ts, d.get("blocking", True) is not False)
+            elif t in ("ticket.answered", "ticket.superseded", "ticket.adopted"):
+                _ticket_close(info, d.get("id"), ts)
+            elif t == "budget" and d.get("level"):
+                info.budget_level = str(d["level"])
+            elif t == "quota.park" and not d.get("injected"):
+                info.park_until = _num(d.get("until"))
+            elif t == "quota.resume":
+                info.park_until, info.parked, status_ts = None, False, ts
+            elif t == "agent.parked" and d.get("cause") == "quota" and _num(d.get("until")):
+                info.park_until = max(info.park_until or 0.0, _num(d.get("until")))
             elif t == "agent.successor":
                 # E 的中控换代: 新旧两个会话都属于这个 agent (state.json 只留新的那个)
                 aid = str(ev.get("agent") or d.get("successor") or "")
@@ -277,8 +353,17 @@ def _office(snap: Snapshot, con: Console, c: dict) -> None:
                     if isinstance(sid, str) and sid:
                         snap.labels.setdefault(sid.lower(), Label(code, run, agent_kind.get((run, aid), aid), aid,
                                                                   con.project, "session"))
-        if isinstance(st, dict) and st.get("status"):
-            info.status = str(st["status"])                       # state.json 是「现在」, 事件是历史: 以它为准
+        # state.json 是「现在」—— 但我们手里的可能是缓存的旧一份 (控制台一直在存档时, 安静了才重读, 见 SETTLE_S):
+        # 只有它比最近的事件新, 才拿它盖掉事件给出的状态 / 重新打开事件里已经关掉的工单
+        hit = _FILES.get(str(rdir / "state.json"))
+        st_t = hit[0][1] / 1e9 if hit and hit[1] is st and st is not None else None
+        fresh = st_t is not None and (status_ts is None or st_t >= status_ts)
+        if isinstance(st, dict) and st.get("status") and fresh:
+            info.status = str(st["status"])
+        if isinstance(st, dict):
+            _office_state_now(info, st, st_t, fresh)
+        info.parked = info.status == "waiting_quota"
+        _seen(info, rdir)
         info.task_starts.sort()
     reg = c.get("registry")
     if reg:
@@ -286,7 +371,34 @@ def _office(snap: Snapshot, con: Console, c: dict) -> None:
 
 
 _OFFICE_TYPES = ("session.started", "session.status", "session.finished", "task.started", "task.finished",
-                 "agent.successor")
+                 "agent.successor", "ticket.opened", "ticket.answered", "ticket.superseded", "ticket.adopted",
+                 "budget", "quota.park", "quota.resume", "agent.parked")
+
+
+def _office_state_now(info: RunInfo, st: dict, st_t: float | None = None, fresh: bool = True) -> None:
+    """state.json 是「现在」: 工单的当前状态 (开 / 答) 以它为准; 运行关了就是结束了; 额度停到几点。
+    st_t: 这一份 state.json 的修改时刻 —— 比事件里关单的时刻还旧的, 不许把工单重新打开 (不然答过的工单会再响)。"""
+    for tid, x in (st.get("tickets") or {}).items():
+        if not isinstance(x, dict):
+            continue
+        opened = _num(x.get("opened"))
+        _ticket_open(info, x.get("id") or tid, x.get("kind"), opened, x.get("blocking", True) is not False)
+        t = info.tickets.get(str(x.get("id") or tid))
+        if t is None:
+            continue
+        if t["opened"] is None:
+            t["opened"] = opened
+        if x.get("status") == "open":
+            if t["closed"] is None or (st_t is not None and st_t > t["closed"]):
+                t["closed"] = None                           # 事件里关过、这份更新的 state.json 又开着 (重开): 以它为准
+        elif t["closed"] is None:
+            t["closed"] = _num(x.get("answered")) or opened or 0.0
+    if st.get("status") == "closed" and info.finished is None:
+        info.finished = _num(st.get("saved_at")) or _num(st.get("heartbeat")) or info.started or 0.0
+    q = st.get("quota") if isinstance(st.get("quota"), dict) else {}
+    pu = _num(q.get("paused_until"))
+    if fresh and pu and (info.park_until is None or pu > info.park_until):
+        info.park_until = pu                                 # 旧的一份不能把 quota.resume 之后的停泊又写回来
 
 
 def _office_role(spec: dict) -> str:
@@ -371,23 +483,51 @@ def _missiond(snap: Snapshot, con: Console, c: dict) -> None:
                     aid = str(a.get("id") or f.stem)
                     role = "conductor" if aid == "conductor" else str(a.get("kind") or a.get("role") or "")
                     snap.labels.setdefault(sid.lower(), Label(code, run, role, aid, con.project, "session"))
-        for ev in _events(rdir / "events.jsonl", ("mission.created", "mission.state", "task.started", "task.finished"), snap):
+        for ev in _events(rdir / "events.jsonl", _MISSIOND_TYPES, snap):
             t, d = ev.get("type"), ev.get("data") or {}
             ts = _num(ev.get("ts"))
             if t == "mission.created":
                 info.started = info.started or ts
             elif t == "mission.state" and d.get("state"):
-                info.status = str(d["state"])
+                prev, info.status = info.status, str(d["state"])
                 if d["state"] in ("closed", "failed"):
                     info.finished = ts
+                # blocked = 等你 (B 唯一的运行级等你状态); 离开 blocked 就关掉这张「工单」
+                if d["state"] == "blocked":
+                    _ticket_open(info, f"blocked@{ts}", d.get("kind") or "blocked", ts)
+                elif prev == "blocked":
+                    for k, x in info.tickets.items():
+                        if k.startswith("blocked@") and x["closed"] is None:
+                            x["closed"] = ts
+                if d["state"] == "parked":
+                    info.park_until = _num(d.get("until")) or info.park_until
+                elif prev == "parked":
+                    info.park_until = None
+            elif t == "question.asked":
+                _ticket_open(info, "q:" + str(d.get("question_id") or ""), "question", ts)   # B 的提问都是阻塞的 (必须写 why_blocking)
+            elif t == "question.answered":
+                _ticket_close(info, "q:" + str(d.get("question_id") or ""), ts)
+            elif t == "approval.requested":
+                _ticket_open(info, "a:" + str(d.get("approval_id") or ""), "approval", ts)
+            elif t == "approval.resolved":
+                _ticket_close(info, "a:" + str(d.get("approval_id") or ""), ts)
+            elif t == "agent.parked" and d.get("reason") == "quota" and _num(d.get("until")):
+                info.park_until = max(info.park_until or 0.0, _num(d.get("until")))     # idle 那种停泊不是额度
+            elif t == "meter.warning" and d.get("meter") in ("five_hour", "quota_share", "time_box"):
+                info.budget_level, info.budget_at = "warn", ts    # ram / capacity / sessions 是机器负载, 不是预算
             elif t == "task.started" and ts is not None and d.get("n") is not None:
                 info.task_starts.append((ts, str(d["n"])))
             elif t == "task.finished" and d.get("n") is not None:
                 info.task_status[str(d["n"])] = str(d.get("status") or "")
+        _seen(info, rdir)
         info.task_starts.sort()
     wt = c.get("worktrees_dir")
     if wt:
         snap._cwd_rules.append((code, _norm(wt), "missiond", con.project, set(missions)))
+
+
+_MISSIOND_TYPES = ("mission.created", "mission.state", "task.started", "task.finished", "question.asked",
+                   "question.answered", "approval.requested", "approval.resolved", "agent.parked", "meter.warning")
 
 
 def _b_label(code: str, project: str, rest: list, missions: set) -> Label | None:
@@ -412,7 +552,7 @@ def _conductor(snap: Snapshot, con: Console, c: dict) -> None:
             continue
         info = snap.runs.setdefault((code, run), RunInfo(code, run))
         for ev in _events(rdir / "events.jsonl", ("run.started", "run.status", "run.finished", "task.started",
-                                                   "task.finished", "tournament.started"), snap):
+                                                   "task.finished", "tournament.started", "budget", "quota"), snap):
             t, d = ev.get("type"), ev.get("data") or {}
             ts = _num(ev.get("ts"))
             if t == "run.started":
@@ -426,12 +566,17 @@ def _conductor(snap: Snapshot, con: Console, c: dict) -> None:
                 info.task_starts.append((ts, str(d["index"])))
             elif t == "task.finished" and d.get("index") is not None:
                 info.task_status[str(d["index"])] = str(d.get("status") or "")
+            elif t == "budget" and d.get("level"):
+                info.budget_level = str(d["level"])
+            elif t == "quota":                                    # A 没有停泊: 被拒 (rejected) 就等到重置
+                info.park_until = _num(d.get("resets_at")) if d.get("status") == "rejected" else None
             elif t == "tournament.started" and d.get("tid"):
                 ent = d.get("entries") if isinstance(d.get("entries"), dict) else {}
                 tours.setdefault(run.lower(), {})[str(d["tid"]).lower()] = (
                     {str(k).lower(): str(v) for k, v in ent.items()}, [str(x) for x in d.get("judge_ids") or []])
         if not info.task_starts and info.started is not None:
             info.task_starts.append((info.started, "1"))         # 老运行没有 task.* 事件: 整次运行算任务 1
+        _seen(info, rdir)
         info.task_starts.sort()
     snap._cwd_rules.append((code, _norm(c["runs_dir"]), "conductor", con.project,
                             {"tours": tours, "runs": {k[1].lower(): k[1] for k in snap.runs if k[0] == code}}))
@@ -455,6 +600,11 @@ def _a_label(code: str, project: str, rest: list, extra: dict) -> Label | None:
 
 
 # ---------------------------------------------------------------- 文件读取 (共享删除, 读完即关)
+
+def _seen(info: "RunInfo", rdir: Path) -> None:
+    sig = _sig(rdir / "events.jsonl")                         # 只追加的文件: stat 不挡控制台
+    info.last_seen = sig[1] / 1e9 if sig else None
+
 
 def _run_dirs(runs_dir) -> list[Path]:
     try:

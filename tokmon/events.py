@@ -41,6 +41,10 @@ _DEFAULT_SEVERITY = {
     "CONTEXT_LARGE": "info",
     # 实例层 v0.22: 重启后有 ask 策略的实例等你点一下再拉起 (实例意外退出复用上面的 PROCESS_CRASHED, 显式报 warning)
     "INSTANCE_BOOT_PENDING": "warning",
+    # 控制台 (CONSOLES_PLAN S2): 只有「阻塞工单 >= 60 秒没人答」会响 (P6), 停泊 / 运行结束只发 info
+    "CONSOLE_TICKET_PENDING": "warning",
+    "CONSOLE_PARKED": "info",
+    "CONSOLE_RUN_FINISHED": "info",
 }
 EVENT_TYPES = set(_DEFAULT_SEVERITY)
 
@@ -51,6 +55,7 @@ _ALLOWED_PAYLOAD = {
     "scope", "pct",                    # 预算告警: 预算口径 + 百分比 (非敏感)
     "rule", "count",                   # 风险事件: 规则名 + 计数 (不带路径 / 命令 / 文件名)
     "instance", "exit_code",           # 实例层 v0.22: 实例名是你自己起的标签, 不含命令/路径; 退出码是个整数
+    "console", "run", "ticket_kind",   # 控制台 S2: 代号 / 运行目录名 / 工单种类 —— 不带工单题目、正文、任务标题
 }   # 故意不含 last_text/title/current_step 等对话内容 —— 事件/通知绝不带会话正文 (§6)
 
 

@@ -33,7 +33,7 @@ from . import (activity, autostart, billing, consoles, context_view, control, in
                runner, tokens_view, trace)
 from .aggregate import Agg, filter_since, group_by, summarize
 from .discovery import default_base
-from .event_sources import activity_source, context_source, cost_source, risk_source
+from .event_sources import activity_source, console_source, context_source, cost_source, risk_source
 from .events import bus as event_bus
 from .parser import load_records
 from .pricing import cost_usd_class, price_class
@@ -636,11 +636,14 @@ trace.price_class = lambda model, tup, speed, geo: price_class(model, tup[0], tu
 
 def _console_label(session_id, cwd=None, entrypoint=None) -> dict | None:
     """控制台标签 (CONSOLES_PLAN S1) -> 页面 / activity 用的 dict。控制台支柱与对话活动支柱只在这里汇合 (P4)。"""
-    lab = consoles.snapshot().label(session_id, cwd, entrypoint)
+    snap = consoles.snapshot()
+    lab = snap.label(session_id, cwd, entrypoint)
     if lab is None:
         return None
+    info = snap.runs.get((lab.console, lab.run))
     return {"code": lab.console, "run": lab.run, "role": lab.role, "agent": lab.agent, "project": lab.project,
-            "grain": lab.grain}
+            "grain": lab.grain, "run_state": info.state(time.time()) if info else "",
+            "park_until": info.park_until if info else None}
 
 
 # activity 的行带上控制台标签 (同样在 import 时注入: 共享的 2 秒快照帧要么都带、要么都不带)
@@ -965,6 +968,7 @@ def _brief_nowait(path: str, running: bool):
 
 
 _ATTN_TYPES = ["PERMISSION_NEEDED", "QUESTION_PENDING", "CONTEXT_LARGE",   # CONTEXT_LARGE 只有页面上勾了才弹
+               "CONSOLE_TICKET_PENDING",                                   # 控制台 S2: 阻塞工单 >= 60 秒没人答
                "PROCESS_CRASHED"]                                          # 实例层 v0.22: 实例意外退出
 # INSTANCE_BOOT_PENDING 故意不走事件这条路: 它是常驻状况, 由 _attn_instances 每次轮询带上 (两条路都走会弹两次)。
 
@@ -985,6 +989,22 @@ def _attention(base, since: int, serve_port=None) -> dict:
     inst = _attn_instances(serve_port)
     if inst:
         out["instances"] = inst
+    out["consoles"] = _attn_consoles()
+    return out
+
+
+def _attn_consoles() -> list:
+    """此刻有没答的阻塞工单的控制台运行 (铃铛的数字里也算上它们)。只给代号 / 运行 / 张数 / 开的时刻, 不带题目。"""
+    try:
+        snap = consoles.snapshot()
+    except Exception:
+        return []
+    now = time.time()
+    out = []
+    for (code, run), info in sorted(snap.runs.items()):
+        if info.state(now) == "waiting_you":
+            pend = info.pending()
+            out.append({"code": code, "run": run, "n": len(pend), "since": pend[0][2] if pend else None})
     return out
 
 
@@ -1053,6 +1073,11 @@ def _console_runs(rows: list, sess: dict) -> dict:
                             "task_status": dict(info.task_status) if info else {},
                             "sessions": [], "roles": {}, "grain": lab["grain"], "cost": 0.0, "tokens": 0,
                             "unpriced": False, "state": None, "age": None}
+            if info is not None:                            # S2: 控制台的运行状态 (规范化之后的那台状态机)
+                now = time.time()
+                pend = info.pending()
+                g.update(run_state=info.state(now), pending=len(pend), pending_since=pend[0][2] if pend else None,
+                         park_until=info.park_until, budget_level=info.budget_level, outcomes=info.outcomes())
         g["sessions"].append(r.get("session_id"))
         role = lab.get("role") or "?"
         g["roles"][role] = g["roles"].get(role, 0) + 1
@@ -1462,6 +1487,7 @@ def run_serve(base: Path, host: str = "127.0.0.1", port: int = 8765, boot: bool 
     cost_source.start_pump(Path(base))        # M3.5: 成本预算 pump (60s)
     risk_source.start_pump(Path(base), live_factory=procmon.live_claude_index)   # 改动与风险 S3: 风险事件 pump (15s, 只发 info)
     context_source.start_pump(Path(base))      # 省钱 S3: 正在跑的会话上下文刚过 30 万 (30s, 只发 info)
+    console_source.start_pump()               # 控制台 S2: 阻塞工单 >= 60 秒 (warning, 铃铛) / 停泊 / 结束 / 预算 (15s)
     billing.start_pump()                      # B1: 厂商账单 pump (5min; 未配 key 则零外发)
     trace.start_warmer(Path(base))            # /workflow: 后台把 transcript 读进缓存 + 算耗时基线 (冷启动约 6-10s)
     # 实例层 v0.22: 端口绑上之后才起监督线程 —— 绑不上 (已有一个 tokmon 在跑) 就不该第二个人去推进实例状态 / 做开机拉起。
@@ -1599,6 +1625,11 @@ _BELL = r"""<button type="button" class="bell" id="mcbell" title="等你时提�
       title = "实例意外退出 · " + (p.instance || "?");
       body = (p.state_label || "意外退出") + (p.exit_code != null ? "（退出码 " + p.exit_code + "）" : "")
         + "。不会自动重启 —— 去实例区看日志再决定。";
+    } else if (e.type === "CONSOLE_TICKET_PENDING") {    // 控制台 S2: 阻塞工单开了 60 秒还没人答
+      go = "/sessions#r-" + encodeURIComponent((p.console || "") + ":" + (p.run || ""));
+      title = "控制台 " + (p.console || "?") + " 等你回工单";
+      body = (p.count > 1 ? p.count + " 张工单没答" : "有一张工单没答") + "（" + (p.ticket_kind || "工单")
+        + "，已等 " + Math.max(1, Math.round((p.age_s || 60) / 60)) + " 分钟）。去控制台页面回答。";
     } else if (e.type === "CONTEXT_LARGE") {             // 省钱 S3: 只有在 /sessions 勾了「上下文过 30 万也提醒」才弹
       if (ls("mc.notify.ctx") !== "1") return;
       what = "上下文过 30 万";
@@ -1626,7 +1657,7 @@ _BELL = r"""<button type="button" class="bell" id="mcbell" title="等你时提�
       if (!d) return;
       var first = seq < 0;
       seq = d.seq;
-      paint(d.blocked.length);
+      paint(d.blocked.length + (d.consoles ? d.consoles.length : 0));
       if (!first) d.events.forEach(function (e) { fire(e, d.blocked); });   // 打开页面前的旧事件不补弹
       fireBoot(d.instances);                                                  // 常驻状况: 首次轮询也看
     }).catch(function () {});

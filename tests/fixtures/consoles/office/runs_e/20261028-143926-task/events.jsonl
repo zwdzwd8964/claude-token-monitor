@@ -5,3 +5,9 @@
 {"seq": 4, "ts": 6900.0, "type": "task.finished", "agent": null, "data": {"index": 1, "tn": "T5", "status": "done"}}
 {"seq": 5, "ts": 7000.0, "type": "task.started", "agent": null, "data": {"index": 2, "tn": "T6", "title": "t"}}
 {"seq": 6, "ts": 8000.0, "type": "session.finished", "agent": null, "data": {"status": "done"}}
+{"seq": 20, "ts": 7100.0, "type": "ticket.opened", "agent": null, "data": {"id": "Q-001", "kind": "hard_gate", "blocking": true, "title": "x", "blocked_since": 7100.0}}
+{"seq": 21, "ts": 7200.0, "type": "ticket.answered", "agent": null, "data": {"id": "Q-001", "answers": {"x": "y"}}}
+{"seq": 22, "ts": 7300.0, "type": "ticket.opened", "agent": null, "data": {"id": "Q-002", "kind": "question", "blocking": false, "title": "x"}}
+{"seq": 23, "ts": 7300.5, "type": "ticket.adopted", "agent": null, "data": {"id": "Q-002", "by": "default"}}
+{"seq": 24, "ts": 7400.0, "type": "quota.park", "agent": null, "data": {"reason": "x", "until": 9999999999.0, "source": "window", "injected": true}}
+{"seq": 25, "ts": 7500.0, "type": "budget", "agent": null, "data": {"spent": 1.0, "cap": 2.0, "pct": 50, "level": "warn"}}

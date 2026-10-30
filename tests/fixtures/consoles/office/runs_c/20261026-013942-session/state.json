@@ -101,5 +101,15 @@
    "calls": 2,
    "cost": 0.1
   }
+ },
+ "tickets": {
+  "Q-001": {
+   "id": "Q-001",
+   "kind": "question",
+   "title": "不该被读出来",
+   "status": "open",
+   "opened": 3050.0,
+   "task_index": 2
+  }
  }
 }

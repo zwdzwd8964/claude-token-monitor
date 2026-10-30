@@ -607,7 +607,30 @@ def _session_row(path: Path, raw_dir: str, now: float, cfg: ActivityConfig,
             if lab.get("project"):
                 row["project"], row["subpath"], row["project_source"] = lab["project"], "", "console"
     row.update(st)
+    if row["console"] and row.get("state") in ("AWAITING_USER", "BLOCKED_ON_USER"):
+        _console_wait(row)
     return row
+
+
+def _console_wait(row: dict) -> None:
+    """控制台派出的会话「停下来了」: 它在等的是中控 / 控制台, 不是你 (CONSOLES_PLAN S2)。
+
+    transcript 只看得出「回合结束了」, 看不出它在等谁; 对控制台的 agent 来说就是等中控派下一件活。
+    SDK 会话进程自报的 waiting 也是等控制台放行。真正要你处理的 (阻塞工单) 在运行那一行, 由控制台事件提醒。
+    改成单独的状态 CONSOLE_WAIT: 不计进「等你」, 也不发「等你已久」的提醒。"""
+    lab = row["console"]
+    rs, until = lab.get("run_state"), lab.get("park_until")
+    if rs == "parked":
+        label = "额度停泊" + (time.strftime(" · 到 %H:%M", time.localtime(until)) if until else "")
+    elif rs == "finished":
+        label = "运行已结束"
+    elif rs == "waiting_you" and lab.get("role") in ("conductor", "core"):
+        label = "等你回控制台的工单"
+    elif row.get("state") == "BLOCKED_ON_USER":
+        label = "等控制台放行"
+    else:
+        label = "等中控"
+    row.update(state="CONSOLE_WAIT", state_label=label, state_source="console", idle=False)
 
 
 def _scratchpad_to_parent(sessions: list[dict]) -> None:
@@ -650,7 +673,7 @@ def _scratchpad_to_parent(sessions: list[dict]) -> None:
 
 # BLOCKED_ON_USER 排最前: 回合卡在你身上 (授权/回答), 是整页最该先看的一行。
 _STATE_ORDER = {"BLOCKED_ON_USER": -1, "WORKING": 0, "PROCESSING": 0, "AMBIGUOUS_PENDING": 1,
-                "AWAITING_USER": 2, "CLOSED": 3, "UNKNOWN": 4}
+                "AWAITING_USER": 2, "CONSOLE_WAIT": 2, "CLOSED": 3, "UNKNOWN": 4}
 
 
 def snapshot(base: Path | None = None, cfg: ActivityConfig | None = None, live=None) -> dict:
@@ -709,6 +732,7 @@ def snapshot(base: Path | None = None, cfg: ActivityConfig | None = None, live=N
                 "ambiguous": counts.get("AMBIGUOUS_PENDING", 0),
                 "awaiting": counts.get("AWAITING_USER", 0),
                 "blocked": counts.get("BLOCKED_ON_USER", 0),
+                "console_wait": counts.get("CONSOLE_WAIT", 0),
                 "idle": idle_n,
                 "closed": counts.get("CLOSED", 0),
                 "unknown": counts.get("UNKNOWN", 0),

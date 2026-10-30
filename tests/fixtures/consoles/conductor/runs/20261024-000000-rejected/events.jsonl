@@ -1,0 +1,4 @@
+{"seq": 0, "ts": 2000.0, "type": "run.started", "agent": null, "data": {"task": "x"}}
+{"seq": 1, "ts": 2010.0, "type": "run.status", "agent": null, "data": {"status": "running", "detail": ""}}
+{"seq": 2, "ts": 2020.0, "type": "quota", "agent": null, "data": {"status": "rejected", "limit": "five_hour", "utilization": null, "resets_at": 9999999999.0, "windows": {}}}
+{"seq": 3, "ts": 2030.0, "type": "budget", "agent": null, "data": {"spent": 9, "cap": 10, "pct": 90, "level": "soft_stop"}}

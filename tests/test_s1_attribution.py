@@ -126,7 +126,7 @@ def test_sessions_rows_carry_console_labels_and_runs_group_them(world):
     c1 = by[U("c1")]
     assert c1["entrypoint"] == "sdk-py"
     assert c1["console"] == {"code": "C", "run": "20261026-013942-session", "role": "seat", "agent": "server",
-                             "project": "proj-c", "grain": "session"}
+                             "project": "proj-c", "grain": "session", "run_state": "waiting_you", "park_until": None}
     assert c1["project"] == "proj-c" and c1["project_source"] == "console"
     probe = by[U("p1")]
     assert probe["console"]["run"] == consoles.SELF_TEST and probe["project"] == "proj-e"   # 临时沙盒的假项目修掉了
