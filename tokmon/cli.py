@@ -1,14 +1,15 @@
-"""命令行入口: `python -m tokmon <report|watch|serve|doctor|backtest|autostart> [options]`。"""
+"""命令行入口: `python -m tokmon <report|watch|serve|doctor|backtest|autostart|pricing> [options]`。"""
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
 from pathlib import Path
 
-from . import autostart
+from . import __version__, autostart, pricing
 from .discovery import default_base
 from .doctor import run_doctor
 from .inference_backtest import run_backtests
@@ -68,7 +69,43 @@ def build_parser() -> argparse.ArgumentParser:
     # 不继承 common (--scope 这些对自启无意义), 只要 --claude-dir: 平时用非默认目录, 开机那次也得用它
     pa.add_argument("--claude-dir", type=Path, default=None,
                     help="开机后 serve 用的 Claude projects 目录 (默认不指定 = ~/.claude/projects)")
+
+    pp = sub.add_parser("pricing", help="价目表: 看 tokmon 用的单价 / 导出价目快照给别的程序读")
+    pp.add_argument("--json", action="store_true", help="输出 JSON 价目快照 (默认是给人看的表)")
+    pp.add_argument("--out", type=Path, default=None, help="把 JSON 快照写到这个文件 (隐含 --json)")
     return p
+
+
+def _run_pricing(as_json: bool, out: Path | None) -> int:
+    snap = pricing.snapshot(__version__)
+    if out is not None:
+        out = Path(out).expanduser()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_name(out.name + ".tmp")
+        tmp.write_text(json.dumps(snap, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+        os.replace(tmp, out)           # 先写临时文件再换名: 读的一方不会读到半个文件
+        print(f"价目快照已写到 {out} (官方价目 {snap['fetched']}, tokmon {__version__})")
+        return 0
+    if as_json:
+        # 纯 ASCII: Windows 管道默认按本地代码页 (GBK) 编码, 读的一方按 UTF-8 解就乱; \uXXXX 两边都不会错
+        print(json.dumps(snap, ensure_ascii=True, indent=2))
+        return 0
+    print(f"tokmon {__version__} 价目 · USD / 百万 token · 来源 {snap['source']} (抓取 {snap['fetched']})")
+    print(f"{'模型':20} {'输入':>7} {'5m 写':>7} {'1h 写':>7} {'缓存读':>7} {'输出':>7}  备注")
+    for key, e in snap["models"].items():
+        notes = []
+        if "long_prompt" in e:
+            lp = e["long_prompt"]
+            notes.append(f"prompt > {lp['over_tokens']:,}: {lp['input']:g} / {lp['cache_write_5m']:g} / "
+                         f"{lp['cache_write_1h']:g} / {lp['cache_read']:g} / {lp['output']:g}")
+        if "fast" in e:
+            notes.append(f"fast: {e['fast']['input']:g} / {e['fast']['output']:g}")
+        if e.get("us_geo_mult"):
+            notes.append(f"us × {e['us_geo_mult']:g}")
+        print(f"{key:20} {e['input']:>7g} {e['cache_write_5m']:>7g} {e['cache_write_1h']:>7g} "
+              f"{e['cache_read']:>7g} {e['output']:>7g}  {' · '.join(notes)}")
+    print(f"web search ${snap['web_search_usd_per_request'] * 1000:g} / 1000 次 · 认不出的新版本按同家族最新型号估算 (标为未确认)")
+    return 0
 
 
 # 开机自启走 pythonw: 没有控制台, sys.stdout/stderr 是 None, 一 write 就炸 (http.server 的访问日志直接写 stderr)。
@@ -139,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.cmd == "autostart":         # 与 Claude 数据目录无关: 在目录检查之前处理
         return _run_autostart(args.action, args.port, args.claude_dir)
+    if args.cmd == "pricing":           # 同上: 只读价目表
+        return _run_pricing(args.json, args.out)
     if args.cmd == "serve" and (args.boot or sys.stdout is None or sys.stderr is None):
         _redirect_serve_output(args.boot)   # 先重定向, 下面「找不到目录」这类错误也能落进日志
     base = args.claude_dir or default_base()

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -86,10 +87,13 @@ def _read_records(path: Path, raw_dir: str, kind: str) -> list[UsageRecord]:
         stu = usage.get("server_tool_use") or {}
         web_search = int(stu.get("web_search_requests") or 0)
         web_fetch = int(stu.get("web_fetch_requests") or 0)
+        # 计价条件 (fast mode / us 推理): 取值只有寥寥几种, intern 后几十万条记录共用同一个字符串
+        speed = sys.intern(str(usage.get("speed") or ""))
+        geo = sys.intern(str(usage.get("inference_geo") or ""))
 
         cost, known = cost_usd(
             model, input_tokens, output_tokens,
-            cache_5m, cache_1h, cache_read, web_search, web_fetch,
+            cache_5m, cache_1h, cache_read, web_search, web_fetch, speed, geo,
         )
         records.append(UsageRecord(
             timestamp=ts,
@@ -111,6 +115,8 @@ def _read_records(path: Path, raw_dir: str, kind: str) -> list[UsageRecord]:
             cwd=cwd,
             subpath=subpath,
             under_vscode=under,
+            speed=speed,
+            geo=geo,
         ))
     return records
 

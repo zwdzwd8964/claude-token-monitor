@@ -447,23 +447,24 @@ function mval(r, metric) {                // 当前度量 (受「成分」筛选
 function tot(rows) {
   const t = {};
   for (const c of VALS) t[c] = 0;
-  t.vc = 0; t.vt = 0; t.vpt = 0;
+  t.vc = 0; t.vt = 0; t.vpt = 0; t.vpc = 0;
   for (const r of rows) {
     for (const c of VALS) t[c] += r[c];
-    t.vc += mval(r, "cost"); t.vt += mval(r, "tokens"); t.vpt += pricedTok(r);
+    t.vc += mval(r, "cost"); t.vt += mval(r, "tokens"); t.vpt += pricedTok(r); t.vpc += pricedCost(r);
   }
   t.tok = t.in + t.out + t.cr + t.cw;
   return t;
 }
-// 有单价的 token (当前「成分」筛选下): 单价 $/M 的分母只能算它 —— 未知单价的 token 按 $0 计, 放进分母会把单价拉低。
-// 立方的行按模型分组, 一行要么全有单价要么全没有; 按比例折算只是保险。
-function pricedTok(r) {
-  const v = mval(r, "tokens");
-  if (!r.ut) return v;
+// 有确认单价的部分 (当前「成分」筛选下): 单价 $/M 的分子分母都只能算它 —— 单价未确认的 token 是估算或按 $0,
+// 混进来会把单价拉偏。立方的行按模型分组, 一行通常要么全确认要么全没确认; 按比例折算只是保险。
+function pricedFrac(r) {
+  if (!r.ut) return 1;
   const rt = r.in + r.out + r.cr + r.cw;
-  return rt > 0 ? v * Math.max(0, rt - r.ut) / rt : 0;
+  return rt > 0 ? Math.max(0, rt - r.ut) / rt : 0;
 }
-const unitOf = t => t.vpt > 0 ? t.vc / t.vpt * 1e6 : null;
+const pricedTok = r => mval(r, "tokens") * pricedFrac(r);
+const pricedCost = r => mval(r, "cost") * pricedFrac(r);
+const unitOf = t => t.vpt > 0 ? t.vpc / t.vpt * 1e6 : null;
 // 今天 / 24h 的上一周期是「另一个星期几」: 按星期 (或星期×小时) 筛选时两边筛的不是同一批日子, 比出来是假的。
 // 7 天 / 2 周两段里每个星期几出现的次数相同, 不受影响。
 const towF = () => (ST.since === "today" || ST.since === "24h") && (F.wd.size > 0 || F.c.size > 0);
@@ -713,15 +714,15 @@ function bucketTotals(rows) {
   for (const r of rows) {
     const k = bkey(r);
     let t = m.get(k);
-    if (!t) { t = {vc: 0, vt: 0, vpt: 0, n: 0, out: 0, cr: 0, cw: 0, in: 0}; m.set(k, t); }
-    t.vc += mval(r, "cost"); t.vt += mval(r, "tokens"); t.vpt += pricedTok(r); t.n += r.n; t.out += r.out; t.cr += r.cr; t.cw += r.cw; t.in += r.in;
+    if (!t) { t = {vc: 0, vt: 0, vpt: 0, vpc: 0, n: 0, out: 0, cr: 0, cw: 0, in: 0}; m.set(k, t); }
+    t.vc += mval(r, "cost"); t.vt += mval(r, "tokens"); t.vpt += pricedTok(r); t.vpc += pricedCost(r); t.n += r.n; t.out += r.out; t.cr += r.cr; t.cw += r.cw; t.in += r.in;
   }
   return m;
 }
 function spark(axis, bt, fn, fmt, name, w) {
   const H = 20, P = 2, n = axis.length;
   if (!n) return "";
-  const vals = axis.map(a => { const t = bt.get(a.key); return t ? fn(t) : (fn({vc: 0, vt: 0, vpt: 0, n: 0, out: 0, cr: 0, cw: 0, in: 0})); });
+  const vals = axis.map(a => { const t = bt.get(a.key); return t ? fn(t) : (fn({vc: 0, vt: 0, vpt: 0, vpc: 0, n: 0, out: 0, cr: 0, cw: 0, in: 0})); });
   const have = vals.filter(v => v != null && isFinite(v));
   if (!have.length) return `<svg width="${w}" height="${H}"></svg>`;
   const hi = Math.max(...have) || 1;
@@ -749,12 +750,19 @@ function renderKPIs() {
   const kf = F.k.size ? ` <i title="已按成本成分筛选: 只算 ${esc([...F.k].map(k => COMP_BY[k].zh).join(" / "))}">按成分</i>` : "";
   const unit = unitOf;
   const unitStar = cur.ut > 0 || (ok && prev.ut > 0)
-    ? `<span class="st" title="${esc("分母只算有单价的 token —— 不含 " + fmtTokens(cur.ut) + " 未知单价 token" + (ok ? " (上一周期 " + fmtTokens(prev.ut) + ")" : "") + ", 它们按 $0 计, 放进分母会把单价拉低")}">*</span>` : "";
+    ? `<span class="st" title="${esc("分子分母都只算有确认单价的部分 —— 不含 " + fmtTokens(cur.ut) + " 单价未确认的 token" + (ok ? " (上一周期 " + fmtTokens(prev.ut) + ")" : "") + ", 它们的钱是估算或按 $0, 分子分母都不算它们")}">*</span>` : "";
   const zeroPrev = `<span class="chip flat" title="上一周期没有这项数据 (那段时间没用量), 比不出比例">上期为 0</span>`;
+  // 单价比不出来有两种原因: 那段时间没用量, 或者用量的单价都没确认 (估算或按 $0) —— 说清楚是哪一边、为什么
+  const unitWhy = (t, who) => who + (t.vt > 0 ? "的 token 单价都未确认 (估算或按 $0)" : "没有用量");
+  const unitNA = unitOf(cur) == null ? unitWhy(cur, "本期") : unitWhy(prev, "上一周期");
+  const unitChip = !ok ? deltaChip(0, 0, false, String, false)
+    : (unitOf(cur) != null && unitOf(prev) != null) ? deltaChip(unitOf(cur), unitOf(prev), true, x => "$" + x.toFixed(2), false)
+    : (unitOf(cur) != null && prev.vt === 0) ? zeroPrev
+    : `<span class="chip flat" title="${esc(unitNA + ", 比不出单价")}">不比较</span>`;
   const hr = hitRate(cur), hrp = ok ? hitRate(prev) : null;
   const unStar = cur.un > 0 || (ok && prev.un > 0);
   const starTip = `含未知单价模型的消息: 本期 ${cur.un} 条 (${fmtTokens(cur.ut)} token)` + (ok ? `, 上一周期 ${prev.un} 条 (${fmtTokens(prev.ut)} token)` : "")
-    + (cur.ut === 0 && (!ok || prev.ut === 0) ? " —— 都是 0 token 的占位消息, 金额不受影响" : " —— 这部分按 $0 计, 成本偏低");
+    + (cur.ut === 0 && (!ok || prev.ut === 0) ? " —— 都是 0 token 的占位消息, 金额不受影响" : " —— 这部分单价未确认 (认得出家族的按同家族最新价估算; fast / 地区这类计价条件在该模型上没有官方规则的按标准价; 认不出家族的按 $0), 金额不准");
   const axis = axisBuckets();
   const bt = bucketTotals(view(R, ["d", "e"]));
   const sw = id => Math.max(80, widthOf(id, 200) - 22);
@@ -765,9 +773,9 @@ function renderKPIs() {
     {id: "k-tok", k: "总 Tokens" + kf, v: esc(fmtTokens(cur.vt)), chip: deltaChip(cur.vt, prev.vt, ok, fmtTokens, false),
      fn: t => t.vt, fmt: fmtTokens, name: "Tokens", tip: "输入 + 输出 + 缓存写 + 缓存读"},
     {id: "k-unit", k: "单价 $/百万 token" + kf, v: unit(cur) == null ? "—" + unitStar : esc("$" + unit(cur).toFixed(2)) + unitStar,
-     chip: !ok ? deltaChip(0, 0, false, String, false) : ((unit(cur) != null && unit(prev) != null) ? deltaChip(unit(cur), unit(prev), true, x => "$" + x.toFixed(2), false) : zeroPrev),
+     chip: unitChip,
      fn: unit, fmt: x => "$" + x.toFixed(2) + "/M", name: "单价",
-     tip: "等价成本 ÷ 有单价的 token 数。缓存读很便宜, 所以 token 多不等于钱多 —— 这个数每天能差好几倍"},
+     tip: "有确认单价的等价成本 ÷ 有确认单价的 token 数 (单价未确认的部分分子分母都不算)。缓存读很便宜, 所以 token 多不等于钱多 —— 这个数每天能差好几倍"},
     {id: "k-hit", k: "缓存命中率", v: hr === null ? "—" : esc((hr * 100).toFixed(0) + "%"),
      chip: !ok ? deltaChip(0, 0, false, String, true) : ((hr !== null && hrp !== null) ? deltaChip(hr * 100, hrp * 100, true, x => x.toFixed(1) + "pp", true, x => x.toFixed(1) + "%") : zeroPrev),
      fn: hitRate, fmt: x => (x * 100).toFixed(0) + "%", name: "命中率", tip: "缓存读 ÷ (缓存读 + 缓存写 + 输入)。不受「成分」筛选影响"},
@@ -914,9 +922,9 @@ function renderBurn() {
   const dsel = F.d.size > 0 || F.e.size > 0;
   let q = dsel ? `窗口累计 <b>${esc(fmtV(curEnd))}</b> · 选中${grain() === "hour" ? "时段" : "日期"} <b>${esc(fmtV(view(R).reduce((a, r) => a + mval(r), 0)))}</b>`
                : `本期 <b>${esc(fmtV(curEnd))}</b>`;
-  if (isCost()) {                           // 未知单价 token 按 $0 计: 曲线偏低, 在这里就标出来
+  if (isCost()) {                           // 单价未确认的 token 是估算或按 $0: 曲线不准, 在这里就标出来
     const cu = rows.reduce((a, r) => a + r.ut, 0), bu = ppts ? view(B, ["d", "e"]).reduce((a, r) => a + r.ut, 0) : 0;
-    if (cu > 0 || bu > 0) q += `<span class="warn" title="${esc("含 " + fmtTokens(cu) + " 未知单价 token" + (ppts ? " (上一周期 " + fmtTokens(bu) + ")" : "") + ", 按 $0 计, 曲线偏低")}">*</span>`;
+    if (cu > 0 || bu > 0) q += `<span class="warn" title="${esc("含 " + fmtTokens(cu) + " 单价未确认的 token" + (ppts ? " (上一周期 " + fmtTokens(bu) + ")" : "") + ", 估算或按 $0, 曲线不准")}">*</span>`;
   }
   if (ppts && prevEnd != null) {
     const d = prevEnd > 0 ? (curEnd - prevEnd) / prevEnd * 100 : null;
@@ -980,7 +988,7 @@ function renderComp() {
     if (!live.length) s += `<rect x="0" y="${y}" width="${W}" height="${BH}" fill="#20242d"></rect>`;
     return s;
   };
-  const un = t.ut > 0 ? `<tspan style="fill:var(--warn)">*</tspan>` : "";   // 图上的 * = 真有未知单价的 token (按 $0 计)
+  const un = t.ut > 0 ? `<tspan style="fill:var(--warn)">*</tspan>` : "";   // 图上的 * = 真有单价未确认的 token (估算或按 $0)
   const cur$ = isCost(), H = 2 * (BH + 18) + 4;
   let s = `<text x="0" y="11" class="${cur$ ? "lab-hi" : "lab"}">等价成本 ${esc(fmtUsd(T$))}${un}</text>` + bar(16, T$, "v$", "等价成本")
     + `<text x="0" y="${BH + 16 + 17}" class="${cur$ ? "lab" : "lab-hi"}">Tokens ${esc(fmtTokens(TT))}</text>` + bar(BH + 16 + 22, TT, "vt", " token");
@@ -993,11 +1001,16 @@ function renderComp() {
     let msg = "";
     if (topT && topT.st - topT.s$ > 0.05) msg = `Tokens 里 <b>${fmtPct(topT.st)}</b> 是${esc(topT.p.zh)}, 但只占 <b>${fmtPct(topT.s$)}</b> 的钱`;
     if (lever && lever.s$ - lever.st > 0.05) msg += (msg ? "; " : "") + `${esc(lever.p.zh)}只有 ${fmtPct(lever.st)} 的 token, 却占 <b>${fmtPct(lever.s$)}</b> 的钱`;
-    const cs = t.ut > 0 ? `<span class="warn" title="${esc("token 份额里含 " + fmtTokens(t.ut) + " 未知单价 token, 它们按 $0 计, 钱的份额里是 0")}">*</span>` : "";
+    const cs = t.ut > 0 ? `<span class="warn" title="${esc("token 份额里含 " + fmtTokens(t.ut) + " 单价未确认的 token, 它们的钱是估算或按 $0, 钱的份额不准")}">*</span>` : "";
     if (msg) h = `<p class="callout">${msg}${cs} —— 所以默认按 $ 看。</p>` + h;
   }
   const M = CUBE.mult || {};
-  const how = {in: "input 单价", cr: `input 单价 × ${M.cr ?? "?"}`, cw: `input 单价 × ${M.cw5 ?? "?"} (5m) / × ${M.cw1 ?? "?"} (1h)`,
+  // 缓存读倍率按模型不同: 只列当前看到的、真有缓存读的那些模型的倍率 (按同家族估算的也算; 老立方没有 cr 时退回 mult.cr)
+  const crs = [...new Set(rows.filter(r => r.cr > 0).map(r => (MOD[r.m] || {}).cr).filter(x => x != null))].sort((a, b) => a - b);
+  const perModel = Object.values(MOD).some(m => m && "cr" in m);          // 新立方每个模型都带 cr; 老立方才退回 mult.cr
+  const crl = perModel ? crs : (Array.isArray(M.cr) ? M.cr : (M.cr != null ? [M.cr] : []));
+  const crx = crl.length ? crl.join(" / ") + (crl.length > 1 ? " (按模型)" : "") : "";
+  const how = {in: "input 单价", cr: crx ? `input 单价 × ${crx}` : "单价未知 (按 $0)", cw: `input 单价 × ${M.cw5 ?? "?"} (5m) / × ${M.cw1 ?? "?"} (1h)`,
                out: "output 单价", tool: `web search $${M.ws ?? "?"}/次`};
   h += `<table class="ct"><thead><tr><th>成分</th><th>等价成本</th><th>占 $</th><th>Tokens</th><th>占 token</th></tr></thead><tbody>`
     + parts.filter(p => p.k && (p.v$ > 0 || p.vt > 0 || p.k === "in" || p.k === "out")).map(p => {
@@ -1043,7 +1056,7 @@ function renderDeltas() {
       cls = pp > 0.5 ? "bad" : (pp < -0.5 ? "good" : "flat");
     }
     const sel = F.p.size && !F.p.has(x.p) ? " dimm" : "";
-    const st = unp.has(x.p) ? '<span class="warn" title="含未知单价模型的 token, 按 $0 计, 成本偏低">*</span>' : "";
+    const st = unp.has(x.p) ? '<span class="warn" title="含单价未确认的 token (估算或按 $0), 金额不准">*</span>' : "";
     return `<span class="nm${sel}" data-f="p" data-v="${esc(x.p)}" data-k="p:${esc(enc(x.p))}"${tipAttr([x.p, "本期 " + fmtV(x.c), "上一周期 " + fmtV(x.v), "点击筛选这个项目"])}>${esc(x.p)}${st}</span>`
       + `<span class="v${sel}">${esc(fmtV(x.c))}</span><span class="chip ${cls}${sel}" title="vs 上一周期 ${esc(absd)}">${status} · ${esc(absd)}</span>`;
   }).join("") + ghosts.slice(0, 3).map(ghostRow).join("") + `</div>`
@@ -1111,8 +1124,8 @@ function renderDays() {
   for (const r of rows) {
     const k = bkey(r);
     totals.set(k, (totals.get(k) || 0) + mval(r));
-    toks.set(k, (toks.get(k) || 0) + pricedTok(r));             // 单价的分母: 只算有单价的 token
-    costs.set(k, (costs.get(k) || 0) + mval(r, "cost"));
+    toks.set(k, (toks.get(k) || 0) + pricedTok(r));             // 单价的分母: 只算有确认单价的 token
+    costs.set(k, (costs.get(k) || 0) + pricedCost(r));          // 分子同口径 (单价未确认的钱是估算或 $0, 不混进来)
     if (r.ut) runt.set(k, (runt.get(k) || 0) + r.ut);
   }
   const W = widthOf("days", 460), H = 150, PL = 44, PR = 6, PT = 14, PB = 18;
@@ -1146,7 +1159,7 @@ function renderDays() {
     const tip = [a.long + (ut ? " *" : ""), (anySel ? "选中合计 " : "合计 ") + fmtV(tv)]
       .concat(live.slice().reverse().map(sr => sr.col + "|" + fmtV(o[sr.key]) + " · " + fmtPct(st > 0 ? o[sr.key] / st : 0) + "  " + sr.zh
         + (sr.hatch ? " (未知单价)" : "") + (anySel && !serOn(sr) ? " (未选)" : "")))
-      .concat(un ? [ut ? "* 含 " + un + " 条未知单价消息 (" + fmtTokens(ut) + " token), 按 $0 计, 成本偏低" : "含 " + un + " 条未知单价的 0 token 占位消息 (不影响金额)"] : [])
+      .concat(un ? [ut ? "* 含 " + un + " 条单价未确认的消息 (" + fmtTokens(ut) + " token), 估算或按 $0, 金额不准" : "含 " + un + " 条未知单价的 0 token 占位消息 (不影响金额)"] : [])
       .concat(["点击筛选这一" + (hour ? "小时" : "天") + " · 拖动框选一段 · Shift 多选"]);
     const dim = sel.size && !sel.has(a.key) ? ' class="dimm"' : "";
     const kk = `${a.dim}:${esc(enc(a.key))}`;
@@ -1196,8 +1209,8 @@ function renderDays() {
       }
       u += `<g data-k="${a.dim}:${esc(enc(a.key))}"${dim}>${mark}`
         + `<rect class="hit" x="${(PL + i * G.slot).toFixed(1)}" y="0" width="${G.slot.toFixed(1)}" height="${sph + 2}" data-f="${a.dim}" data-v="${esc(a.key)}"`
-        + tipAttr([a.long, "$" + v.toFixed(2) + " / 百万 token", "等价成本 " + fmtUsd(costs.get(a.key)) + " ÷ " + fmtTokens(toks.get(a.key)) + " 有单价的 token",
-                   mixed[i] ? "* 另有 " + fmtTokens(runt.get(a.key)) + " 未知单价 token (不计入分母), 不参与倍数比较" : "",
+        + tipAttr([a.long, "$" + v.toFixed(2) + " / 百万 token", "有确认单价的等价成本 " + fmtUsd(costs.get(a.key)) + " ÷ " + fmtTokens(toks.get(a.key)) + " 有确认单价的 token",
+                   mixed[i] ? "* 另有 " + fmtTokens(runt.get(a.key)) + " 单价未确认的 token (分子分母都不算), 不参与倍数比较" : "",
                    big[i] ? "" : "量太小 (不到最大一格的 1%), 单价不画柱、不参与倍数比较" + (v > utop ? " · 超出比例尺, 画在顶上" : "")]) + `></rect></g>`;
     });
     let ratio = null;
@@ -1213,7 +1226,7 @@ function renderDays() {
     const unitZh = hour ? "时段" : "日子";
     h += `<div class="note" style="margin:6px 0 0">每百万 token 的等价 $${ratio && ratio >= 1.5 ? ` —— 最贵的${hour ? "一小时" : "一天"}是最便宜的 <b style="color:var(--fg)">${ratio.toFixed(1)}×</b>: token 多不等于钱多` : ""}`
       + (tiny ? `<span title="这些${unitZh}的 token 不到最大一格的 1%, 单价样本太小: 只画空心小圈, 超出比例尺的在顶上画空心小三角 (真实值在提示里)"> · ${tiny} 个零碎${unitZh}只画空心标记</span>` : "")
-      + (nmix ? `<span class="warn" title="这些${unitZh}含未知单价 token: 分母只算有单价的 token, 画斜线纹, 不参与倍数比较"> · * ${nmix} 个${unitZh}含未知单价, 不比较</span>` : "") + `</div>`
+      + (nmix ? `<span class="warn" title="这些${unitZh}含单价未确认的 token: 分子分母都只算有确认单价的部分, 画斜线纹, 不参与倍数比较"> · * ${nmix} 个${unitZh}含未知单价, 不比较</span>` : "") + `</div>`
       + `<svg width="${W}" height="${SH}" role="img" aria-label="每百万 token 的等价单价">${u}</svg>`;
   }
   if (!rows.length) h = `<div class="empty">当前筛选下没有数据</div>` + h;
@@ -1282,7 +1295,7 @@ function renderHeat() {
     const top3 = hourT.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, 3).filter(x => x[0] > 0);
     h = `<p class="callout">凌晨 00:00–06:59 占 <b>${fmtPct(night / total)}</b> · ${isCost() ? "最贵" : "token 最多"}的一小时 <b>${pad2(peakH)}:00</b> (${esc(fmtV(hmax))}, ${fmtPct(hmax / total)})`
       + (top3.length > 1 ? ` · 其次 ${top3.slice(1).map(x => pad2(x[1]) + ":00").join(" / ")}` : "")
-      + (isCost() && tut > 0 ? `<span class="warn" title="${esc("含 " + fmtTokens(tut) + " 未知单价 token, 按 $0 计, 这些格子偏暗")}">*</span>` : "") + `</p>`;
+      + (isCost() && tut > 0 ? `<span class="warn" title="${esc("含 " + fmtTokens(tut) + " 单价未确认的 token, 估算或按 $0, 这些格子的深浅不准")}">*</span>` : "") + `</p>`;
   }
   h += `<svg width="${W}" height="${H}" role="img" aria-label="星期 × 小时 热力图">${s}</svg>`;
   h += `<div class="lg" style="justify-content:space-between"><span style="cursor:default">颜色越亮 = 越多 · 0 <i style="display:inline-block;width:90px;height:8px;border-radius:2px;background:linear-gradient(90deg,${RAMP.join(",")})"></i> ${esc(fmtVS(mx))}/格</span>`
@@ -1355,7 +1368,7 @@ function renderTree() {
     const tipL = [nm + (u ? " *" : ""), fmtV(t.v) + " · " + fmtPct(t.v / total)];
     if (t.id == null) tipL.push(t.vs.slice(0, 12).join("、") + (t.vs.length > 12 ? " …" : ""));
     else tipL.push(t.vs.reduce((a, p) => a + (nmsg.get(p) || 0), 0) + " 条消息");
-    if (un0) tipL.push(u ? "* 含 " + un0 + " 条未知单价消息 (" + fmtTokens(u) + " token), 按 $0 计, 成本偏低" : "含 " + un0 + " 条未知单价的 0 token 占位消息 (不影响金额)");
+    if (un0) tipL.push(u ? "* 含 " + un0 + " 条单价未确认的消息 (" + fmtTokens(u) + " token), 估算或按 $0, 金额不准" : "含 " + un0 + " 条未知单价的 0 token 占位消息 (不影响金额)");
     tipL.push("点击筛选" + (t.id == null ? "这些项目" : "这个项目") + (t.id != null ? " · 右上 ↗ 看它的任务回放" : ""));
     const kk = t.id == null ? t.vs.map(v => "p:" + enc(v)).join(" ") : "p:" + enc(t.id);
     s += `<g data-k="${esc(kk)}"${selOn ? "" : ' class="dimm"'}><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="4" fill="${col}" fill-opacity="${t.id == null ? ".55" : ".42"}"`
@@ -1427,7 +1440,7 @@ function renderPareto() {
     const spanLong = meta.t0 ? fmtTime(meta.t0, true) + " → " + fmtTime(meta.t1, true) + " (" + fmtDur(meta.t1 - meta.t0) + ")" : "";
     const spanShort = meta.t0 ? fmtTime(meta.t0, true) + " · " + fmtDur(meta.t1 - meta.t0) : "";
     const tip = [sid + (u ? " *" : ""), "项目 " + (meta.p || "?"), spanLong, ACCENT + "|" + fmtV(v) + " · 占 " + fmtPct(share) + " · 累计 " + fmtCum(c),
-                 nm.get(sid) + " 条消息", u0 ? (u ? "* 含 " + u0 + " 条未知单价消息, 成本偏低" : "含 " + u0 + " 条 0 token 占位消息 (不影响金额)") : "",
+                 nm.get(sid) + " 条消息", u0 ? (u ? "* 含 " + u0 + " 条单价未确认的消息 (估算或按 $0), 金额不准" : "含 " + u0 + " 条 0 token 占位消息 (不影响金额)") : "",
                  "点击筛选这个会话 · 行尾 ↗ 看该项目的任务回放"];
     const head = `${i + 1}  ${sid.slice(0, 8)}${u ? "*" : ""}`;
     s += `<g data-k="x:${esc(enc(sid))}" data-rel="p:${esc(enc(meta.p || ""))}"${sel}>`
@@ -1460,7 +1473,7 @@ function renderSave() {
   const ok = baseOK(), p = ok ? tot(view(B)) : null;
   const chip = (cur, prev) => ok ? deltaChip(cur, prev, true, fmtUsd, false) : deltaChip(0, 0, false, fmtUsd, false);
   const lineTxt = line % 10000 === 0 ? (line / 10000) + " 万" : fmtTokens(line);   // 15 万, 与规格和悬浮提示一致
-  const unp = t.ut > 0 ? `<div class="note warn">* 含未知单价模型的 token，这两项按 $0 计，偏低</div>` : "";
+  const unp = t.ut > 0 ? `<div class="note warn">* 含单价未确认的 token，这两项是估算或按 $0，不准</div>` : "";
   const note = isCost() ? "" : `<div class="note">这张卡按等价 $ 算（两项都是花在缓存上的钱），不随「Tokens」切换</div>`;
   let h = `<div class="sv"><div>`
     + `<div class="svk"><div class="t">上下文税 · 每轮上下文超过 ${esc(lineTxt)} 的那部分，每轮都要按缓存读价再读一遍</div>`
@@ -1513,13 +1526,14 @@ function renderModels() {
   const rows = view(R, ["m", "d", "e"]);
   const ms = [...new Set(rows.map(r => r.m))].sort((a, b) => (MOD[a].rank - MOD[b].rank) || (a < b ? -1 : 1));
   const axis = axisBuckets();
-  const data = new Map(), tokByM = new Map();
+  const data = new Map(), tokByM = new Map(), usdByM = new Map();
   for (const r of rows) {
     const k = bkey(r);
     let o = data.get(k);
     if (!o) { o = {}; data.set(k, o); }
     o[r.m] = (o[r.m] || 0) + mval(r);
     tokByM.set(r.m, (tokByM.get(r.m) || 0) + r.in + r.out + r.cr + r.cw);
+    usdByM.set(r.m, (usdByM.get(r.m) || 0) + r.c);
   }
   const W = widthOf("models", 330), H = 150, PL = 30, PR = 4, PT = 4, PB = 16, ph = H - PT - PB;
   const G = colGeom(W, axis.length, PL, PR);
@@ -1549,8 +1563,9 @@ function renderModels() {
   s += `<line class="bl" x1="${PL}" x2="${W - PR}" y1="${PT + ph}" y2="${PT + ph}"></line>`;
   let h = `<svg width="${W}" height="${H}" role="img" aria-label="模型占比">${s}</svg>`;
   h += legend(ms.map(m => ({col: modelCol(m), zh: m + (unpriced(m) ? " *" : ""), hatch: unpriced(m), off: HIDE_M.has(m),
-    attrs: `data-hidem="${esc(m)}" data-k="m:${esc(enc(m))}"` + tipAttr([m, (HIDE_M.has(m) ? "点击显示" : "点击在这张图里隐藏") + " (不影响其它图)", unpriced(m) ? "* 单价未知: $ 视图里按 0 计" : ""])})));
-  const hiddenUnp = ms.filter(m => unpriced(m) && isCost() && (tokByM.get(m) || 0) > 0);
+    attrs: `data-hidem="${esc(m)}" data-k="m:${esc(enc(m))}"` + tipAttr([m, (HIDE_M.has(m) ? "点击显示" : "点击在这张图里隐藏") + " (不影响其它图)", unpriced(m) ? "* 单价未确认: $ 视图里是估算或按 $0" : ""])})));
+  // 只有真按 $0 计的 (认不出家族) 才会在 $ 视图里消失; 按同家族价估算的照常画出来 (带 * 和斜线纹)
+  const hiddenUnp = ms.filter(m => unpriced(m) && isCost() && (tokByM.get(m) || 0) > 0 && !((usdByM.get(m) || 0) > 0));
   if (hiddenUnp.length) h += `<div class="note warn">* ${esc(hiddenUnp.join("、"))} 单价未知, $ 视图里为 0 —— 切到 Tokens 看它的量</div>`;
   if (!rows.length) h = `<div class="empty">当前筛选下没有数据</div>`;
   el.innerHTML = h;
@@ -1579,7 +1594,7 @@ function table(rows, dim, opts) {
       return `<tr${dim ? ` data-f="${dim}" data-v="${esc(r.label)}" data-k="${dim}:${esc(enc(r.label))}"` : ""}${on ? ' class="selr"' : ""}>`
         + `<td class="lbl" title="${esc(r.label)}">${esc(lab)}${link}</td>${opts.extra ? opts.extra(r) : ""}`
         + `<td>${fmtTokens(r.in + r.out + r.cr + r.cw)}</td><td>${fmtTokens(r.in)}</td><td>${fmtTokens(r.out)}</td>`
-        + `<td>${fmtTokens(r.cr)}/${fmtTokens(r.cw)}</td><td>${esc(fmtUsd(r.c))}${r.un ? `<span class="warn" title="${r.ut ? "含未知单价模型的 token (" + esc(fmtTokens(r.ut)) + "), 按 $0 计, 成本偏低" : "含 " + r.un + " 条 0 token 的未知单价占位消息, 金额不受影响 (表格与 /api/summary 的 any_unpriced 同义)"}">*</span>` : ""}</td><td>${r.n}</td></tr>`;
+        + `<td>${fmtTokens(r.cr)}/${fmtTokens(r.cw)}</td><td>${esc(fmtUsd(r.c))}${r.un ? `<span class="warn" title="${r.ut ? "含单价未确认的 token (" + esc(fmtTokens(r.ut)) + "), 估算或按 $0, 金额不准" : "含 " + r.un + " 条 0 token 的未知单价占位消息, 金额不受影响 (表格与 /api/summary 的 any_unpriced 同义)"}">*</span>` : ""}</td><td>${r.n}</td></tr>`;
     }).join("") + `</tbody></table></div>` + (rows.length > lim ? `<div class="note">只列前 ${lim} 个, 共 ${rows.length} 个</div>` : "");
 }
 function renderTables() {
@@ -1607,12 +1622,12 @@ function renderFoot() {
     if (bl.partial) base += ` · <span class="warn">⚠ 历史不足, 基线偏低</span>`;
     if (bl.total && bl.total.any_unpriced) {
       const but = B.reduce((s, r) => s + r.ut, 0);
-      base += but > 0 ? ` · <span class="warn">* 基线含未知单价模型 (${esc(fmtTokens(but))} token 按 $0 计), 对比偏高</span>`
+      base += but > 0 ? ` · <span class="warn">* 基线含单价未确认的模型 (${esc(fmtTokens(but))} token, 估算或按 $0), 对比不准</span>`
                       : ` · <span class="muted">基线里的未知单价消息都是 0 token 占位, 不影响对比</span>`;
     }
   } else base = " · 当前窗口无可比基线 (选 今天/24h/7天/2周 可对比)";
   const unp = !(d.total && d.total.any_unpriced) ? ""
-    : (t.ut > 0 ? ` · <span class="warn">* 含未知单价模型 (${t.un} 条消息, ${esc(fmtTokens(t.ut))} token), 这部分按 $0 计, 成本偏低 · 图上带 * / 斜线纹的就是它</span>`
+    : (t.ut > 0 ? ` · <span class="warn">* 含未知单价模型 (${t.un} 条消息, ${esc(fmtTokens(t.ut))} token), 这部分估算或按 $0, 金额不准 · 图上带 * / 斜线纹的就是它</span>`
                 : ` · <span class="warn">* 含 ${t.un} 条未知单价模型的消息 —— 都是 0 token 的占位消息 (如 &lt;synthetic&gt;), 金额不受影响</span>`);
   // 自己对账: 立方各行加起来 == 服务端直接汇总的 total (同一 load_records), 对不上就明说
   let recon = "";

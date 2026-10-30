@@ -198,7 +198,7 @@
 
 给未来动手的人（含 AI agent）的具体操作约束：
 
-- **加一个新模型/调价** → 只改 `pricing.py` 的 `FAMILY_PRICING` / `EXACT_PRICING`。别在别处散落单价。
+- **加一个新模型/调价** → 只改 `pricing.py`：五列单价写进 `MODEL_PRICING`（别名进 `MODEL_ALIASES`）；按需同步 `LONG_PROMPT_PRICING`（分档）、`FAST_PRICING`（fast mode）、`US_GEO_MODELS`（us 推理加价）、`FAMILY_FALLBACK`（家族最新型号），并更新 `PRICING_FETCHED`。缓存读倍率按模型写在各自那一行里，不要再加全局倍率。别在别处散落单价。
 - **加一个统计维度**（如「按 session」「按小时」）→ 在 `aggregate.py` 加 `group_by` 的 keyfn，
   展示层调用。不要在 report/tui 里重新解析 JSONL。
 - **加一种新来源类型** → 改 `discovery.classify`，并在 `SCOPE_KINDS` 里登记。

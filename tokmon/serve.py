@@ -36,7 +36,7 @@ from .discovery import default_base
 from .event_sources import activity_source, context_source, cost_source, risk_source
 from .events import bus as event_bus
 from .parser import load_records
-from .pricing import cost_usd
+from .pricing import cost_usd_class, price_class
 from .util import parse_since
 
 SCOPE_KINDS = {
@@ -581,7 +581,7 @@ def _backtest_status(base: Path, days: int = 7) -> dict:
 
 # ---- /workflow: 工作流回放 (WORKFLOW_TAB_PLAN S1) ----
 # trace 支柱只出结构、时间、token 分项; 这里在 serve 层汇合三样它刻意不碰的东西 (P4):
-#   ① $ —— 按模型用 pricing.cost_usd 换算 (I3 定价集中, 不复制单价);
+#   ① $ —— 按计价分类用 pricing.cost_usd_class 换算 (I3 定价集中, 不复制单价; 分类由下面注入 trace 的钩子定);
 #   ② 脱敏 —— 先把本服务**自己知道的密钥原值**精确打码 (控制令牌 / 通知 token / 厂商 admin key),
 #      再走 procmon 的模式脱敏 (尽力而为, 不是安全边界);
 #   ③ 运行态 —— 取 activity 快照 (**必须带进程存活索引**: activity 的 2s 快照缓存是全局共享的,
@@ -617,11 +617,16 @@ def _wf_running(base) -> set:
     return out
 
 
+# trace 按「计价分类」而不是按模型加总 token: Haiku 5.5 按单次请求长度分档, 按模型加总后再算会被错判成长 prompt。
+# 在 import 时注入 (早于任何 trace 构建); trace 自己不 import 计价 (P4)。
+trace.price_class = lambda model, tup, speed, geo: price_class(model, tup[0], tup[2], tup[3], tup[4], speed, geo)
+
+
 def _wf_price(by_model: dict) -> tuple:
-    """按模型分别换算 $ -> (美元, 含未知单价模型)。统计层通过注入使用 (trace 不依赖计价)。"""
+    """按计价分类 (键 = 模型|条件, 也接受纯模型名) 分别换算 $ -> (美元, 含未知单价模型)。统计层通过注入使用。"""
     total, unknown = 0.0, False
-    for model, v in (by_model or {}).items():
-        c, known = cost_usd(model, v[0], v[1], v[2], v[3], v[4])
+    for cls, v in (by_model or {}).items():
+        c, known = cost_usd_class(cls, v[0], v[1], v[2], v[3], v[4])
         total += c
         unknown = unknown or (not known and sum(v) > 0)   # 0 token 的 <synthetic> 占位消息不算「未知单价」
     return round(total, 4), unknown
@@ -869,8 +874,11 @@ def _records_view(base) -> dict:
     today, ctx = None, {}
     if recs is not None:
         try:
-            agg = summarize(filter_since(recs, parse_since("today")))
-            today = {"tokens": agg.total_tokens, "cost": round(agg.cost, 4), "unpriced": bool(agg.any_unpriced)}
+            todays = filter_since(recs, parse_since("today"))
+            agg = summarize(todays)
+            # 「金额不准」只看真有 token 的未确认记录: 0 token 的 <synthetic> 占位消息不影响金额 (与 _wf_price 同一条规则)
+            today = {"tokens": agg.total_tokens, "cost": round(agg.cost, 4),
+                     "unpriced": any(not r.known_price and r.total_tokens > 0 for r in todays)}
         except Exception:
             pass
         try:

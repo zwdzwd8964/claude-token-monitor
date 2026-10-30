@@ -27,6 +27,8 @@ class UsageRecord:
     cwd: str = ""                # 会话真实 cwd
     subpath: str = ""            # 项目内更深一层的相对路径 (供未来 drill-down)
     under_vscode: bool = False   # 是否位于 .vscode 之下
+    speed: str = ""              # usage.speed 原值 ("standard" / "fast"; 缺省 "") —— fast mode 单价不同
+    geo: str = ""                # usage.inference_geo 原值 ("global" / "us" / …) —— us 推理 × 1.1
 
     @property
     def cache_write(self) -> int:

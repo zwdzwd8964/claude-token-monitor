@@ -62,6 +62,11 @@ MAX_DEPTH = 8
 FALLBACK_SLACK = 2.0                # 按指令回链时, 子 agent 首行时间允许的误差 (秒)
 SYNTHETIC_MODEL = "<synthetic>"
 
+# 计价分类钩子 (由 serve 注入 pricing.price_class; 本模块不懂计价 —— P4)。
+# 签名 (model, (input, output, cache_5m, cache_1h, cache_read), speed, geo) -> 键; 同一个键下的响应 token 可以先加总再算价
+# (Haiku 5.5 这类按单次请求长度分档的模型, 按模型加总再算会被错判成长 prompt)。不注入时按模型分, 与旧行为相同。
+price_class = None
+
 # 活动行: 只有这些行能撑起「模型生成」区间与任务的时间范围 (系统事件 / 本地命令不算)
 ACT_KINDS = frozenset({"prompt", "resp", "call", "result", "say", "think", "interject", "interrupt", "notify"})
 BG_FAIL = frozenset({"failed", "failure", "error", "errored"})
@@ -1788,8 +1793,11 @@ def _scan_line(ft: FileTrace, o: dict, off: int) -> None:
         u = msg.get("usage")
         if isinstance(u, dict) and (key[0] or key[1]):
             first = key not in ft.resp
-            ft.resp[key] = usage_tuple(u)                       # 先存 usage (最后一行为准), 再发布行
-            ft.resp_model[key] = model or "unknown"
+            tup = usage_tuple(u)
+            ft.resp[key] = tup                                  # 先存 usage (最后一行为准), 再发布行
+            pc = price_class
+            ft.resp_model[key] = (pc(model or "unknown", tup, u.get("speed"), u.get("inference_geo")) if pc
+                                  else model or "unknown")
             if first:
                 emit({"k": "resp", "ts": ts, "key": key, "skill": skill, "cwd": ft.cwd, "synthetic": synthetic})
         if model and not synthetic:

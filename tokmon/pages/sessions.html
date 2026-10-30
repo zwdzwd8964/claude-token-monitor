@@ -222,7 +222,7 @@ function render(){
   const bigCtx=d.big_ctx||300000, line=d.context_line||150000;
   const bigN=d.sessions.filter(s=>s.context && s.state!=='CLOSED' && s.context.ctx>=bigCtx).length;
   const facts=`<span class="csep"></span>`
-    +(st?`<a class="pill fact" href="/tokens?since=today" title="${esc('今天（本地 00:00 起）全部会话的等价成本（估算，不是账单）\n'+fmtTok(st.tokens)+' tok'+(st.unpriced?'\n含未知单价的模型，金额偏低':'')+'\n与 Token 看板「今天 · 全部」同一口径；点开去看明细')}">今天已烧 <b>≈${fmtUsd(st.cost)}${st.unpriced?'*':''}</b></a>`:'')
+    +(st?`<a class="pill fact" href="/tokens?since=today" title="${esc('今天（本地 00:00 起）全部会话的等价成本（估算，不是账单）\n'+fmtTok(st.tokens)+' tok'+(st.unpriced?'\n含单价未确认的模型（估算或按 $0），金额不准':'')+'\n与 Token 看板「今天 · 全部」同一口径；点开去看明细')}">今天已烧 <b>≈${fmtUsd(st.cost)}${st.unpriced?'*':''}</b></a>`:'')
     +`<span class="pill fact" title="${esc('近 '+win+' 分钟里所有会话新增的 token（按 API 响应时刻算，真值）')}">近 ${win} 分钟 <b>+${fmtTok(burnAll)}</b> tok</span>`
     +`<span class="pill fact rk" title="${esc('当前任务命中了至少一条风险规则的会话数（规则判断，推断；只标不拦）。只算 24 小时内有动静的会话')}">有风险 <b>${riskN}</b></span>`
     +`<span class="pill fact rk" title="${esc('最近一轮上下文超过 '+fmtTok(bigCtx)+' token 的会话（不含已关闭；24 小时内有动静的）。上下文越大，每轮都要把它再读一遍，越贵')}">大上下文 <b>${bigN}</b></span>`;
@@ -277,7 +277,7 @@ function render(){
     // 烧钱: 当前任务的等价 $ (行尾, 各行一列对齐着扫) + 近 10 分钟新烧 (有才出)
     const money = (wf && wf.tokens) ? `<span class="money" title="${esc('当前任务的等价成本（估算，不是账单）：API usage 真值 × 公开单价'
         +'\n'+(wf.partial?'≥ ':'')+fmtTok(wf.tokens)+' tok'+(wf.partial?'（有 agent / workflow 的文件缺失，是下限）':'')
-        +(wf.unpriced?'\n含未知单价的模型，金额偏低':'')+'\n与回放页头是同一个数')}">≈${fmtUsd(wf.cost)}${wf.unpriced?'*':''}</span>` : '';
+        +(wf.unpriced?'\n含单价未确认的模型（估算或按 $0），金额不准':'')+'\n与回放页头是同一个数')}">≈${fmtUsd(wf.cost)}${wf.unpriced?'*':''}</span>` : '';
     const burn = (wf && wf.burn>0) ? `<span class="burn" title="${esc('近 '+win+' 分钟新增 '+wf.burn.toLocaleString()+' tok（按 API 响应时刻算，真值）')}">+${fmtTok(wf.burn)}/${win}分</span>` : '';
     // 省钱 S1: 上下文多大 (主线程最后一轮, 真值) + 等你的会话缓存还剩多久 / 过期了下一轮重建多少钱
     const cx = s.context;

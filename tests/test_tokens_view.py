@@ -195,11 +195,11 @@ def test_cost_parts_match_pricing_formula():
                       input_tokens=1000, output_tokens=2000, cache_5m=3000, cache_1h=4000, cache_read=500000,
                       web_search=3, web_fetch=1, cost_usd=0.0, known_price=True, message_id="m", request_id="r")
     ci, co, ccw, ccr, ct = tokens_view.cost_parts(rec)
-    i, o, _ = pricing.rates_for("claude-fable-5-1")
-    assert math.isclose(ci, 1000 * i / 1e6)
-    assert math.isclose(co, 2000 * o / 1e6)
-    assert math.isclose(ccw, (3000 * i * pricing.CACHE_WRITE_5M_MULT + 4000 * i * pricing.CACHE_WRITE_1H_MULT) / 1e6)
-    assert math.isclose(ccr, 500000 * i * pricing.CACHE_READ_MULT / 1e6)
+    # Fable 5.1 官方价目: 输入 10 / 5m 写 12.5 / 1h 写 20 / 缓存读 0.25 (= 0.025×, 不是 0.1×) / 输出 50
+    assert math.isclose(ci, 1000 * 10 / 1e6)
+    assert math.isclose(co, 2000 * 50 / 1e6)
+    assert math.isclose(ccw, (3000 * 12.5 + 4000 * 20) / 1e6)
+    assert math.isclose(ccr, 500000 * 0.25 / 1e6)
     assert math.isclose(ct, 3 * pricing.WEB_SEARCH_USD_PER_REQUEST + 1 * pricing.WEB_FETCH_USD_PER_REQUEST)
     full, known = pricing.cost_usd("claude-fable-5-1", 1000, 2000, 3000, 4000, 500000, 3, 1)
     assert known and math.isclose(ci + co + ccw + ccr + ct, full, rel_tol=1e-12)
@@ -331,11 +331,11 @@ def test_savings_columns_are_slices_of_existing_cost(base):
     for r in rows:                                            # tx 是缓存读的一部分, rb 是缓存写的一部分
         assert r["tx"] <= r["ccr"] + 1e-9 and r["rb"] <= r["ccw"] + 1e-9 and r["rn"] in (0, 1)
     d = [r for r in rows if r["session"] == "s-delta"]
-    rate = pricing.rates_for("claude-opus-5")[0]
-    assert math.isclose(sum(r["tx"] for r in d), 30_000 * rate * pricing.CACHE_READ_MULT / 1e6, rel_tol=1e-9)
+    q = pricing.rates("claude-opus-5")
+    assert math.isclose(sum(r["tx"] for r in d), 30_000 * q.cache_read / 1e6, rel_tol=1e-9)
     assert sum(r["rn"] for r in d) == 1
     assert math.isclose(sum(r["rb"] for r in d),
-                        182_000 * (pricing.CACHE_WRITE_1H_MULT - pricing.CACHE_READ_MULT) * rate / 1e6, rel_tol=1e-9)
+                        182_000 * (q.cache_write_1h - q.cache_read) / 1e6, rel_tol=1e-9)
     assert sum(r["rn"] for r in rows if r["session"] != "s-delta") == 0     # 别的会话: 子 agent 第一轮写缓存不算重建
     assert cube["save"] == {"line": 150_000}
 

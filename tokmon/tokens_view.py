@@ -6,8 +6,8 @@
 
 诚实约定 (NORTH_STAR §2.1):
 - 每组的 `c` 就是内核 `UsageRecord.cost_usd` 的和 —— 与 /api/summary 同源同口径;
-  拆分用 `pricing.rates_for()` + `CACHE_*_MULT` + 工具单价重算, 与 `pricing.cost_usd` 的公式逐项对应,
-  所以各分项之和 == `c` (浮点误差内)。定价仍只在 pricing.py (I3), 这里不复制任何单价。
+  拆分直接用 `pricing.cost_parts()` (与 `pricing.cost_usd` 同一段算式, 逐请求分档 / fast / us 都在里面),
+  所以各分项之和 == `c` (浮点误差内)。定价仍只在 pricing.py (I3), 这里不复制任何单价、倍率。
 - 未知单价的消息单独计数 (`un` 条 / `ut` token), 页面据此打 `*` 与斜线纹, 而不是悄悄按 0 混进去。
 - 本地日期/小时取自 `UsageRecord.timestamp` (parser 已转本地时区), 与 build_summary 的 by_day 一致。
 - 省钱 (CONTEXT_COST_PLAN S2) 的三个量都是**已有成本的一部分**, 不是另加的钱:
@@ -23,13 +23,12 @@ from datetime import datetime
 from .aggregate import group_by
 from .context_view import TAX_LINE, TTL_1H, TTL_5M, context_tokens
 from .pricing import (
-    CACHE_READ_MULT,
     CACHE_WRITE_1H_MULT,
     CACHE_WRITE_5M_MULT,
-    WEB_FETCH_USD_PER_REQUEST,
     WEB_SEARCH_USD_PER_REQUEST,
-    rates_for,
+    rates,
 )
+from .pricing import cost_parts as _price_parts
 
 # 行 = 7 个键 + 18 个量。列名随响应下发 (`cols`), 前端按名取, 不靠位置。
 KEY_COLS = ["e", "d", "h", "p", "m", "s", "x"]
@@ -41,14 +40,14 @@ SOURCES = ["main", "subagent", "workflow"]      # 固定顺序 -> 前端配色�
 
 
 def cost_parts(rec) -> tuple[float, float, float, float, float]:
-    """把一条记录的等价成本拆成 (input, output, 缓存写, 缓存读, 工具)。与 pricing.cost_usd 逐项同式。"""
-    in_rate, out_rate, _known = rates_for(rec.model)
-    ci = rec.input_tokens * in_rate / 1_000_000
-    co = rec.output_tokens * out_rate / 1_000_000
-    ccw = (rec.cache_5m * in_rate * CACHE_WRITE_5M_MULT + rec.cache_1h * in_rate * CACHE_WRITE_1H_MULT) / 1_000_000
-    ccr = rec.cache_read * in_rate * CACHE_READ_MULT / 1_000_000
-    ct = rec.web_search * WEB_SEARCH_USD_PER_REQUEST + rec.web_fetch * WEB_FETCH_USD_PER_REQUEST
-    return ci, co, ccw, ccr, ct
+    """把一条记录的等价成本拆成 (input, output, 缓存写, 缓存读, 工具)。就是 pricing.cost_usd 那段算式。"""
+    return _price_parts(rec.model, rec.input_tokens, rec.output_tokens, rec.cache_5m, rec.cache_1h, rec.cache_read,
+                        rec.web_search, rec.web_fetch, rec.speed, rec.geo)[:5]
+
+
+def _quote(rec):
+    """这条记录 (一次请求) 实际适用的单价: 分档按它自己的上下文, fast / us 按它自己的 usage。"""
+    return rates(rec.model, context_tokens(rec), rec.speed, rec.geo)
 
 
 def savings_marks(records) -> dict:
@@ -59,9 +58,9 @@ def savings_marks(records) -> dict:
     marks: dict = {}
     for r in records:
         if r.cache_read > TAX_LINE:
-            rate = rates_for(r.model)[0]
-            if rate:
-                marks[id(r)] = [(r.cache_read - TAX_LINE) * rate * CACHE_READ_MULT / 1_000_000, 0.0, 0]
+            cr_rate = _quote(r).cache_read
+            if cr_rate:
+                marks[id(r)] = [(r.cache_read - TAX_LINE) * cr_rate / 1_000_000, 0.0, 0]
     seqs: dict = {}
     for r in records:
         if r.source_kind == "main":
@@ -77,9 +76,9 @@ def savings_marks(records) -> dict:
                 continue
             if (b.timestamp - a.timestamp).total_seconds() <= ttl:
                 continue
-            rate = rates_for(b.model)[0]
-            extra = (b.cache_5m * CACHE_WRITE_5M_MULT + b.cache_1h * CACHE_WRITE_1H_MULT
-                     - b.cache_write * CACHE_READ_MULT) * rate / 1_000_000
+            q = _quote(b)
+            extra = (b.cache_5m * q.cache_write_5m + b.cache_1h * q.cache_write_1h
+                     - b.cache_write * q.cache_read) / 1_000_000
             m = marks.setdefault(id(b), [0.0, 0.0, 0])
             m[1] += max(0.0, extra)
             m[2] += 1
@@ -92,7 +91,9 @@ def _group(records, marks: dict | None = None) -> dict:
     out: dict[tuple, list] = {}
     for r in records:
         ts = r.timestamp
-        k = (int(ts.timestamp() // 3600), ts.date(), ts.hour, r.project, r.model, r.source_kind, r.session_id)
+        # 末位按「单价是否确认」再分一刀 (不下发): 同一格里确认 / 未确认的不混在一行, 前端按行算单价时分子分母都精确
+        k = (int(ts.timestamp() // 3600), ts.date(), ts.hour, r.project, r.model, r.source_kind, r.session_id,
+             bool(r.known_price))
         a = out.get(k)
         if a is None:
             a = out[k] = [0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0]
@@ -152,6 +153,10 @@ def build(rows, prev_rows, all_records) -> dict:
     mpos = {m: i for i, m in enumerate(mrank)}
     models = sorted({k[4] for k in cur} | {k[4] for k in prev}, key=lambda m: (mpos.get(m, 1 << 30), m))
 
+    # 「未确认」按当前窗口判; 只在上一周期出现的模型才看上一周期 (别让 10 天前的一条记录给本周的模型打 *)
+    cur_models = {r.model for r in rows}
+    unconfirmed = ({r.model for r in rows if not r.known_price}
+                   | {r.model for r in prev_rows or [] if not r.known_price and r.model not in cur_models})
     sess_cur = group_by(rows, lambda r: r.session_id)
     sess_prev = group_by(prev_rows or [], lambda r: r.session_id)
     sessions = sorted(sess_cur, key=lambda k: (-sess_cur[k].cost, -sess_cur[k].total_tokens, k))
@@ -182,7 +187,7 @@ def build(rows, prev_rows, all_records) -> dict:
 
     def encode(groups: dict) -> list:
         out = []
-        for k in sorted(groups, key=lambda k: (k[0], k[1], k[2], pi[k[3]], mi[k[4]], k[5], xi[k[6]])):
+        for k in sorted(groups, key=lambda k: (k[0], k[1], k[2], pi[k[3]], mi[k[4]], k[5], xi[k[6]], k[7])):
             src = k[5] if k[5] in si else "main"      # 未知来源归 main 兜底 (discover 只产出这三种)
             vals = groups[k]
             enc = [round(v, 10) if VAL_COLS[j] in _COST_COLS else v for j, v in enumerate(vals)]
@@ -197,17 +202,29 @@ def build(rows, prev_rows, all_records) -> dict:
         "cols": COLS,
         "days": [{"d": d.isoformat(), "wd": d.weekday()} for d in days],
         "projects": [{"id": p, "g": gproj.get(p, len(gproj))} for p in projects],
-        "models": [{"id": m, "priced": rates_for(m)[2], "rank": mpos.get(m, len(mpos))} for m in models],
+        # priced: 模型本身有官方价, 且窗口里它的记录都确认了 (fast / us 在它上面没有规则的记录会让它变成未确认)
+        # cr: 这个模型缓存读相对输入价的倍率 (按同家族估算的也给; 认不出家族的是 None) —— 页面按当前看到的行拼「计价」说明
+        "models": [{"id": m, "priced": rates(m).known and m not in unconfirmed, "rank": mpos.get(m, len(mpos)),
+                    "cr": _cr_mult(m)} for m in models],
         "sources": list(SOURCES),
         "sessions": [{"id": x, "p": proj_of(x), "t0": round(span[x][0], 3), "t1": round(span[x][1], 3)}
                      for x in sessions],
         "rows": encode(cur),
         "prev_rows": encode(prev) if prev_rows is not None else None,
-        # 页面解释「缓存读 = input 单价 × 0.1」时用的倍率 —— 从 pricing.py 读, 前端不再写死一份 (I3 定价集中)
-        "mult": {"cr": CACHE_READ_MULT, "cw5": CACHE_WRITE_5M_MULT, "cw1": CACHE_WRITE_1H_MULT,
+        # 页面解释「缓存读 = input 单价 × 0.05」时用的倍率 —— 从 pricing.py 读, 前端不再写死一份 (I3 定价集中)。
+        # 缓存读倍率按模型不同: 给出本窗里出现的、有单价的模型各自的倍率 (去重升序)。
+        "mult": {"cr": sorted({x for x in (_cr_mult(m) for m in {k[4] for k in cur}) if x is not None}),
+                 "cw5": CACHE_WRITE_5M_MULT, "cw1": CACHE_WRITE_1H_MULT,
                  "ws": WEB_SEARCH_USD_PER_REQUEST},
         "save": {"line": TAX_LINE},                  # 省钱卡片的参考线, 前端不另写一份
     }
+
+
+
+def _cr_mult(model):
+    """模型 -> 缓存读相对输入价的倍率 (标准条件; 分档 / fast / us 都不改变这个比)。认不出家族的 -> None。"""
+    q = rates(model)
+    return round(q.cache_read / q.input, 4) if q.input else None
 
 
 def span_of(cutoff: datetime | None, now: datetime, records) -> dict:

@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections import defaultdict
 from statistics import median
 
-from .pricing import CACHE_READ_MULT, CACHE_WRITE_1H_MULT, CACHE_WRITE_5M_MULT, rates_for
+from .pricing import rates
 
 TAX_LINE = 150_000            # 上下文税的参考线: 近 7 天, 15 万以上那部分的读取费占总成本 27.6%
 BIG_CTX = 300_000             # 「大上下文」: 近 7 天, 上下文超过 30 万的回合占总成本 48%
@@ -44,14 +44,15 @@ def session_contexts(records) -> dict:
             if r.cache_1h or r.cache_5m:
                 ttl = TTL_1H if r.cache_1h >= r.cache_5m else TTL_5M
                 break
-        rate, _, known = rates_for(last.model)
-        write_mult = CACHE_WRITE_1H_MULT if ttl == TTL_1H else CACHE_WRITE_5M_MULT
+        # 单价按最后一轮自己的条件: 分档模型看这一轮的上下文, fast / us 看它的 usage (缓存读倍率按模型不同)
+        q = rates(last.model, ctx, last.speed, last.geo)
+        write_rate = q.cache_write_1h if ttl == TTL_1H else q.cache_write_5m
         out[sid] = {
-            "ctx": ctx, "t": last.timestamp.timestamp(), "model": last.model, "known": known, "ttl": ttl,
+            "ctx": ctx, "t": last.timestamp.timestamp(), "model": last.model, "known": q.known, "ttl": ttl,
             "project": last.project,
             "per_turn": round(median(r.cost_usd for r in rs[-TAIL:]), 4),
-            "tax_per_turn": round(max(0, ctx - TAX_LINE) * rate * CACHE_READ_MULT / 1e6, 4),
-            "rebuild": round(ctx * rate * write_mult / 1e6, 4),
-            "hit": round(ctx * rate * CACHE_READ_MULT / 1e6, 4),
+            "tax_per_turn": round(max(0, ctx - TAX_LINE) * q.cache_read / 1e6, 4),
+            "rebuild": round(ctx * write_rate / 1e6, 4),
+            "hit": round(ctx * q.cache_read / 1e6, 4),
         }
     return out

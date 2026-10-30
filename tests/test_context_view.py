@@ -7,7 +7,7 @@ from statistics import median
 import pytest
 
 from tokmon import context_view, parser
-from tokmon.pricing import CACHE_READ_MULT, CACHE_WRITE_1H_MULT, CACHE_WRITE_5M_MULT, cost_usd, rates_for
+from tokmon.pricing import cost_usd, rates
 from test_trace import SID, T0, asst, iso, write_jsonl
 
 
@@ -45,10 +45,10 @@ def test_last_main_turn_context_ttl_and_money(tmp_path):
                       0, l["message"]["usage"]["cache_creation"]["ephemeral_1h_input_tokens"],
                       l["message"]["usage"]["cache_read_input_tokens"])[0] for l in lines[-5:]]
     assert cx["per_turn"] == pytest.approx(round(median(costs), 4))       # 最近 5 轮的中位数
-    rate = rates_for("claude-opus-5")[0]
-    assert cx["tax_per_turn"] == pytest.approx(round((184_040 - 150_000) * rate * CACHE_READ_MULT / 1e6, 4))
-    assert cx["rebuild"] == pytest.approx(round(184_040 * rate * CACHE_WRITE_1H_MULT / 1e6, 4))
-    assert cx["hit"] == pytest.approx(round(184_040 * rate * CACHE_READ_MULT / 1e6, 4))
+    q = rates("claude-opus-5")
+    assert cx["tax_per_turn"] == pytest.approx(round((184_040 - 150_000) * q.cache_read / 1e6, 4))
+    assert cx["rebuild"] == pytest.approx(round(184_040 * q.cache_write_1h / 1e6, 4))
+    assert cx["hit"] == pytest.approx(round(184_040 * q.cache_read / 1e6, 4))
     assert cx["rebuild"] / cx["hit"] == pytest.approx(20, rel=1e-3)       # 1 小时缓存: 重写是命中的 20 倍
 
 
@@ -59,8 +59,7 @@ def test_ttl_follows_latest_write_kind_and_placeholders_are_skipped(tmp_path):
              say(95, 3, u(inp=0, out=0), model="<synthetic>")]              # 0 token 的占位消息不算「最后一轮」
     cx = context_view.session_contexts(recs(tmp_path, lines))[SID]
     assert cx["ttl"] == 300 and cx["ctx"] == 43_010 and cx["tax_per_turn"] == 0
-    rate = rates_for("claude-opus-5")[0]
-    assert cx["rebuild"] == pytest.approx(round(43_010 * rate * CACHE_WRITE_5M_MULT / 1e6, 4))
+    assert cx["rebuild"] == pytest.approx(round(43_010 * rates("claude-opus-5").cache_write_5m / 1e6, 4))
 
 
 def test_no_cache_writes_means_unknown_ttl(tmp_path):

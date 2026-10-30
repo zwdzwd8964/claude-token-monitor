@@ -217,6 +217,15 @@ function checkEscaping(label) {
   if (!String(hvR).startsWith(wantR) || !String(hvL).startsWith(wantL)) errors.push(`累计曲线悬停坐标偏了: 右边缘 ${hvR} (应 ${wantR}), 左边缘 ${hvL} (应 ${wantL})`);
   else seen.burn_hover = true;
   // 只有未知单价 token 的项目: $ 视图下三张图都不能让它悄悄消失
+  // S0: 缓存读倍率按模型 —— 「计价」说明从当前看到的行拼出来 (夹具里有缓存读的: Fable 5.1 / Opus 5.5 / Opus 5; 认不出家族的不列)
+  if (!String(el("comp").innerHTML).includes("input 单价 × 0.025 / 0.05 / 0.1 (按模型)")) errors.push("成本构成: 缓存读的计价说明没按模型倍率拼出来");
+  // 只看认不出家族的模型时, 缓存读按 $0 —— 不能借别的模型的倍率来说明
+  run("filter mystery", () => R("applyFilter('m', ['mystery-model-9'], false)"));
+  if (!String(el("comp").innerHTML).includes("单价未知 (按 $0)")) errors.push("成本构成: 只有认不出家族的模型时, 缓存读的计价说明不对");
+  run("clear mystery", () => R("clearFilters()"));
+  // S0: 单价未确认的行 (估算或 $0) 分子分母都不算
+  const pc = R(`(() => { const r = {in: 100, out: 0, cr: 0, cw: 0, ut: 100, c: 5, n: 1}; return pricedCost(r) + "|" + pricedTok(r); })()`);
+  if (pc !== "0|0") errors.push("单价: 单价未确认的行不能进分子分母 (" + pc + ")");
   ctx.__GP = R("(() => { const by = {}; for (const r of R) by[r.p] = (by[r.p] || 0) + r.c; return Object.keys(by).find(p => by[p] > 0); })()");
   run("ghost project", () => R(`(() => {
     let cut = 0;
@@ -230,7 +239,7 @@ function checkEscaping(label) {
   if (!String(el("tree").innerHTML).includes("只有未知单价的 token")) errors.push("树图: 只有未知单价 token 的项目在 $ 视图下没有任何注记");
   if (!String(el("pareto").innerHTML).includes("只有未知单价的 token")) errors.push("帕累托: 只有未知单价 token 的会话在 $ 视图下没有任何注记");
   if (!String(el("k-unit").innerHTML).includes('class="st"')) errors.push("KPI 单价: 分母不含未知单价 token 时要打 *");
-  if (!String(el("burn-q").innerHTML).includes("未知单价 token")) errors.push("累计花费副标题: 含未知单价 token 时要打 *");
+  if (!String(el("burn-q").innerHTML).includes("单价未确认的 token")) errors.push("累计花费副标题: 含未知单价 token 时要打 *");
   run("ghost all", () => R(`(() => {
     for (const r of R) { for (const c of ["c", "ci", "co", "ccw", "ccr", "ct"]) r[c] = 0; r.un = r.n; r.ut = r.in + r.out + r.cr + r.cw; }
     CUBE.total.cost = 0; render();
@@ -238,6 +247,11 @@ function checkEscaping(label) {
   for (const id of ["tree", "pareto", "heat"]) {
     const hh = String(el(id).innerHTML);
     if (!hh.includes("全是未知单价") || hh.includes("当前筛选下没有数据")) errors.push(`#${id}: 全是未知单价 token 时不能写「没有数据」`);
+  }
+  // S0: 本期 token 单价全没确认时, 单价卡片的对比不能写「上期为 0」(那是另一种情况), 要说清是本期单价未确认
+  if (R("baseOK()")) {
+    const ku = String(el("k-unit").innerHTML);
+    if (ku.includes("上期为 0") || !ku.includes("本期的 token 单价都未确认")) errors.push("KPI 单价: 本期全未确认时的对比说明不对");
   }
   run("ghost tokens", () => R("setMetric('tokens')"));
   if (String(el("tree").innerHTML).includes("全是未知单价")) errors.push("切到 Tokens 后树图应照常画出来");

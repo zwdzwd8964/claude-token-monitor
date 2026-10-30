@@ -20,7 +20,7 @@ from pathlib import Path
 
 from .discovery import discover
 from .parser import _parse_ts
-from .pricing import rates_for
+from .pricing import PRICING_FETCHED, STANDARD_GEOS, STANDARD_SPEEDS, rates
 from .util import fmt_tokens, term_text
 
 try:
@@ -52,6 +52,9 @@ class DoctorReport:
     cross_kind_keys: int = 0       # 同一去重键出现在多个 source_kind (来源拆分风险, 北极星债#3)
     known_models: dict = field(default_factory=dict)         # model -> count
     unknown_models: dict = field(default_factory=dict)       # model -> (count, tokens)
+    unknown_basis: dict = field(default_factory=dict)        # model -> "family" (按同家族价估算) | "none" (按 0)
+    price_conditions: dict = field(default_factory=dict)     # "speed=fast" / "geo=us" / … -> 条数 (已按官方加价计的非标准条件)
+    unconfirmed_conditions: dict = field(default_factory=dict)  # (model, "speed=…,geo=…") -> (条数, tokens): 条件没有官方规则
 
 
 def _usage_tokens(usage: dict) -> int:
@@ -72,6 +75,8 @@ def scan(base: Path) -> DoctorReport:
     by_kind: Counter = Counter()
     known: Counter = Counter()
     unknown: dict[str, list[int]] = {}     # model -> [count, tokens]
+    conds: Counter = Counter()             # 已按官方加价计的非标准计价条件 -> 条数
+    bad_conds: dict[tuple[str, str], list[int]] = {}   # (model, 条件) -> [count, tokens]: 模型认得, 条件没有官方规则
     key_kinds: dict[tuple[str, str], set[str]] = {}  # 去重键 -> 出现过的 source_kind
 
     for path, _raw_dir, kind in discover(base):
@@ -126,13 +131,25 @@ def scan(base: Path) -> DoctorReport:
                     rep.field_cache_breakdown += 1
 
                 model = msg.get("model") or "unknown"
-                _, _, is_known = rates_for(model)
-                if is_known:
+                speed, geo = usage.get("speed"), usage.get("inference_geo")
+                odd = [f"{k}={v}" for k, v, std in (("speed", speed, STANDARD_SPEEDS), ("geo", geo, STANDARD_GEOS))
+                       if v and str(v).lower() not in std]
+                q = rates(model)
+                if odd and q.known:
+                    if rates(model, 0, speed, geo).known:          # fast / us 在这个模型上有官方加价规则
+                        for c in odd:
+                            conds[c] += 1
+                    else:                                         # 没有规则 (如 Sonnet 的 fast、Opus 4.5 的 us): 按标准价, 标未确认
+                        e = bad_conds.setdefault((model, ",".join(odd)), [0, 0])
+                        e[0] += 1
+                        e[1] += _usage_tokens(usage)
+                if q.known:
                     known[model] += 1
                 else:
                     e = unknown.setdefault(model, [0, 0])
                     e[0] += 1
                     e[1] += _usage_tokens(usage)
+                    rep.unknown_basis[model] = q.basis
         if file_usage == 0:
             rep.files_zero_usage += 1
 
@@ -140,6 +157,8 @@ def scan(base: Path) -> DoctorReport:
     rep.types = dict(types)
     rep.known_models = dict(known)
     rep.unknown_models = {m: (c, t) for m, (c, t) in unknown.items()}
+    rep.price_conditions = dict(conds)
+    rep.unconfirmed_conditions = {k: (c, t) for k, (c, t) in bad_conds.items()}
     rep.distinct_keys = len(key_kinds)
     rep.cross_kind_keys = sum(1 for v in key_kinds.values() if len(v) > 1)
     return rep
@@ -222,16 +241,27 @@ def build_lines(rep: DoctorReport) -> tuple[list[str], int]:
         out.append("  · 高合并率属正常: 会话续接/分叉会重复记录历史, 去重是必要的 (否则会多算)")
 
     out.append("")
-    out.append("── 模型与定价 ──")
+    out.append(f"── 模型与定价 (官方价目 {PRICING_FETCHED}) ──")
     out.append(f"  ✓ 已知模型 {len(rep.known_models)} 种: "
                + ", ".join(sorted(rep.known_models)[:6])
                + (" …" if len(rep.known_models) > 6 else ""))
     real_unknown = {m: (c, t) for m, (c, t) in rep.unknown_models.items() if t > 0}
-    if real_unknown:
+    for basis, title in (("family", "单价未确认 · 按同家族最新型号估算 (建议加进 pricing.py)"),
+                         ("none", "认不出的模型 · 按 0 计 (成本被低估, 建议加进 pricing.py)")):
+        part = {m: v for m, v in real_unknown.items() if rep.unknown_basis.get(m, "none") == basis}
+        if part:
+            warns += 1
+            out.append(f"  ⚠ {title}:")
+            for m, (c, t) in sorted(part.items(), key=lambda kv: kv[1][1], reverse=True):
+                out.append(f"       {m:28} {c:>4}条   {fmt_tokens(t):>8} tokens")
+    if rep.price_conditions:
+        out.append("  · 已按官方加价计的计价条件 (fast mode / us 推理): "
+                   + ", ".join(f"{k}({c})" for k, c in sorted(rep.price_conditions.items())))
+    if rep.unconfirmed_conditions:
         warns += 1
-        out.append("  ⚠ 未知模型 (成本被低估, 建议加进 pricing.py):")
-        for m, (c, t) in sorted(real_unknown.items(), key=lambda kv: kv[1][1], reverse=True):
-            out.append(f"       {m:28} {c:>4}条   {fmt_tokens(t):>8} tokens")
+        out.append("  ⚠ 单价未确认 · 计价条件没有官方规则 (按该模型标准价计, 建议核对 pricing.py 的 FAST_PRICING / US_GEO_MODELS):")
+        for (m, cond), (c, t) in sorted(rep.unconfirmed_conditions.items(), key=lambda kv: kv[1][1], reverse=True):
+            out.append(f"       {m:28} {cond:24} {c:>4}条   {fmt_tokens(t):>8} tokens")
     zero_unknown = {m: c for m, (c, t) in rep.unknown_models.items() if t == 0}
     if zero_unknown:
         out.append("  · 0-token 的非真实模型 (无成本影响): "

@@ -81,7 +81,7 @@ def run_report(records: list[UsageRecord], since: str | None, scope: str,
         _print_table_rich(console, "按模型", by_model)
         _print_table_rich(console, "按来源 (main/subagent/workflow)", by_source)
         if total.any_unpriced:
-            console.print("[dim]* 含未知单价的模型, 该行成本可能偏低。[/dim]")
+            console.print("[dim]* 含单价未确认的模型 (认得出家族的按同家族最新价估算, 认不出的按 0), 该行成本不准。[/dim]")
     else:
         print(header)
         _print_table_plain("按天", by_day)
@@ -89,5 +89,5 @@ def run_report(records: list[UsageRecord], since: str | None, scope: str,
         _print_table_plain("按模型", by_model)
         _print_table_plain("按来源", by_source)
         if total.any_unpriced:
-            print("\n* 含未知单价的模型, 该行成本可能偏低。")
+            print("\n* 含单价未确认的模型 (认得出家族的按同家族最新价估算, 认不出的按 0), 该行成本不准。")
         print("\n(提示: pip install rich 可获得更漂亮的表格)")
