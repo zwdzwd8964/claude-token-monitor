@@ -1,0 +1,2 @@
+{"seq": 0, "ts": 10.0, "type": "run.started", "agent": null, "data": {"task": "x"}}
+{"seq": 1, "ts": 90.0, "type": "run.finished", "agent": null, "data": {"status": "failed"}}

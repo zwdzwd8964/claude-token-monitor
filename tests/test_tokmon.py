@@ -223,20 +223,23 @@ def test_discover_newer_than_keeps_file_it_cannot_stat():
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
         _write_session(base, "c--x", "x.jsonl", r"C:\x", [_assistant("m1", "r1", 10, 1)])
-        import pathlib as _pl
-        real_stat = _pl.Path.stat
-
-        def boom(self, *a, **kw):
-            if self.name == "x.jsonl":
-                raise OSError("stat failed")
-            return real_stat(self, *a, **kw)
-
+        import os as _os
         import time as _t
-        _pl.Path.stat = boom
+        old = _t.time() - 3600
+        _os.utime(base / "c--x" / "x.jsonl", (old, old))        # 真 stat 得出来的话一定会被跳过
+        from tokmon import discovery as _d
+        real_stat = _d.os.stat
+
+        def boom(path, *a, **kw):                              # discover 走 os.stat(fs_path(...)) (长路径安全)
+            if str(path).endswith("x.jsonl"):
+                raise OSError("stat failed")
+            return real_stat(path, *a, **kw)
+
+        _d.os.stat = boom
         try:
             kept = {p.name for p, _, _ in discover(base, newer_than=_t.time())}
         finally:
-            _pl.Path.stat = real_stat
+            _d.os.stat = real_stat
         assert kept == {"x.jsonl"}
 
 

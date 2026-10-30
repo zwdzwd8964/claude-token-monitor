@@ -189,11 +189,24 @@ def _quote(model: str | None, long: bool, speed: str | None, geo: str | None) ->
     return Quote(i, cw5, cw1, cr, o, known, basis)
 
 
-def rates(model: str | None, prompt_tokens: int = 0, speed: str | None = None, geo: str | None = None) -> Quote:
-    """一次请求适用的五列单价。prompt_tokens = 这次请求的新输入 + 缓存读 + 缓存写 (只有分档模型用得上)。"""
-    model = _s(model)
+@lru_cache(maxsize=4096)
+def _tiers(model, speed, geo) -> tuple:
+    """(短 prompt 的单价, 长 prompt 的单价或 None, 分档阈值或 None) —— rates() 的热路径一次缓存命中就够。"""
+    model, speed, geo = _s(model), _s(speed), _s(geo)
     key, _ = _resolve(model)
-    return _quote(model, _is_long(key, prompt_tokens), _s(speed), _s(geo))
+    tier = LONG_PROMPT_PRICING.get(key) if key else None
+    return (_quote(model, False, speed, geo), _quote(model, True, speed, geo) if tier else None,
+            tier[0] if tier else None)
+
+
+def rates(model: str | None, prompt_tokens: int = 0, speed: str | None = None, geo: str | None = None) -> Quote:
+    """一次请求适用的五列单价。prompt_tokens = 这次请求的新输入 + 缓存读 + 缓存写 (只有分档模型用得上)。
+    每条记录都要调好几次 (成本拆分 / 省钱标记 / 上下文体检): 走一层缓存, 不可哈希的怪值才先转字符串。"""
+    try:
+        short, long_, th = _tiers(model, speed, geo)
+    except TypeError:
+        short, long_, th = _tiers(_s(model), _s(speed), _s(geo))
+    return long_ if th is not None and prompt_tokens > th else short
 
 
 def rates_for(model: str | None) -> tuple[float, float, bool]:

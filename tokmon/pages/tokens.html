@@ -68,6 +68,17 @@
   .svl .bar { height:6px; border-radius:3px; background:var(--accent); opacity:.8; }
   @media (max-width:900px) { .sv { grid-template-columns:minmax(0,1fr); } }
   .empty { color:var(--dim); font-size:12.5px; padding:26px 4px; text-align:center; }
+  /* 控制台卡片 (CONSOLES_PLAN S1): 归属 -> 运行 -> 任务 -> 角色, 一层一层点进去 */
+  .crow { display:grid; grid-template-columns:minmax(120px, 36%) 1fr 118px; gap:8px; align-items:center; font-size:12px;
+          padding:3px 4px; cursor:pointer; border-radius:6px; }
+  .crow:hover { background:rgba(255,255,255,.04); }
+  .crow .cl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .crow .cbar { height:10px; background:rgba(255,255,255,.06); border-radius:3px; overflow:hidden; }
+  .crow .cbar i { display:block; height:100%; }
+  .crow .cv { text-align:right; font-variant-numeric:tabular-nums; }
+  .crow.hat .cbar i { background-image:repeating-linear-gradient(45deg, rgba(255,255,255,.35) 0 2px, transparent 2px 6px); }
+  .crumb { font-size:12px; margin:0 0 6px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .crumb .cs { color:var(--dim); }
   .err { color:var(--bad); font-size:12px; }
 
   /* KPI */
@@ -265,6 +276,11 @@
     <div class="cb" id="pareto"></div>
   </section>
 
+  <section class="card w12">
+    <div class="ch"><h2>控制台</h2><span class="q" id="cons-q">钱花在哪个控制台、哪次运行、哪个任务、哪个角色 · 点一行往下钻 · 跟随图上的筛选</span></div>
+    <div class="cb" id="cons"></div>
+  </section>
+
   <section class="card w5">
     <div class="ch"><h2>变化最大的项目</h2><span class="q" id="pd-q">vs 上一周期</span></div>
     <div class="cb" id="pdelta"></div>
@@ -373,8 +389,10 @@ function fit(s, maxW, px) {               // 截断到 maxW 宽, 加 …
 const WINS = [["today", "今天"], ["24h", "24h"], ["7d", "7 天"], ["2w", "2 周"], ["all", "全部"]];
 const WF_SINCE = {today: "today", "24h": "7d", "7d": "7d", "2w": "30d", all: "all"};    // 跳 /workflow 的窗口映射 (沿用旧页)
 const STACKS = ["component", "model", "source", "project"];
-const DIM_ZH = {k: "成分", p: "项目", m: "模型", s: "来源", x: "会话", d: "日期", e: "时段", wd: "星期", h: "小时", c: "星期×小时"};
-const ROW_DIMS = ["p", "m", "s", "x", "d", "e", "h", "wd", "c"];
+const DIM_ZH = {k: "成分", p: "项目", m: "模型", s: "来源", x: "会话", d: "日期", e: "时段", wd: "星期", h: "小时", c: "星期×小时",
+                o: "归属", r: "运行", t: "任务", ro: "角色"};
+const ROW_DIMS = ["p", "m", "s", "x", "d", "e", "h", "wd", "c", "o", "r", "t", "ro"];
+const CHIP_DIMS = ["k", "o", "r", "t", "ro", "p", "m", "s", "x", "d", "e", "wd", "h", "c"];   // 顶栏芯片的顺序
 const WD_ZH = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 const VALS = ["n", "in", "out", "cr", "cw", "ws", "wf", "c", "ci", "co", "ccw", "ccr", "ct", "un", "ut", "tx", "rb", "rn"];
 const COMPS = [                           // 堆叠顺序 (自下而上 / 自左而右)
@@ -397,7 +415,7 @@ const RAMP = ["#1a2c4a", "#1c5cab", "#3987e5", "#86b6ef", "#dce9fb"];     // 热
 const ST = {since: "7d", scope: "all", vs: false, metric: "cost", stack: "component", auto: false};
 const F = {};                             // 联动筛选: 维度 -> Set。同维度内 OR, 跨维度 AND。按名字存, 不存索引。
 for (const k of Object.keys(DIM_ZH)) F[k] = new Set();
-let CUBE = null, R = [], B = [], MOD = {}, PROJ = {}, SESS = {};
+let CUBE = null, R = [], B = [], MOD = {}, PROJ = {}, SESS = {}, RUNS = {}, CONS = {};
 let reqId = 0, SIG = "", BUDGET = null, BUDGET_SIG = "", timer = null;
 let HIDE_M = new Set();                   // 模型占比图: 图例隐藏的模型 (只影响这一张图)
 let HOVER = "", TIP_S = "", BRUSH = null, SUPPRESS = false, BURN = null;
@@ -411,14 +429,20 @@ function ingest(d) {
   const days = d.days || [], P = d.projects || [], M = d.models || [], S = d.sources || [], X = d.sessions || [];
   MOD = {}; M.forEach(m => { MOD[m.id] = m; });
   PROJ = {}; P.forEach(p => { PROJ[p.id] = p; });
-  SESS = {}; X.forEach(x => { SESS[x.id] = {id: x.id, p: (P[x.p] || {}).id, t0: x.t0, t1: x.t1}; });
+  const O = d.origins || [], RU = d.runs || [], T = d.tasks || [];
+  RUNS = {}; RU.forEach(g => { RUNS[g.id] = g; });
+  CONS = {}; (d.consoles || []).forEach(c => { CONS[c.code] = c; });
+  SESS = {}; X.forEach(x => { SESS[x.id] = {id: x.id, p: (P[x.p] || {}).id, t0: x.t0, t1: x.t1,
+    o: O[x.o] || "interactive", r: x.r != null && x.r >= 0 ? ((RU[x.r] || {}).id || "") : "", ro: x.ro || "", ag: x.ag || "", g: x.g || ""}; });
   const dec = rows => {
     const out = [];
     for (const a of rows || []) {
       if (!Array.isArray(a)) continue;
       const day = days[a[ix.d]], p = P[a[ix.p]], m = M[a[ix.m]], s = S[a[ix.s]], x = X[a[ix.x]];
       if (!day || !p || !m || !s || !x) continue;         // 残缺行跳过而不是崩
-      const r = {e: +a[ix.e], d: day.d, wd: day.wd, h: +a[ix.h], p: p.id, m: m.id, s: s, x: x.id};
+      const sx = SESS[x.id];
+      const r = {e: +a[ix.e], d: day.d, wd: day.wd, h: +a[ix.h], p: p.id, m: m.id, s: s, x: x.id,
+                 o: sx.o, r: sx.r, ro: sx.ro, t: ix.t != null && a[ix.t] >= 0 ? (T[a[ix.t]] || "") : ""};
       for (const c of VALS) r[c] = +a[ix[c]] || 0;
       out.push(r);
     }
@@ -547,11 +571,31 @@ function parseVal(dim, raw) {             // URL / 属性里的值 -> 类型化�
     case "k": return own(COMP_BY, raw) ? raw : null;       // 只认自己的键: constructor / __proto__ / toString 不算
     case "s": return own(SRC_ZH, raw) ? raw : null;
     case "p": case "m": case "x": return raw;
+    case "o": return /^(interactive|unclaimed|console:[^\s\/]{1,8})$/.test(raw) ? raw : null;
+    case "r": return /^[^\s\/]{1,8}\/[^\/]{1,200}$/.test(raw) ? raw : null;
+    case "t": return /^[^\s\/]{1,8}\/[^\/]{1,200}\/[^\/]{1,60}$/.test(raw) ? raw : null;
+    case "ro": return /^[^\/]{1,60}$/.test(raw) ? raw : null;
     default: return null;
   }
 }
+function originZh(o) {
+  if (o === "interactive") return "交互";
+  if (o === "unclaimed") return "未认领 sdk";
+  const c = String(o).slice(8), n = (CONS[c] || {}).name;
+  return "控制台 " + c + (n && n !== c ? " · " + n : "");
+}
+function runZh(rid) {
+  const g = RUNS[rid] || {}, code = String(rid).split("/")[0];
+  return code + " · " + (g.run === "自测" ? "自测会话" : (g.run || String(rid).slice(code.length + 1)));
+}
+function taskZh(t) { const ps = String(t).split("/"); return ps[0] + " · 任务 " + ps.slice(2).join("/"); }
+function roleZh(ro) { return ro === "~" ? "运行级 (分不出角色)" : (ro === "自测" ? "自测" : ro); }
 function chipLabel(dim, v) {
   if (dim === "k") return COMP_BY[v] ? COMP_BY[v].zh : v;
+  if (dim === "o") return originZh(v);
+  if (dim === "r") return runZh(v);
+  if (dim === "t") return taskZh(v);
+  if (dim === "ro") return roleZh(v);
   if (dim === "s") return SRC_ZH[v] || v;
   if (dim === "x") return String(v).slice(0, 8) + (SESS[v] && SESS[v].p ? " · " + SESS[v].p : "");
   if (dim === "e") return fmtTime(v * 3600, true) + "–" + pad2(localHourOf(v)) + ":59";
@@ -575,7 +619,7 @@ function compressDays(vals) {            // 连续日期合成一段 (09-15 ~ 09
 }
 function renderChips() {
   let h = "", n = 0;
-  for (const dim of ["k", "p", "m", "s", "x", "d", "e", "wd", "h", "c"]) {
+  for (const dim of CHIP_DIMS) {
     const S = F[dim];
     if (!S.size) continue;
     if (dim === "d") {
@@ -604,7 +648,7 @@ function renderChips() {
     fb.hidden = !n;
     if (n) {
       const labs = [];
-      for (const dim of ["k", "p", "m", "s", "x", "d", "e", "wd", "h", "c"]) {
+      for (const dim of CHIP_DIMS) {
         if (!F[dim].size) continue;
         const vs = dim === "d" ? compressDays(F.d).map(([a, b]) => a === b ? a.slice(5) : a.slice(5) + "~" + b.slice(5)) : [...F[dim]].map(v => chipLabel(dim, v));
         labs.push(DIM_ZH[dim] + " " + vs.join("/"));
@@ -1439,7 +1483,8 @@ function renderPareto() {
     const u = ut.get(sid) || 0, u0 = un.get(sid) || 0;
     const spanLong = meta.t0 ? fmtTime(meta.t0, true) + " → " + fmtTime(meta.t1, true) + " (" + fmtDur(meta.t1 - meta.t0) + ")" : "";
     const spanShort = meta.t0 ? fmtTime(meta.t0, true) + " · " + fmtDur(meta.t1 - meta.t0) : "";
-    const tip = [sid + (u ? " *" : ""), "项目 " + (meta.p || "?"), spanLong, ACCENT + "|" + fmtV(v) + " · 占 " + fmtPct(share) + " · 累计 " + fmtCum(c),
+    const who = meta.o && meta.o !== "interactive" ? originZh(meta.o) + (meta.r ? " · " + runZh(meta.r) : "") + (meta.ro ? " · " + roleZh(meta.ro) + (meta.ag ? " " + meta.ag : "") : "") : "";
+    const tip = [sid + (u ? " *" : ""), "项目 " + (meta.p || "?"), who, spanLong, ACCENT + "|" + fmtV(v) + " · 占 " + fmtPct(share) + " · 累计 " + fmtCum(c),
                  nm.get(sid) + " 条消息", u0 ? (u ? "* 含 " + u0 + " 条单价未确认的消息 (估算或按 $0), 金额不准" : "含 " + u0 + " 条 0 token 占位消息 (不影响金额)") : "",
                  "点击筛选这个会话 · 行尾 ↗ 看该项目的任务回放"];
     const head = `${i + 1}  ${sid.slice(0, 8)}${u ? "*" : ""}`;
@@ -1460,6 +1505,69 @@ function renderPareto() {
   h += `<div class="lg"><span style="cursor:default"><i class="sw" style="background:${ACCENT}"></i>单个会话占比</span><span style="cursor:default"><i class="sw" style="background:${ACCENT};opacity:.3"></i>累计占比 (浅色条 + 折线)</span>`
     + (all.length > N ? `<span style="cursor:default" class="muted">其余 ${all.length - N} 个见「明细」</span>` : "") + `</div>`;
   h += ghostNote(ghosts, "会话");
+  el.innerHTML = h;
+}
+
+// ---------------------------------------------------------------- C9 · 控制台 (CONSOLES_PLAN S1)
+// 一层一层往下钻: 归属 -> 运行 -> 任务 -> 角色。上一层恰好选中一个值才进下一层; 每层都跟着其它筛选走 (不按自己这一层筛自己)。
+// 运行级的控制台 (A / B 按目录认的) 分不出角色: 角色一栏是「运行级」, 画斜线纹。
+function renderCons() {
+  const el = $("#cons");
+  const olist = CUBE.origins || [];
+  if (olist.length < 2 && !olist.some(o => o.startsWith("console:"))) {
+    el.innerHTML = `<div class="note">这一窗里没有控制台派出的会话${Object.keys(CONS).length ? "" : " (控制台清单: ~/.tokmon/consoles.json, 没有就是没配)"}。</div>`;
+    return;
+  }
+  const one = d => F[d].size === 1 ? [...F[d]][0] : null;
+  const o1 = one("o");
+  let level = "o";
+  if (o1 && o1.startsWith("console:")) {
+    level = "r";
+    if (one("r")) { level = "t"; if (one("t") || !view(R, ["t"]).some(r => r.t)) level = "ro"; }   // 这次运行没切出任务: 直接看角色
+  }
+  const rows = view(R, [level]);
+  const by = new Map(), ut = new Map();
+  let total = 0, out = 0;
+  for (const r of rows) {
+    const v = mval(r);
+    const k = r[level];
+    if (level !== "o" && !k) { out += v; continue; }
+    by.set(k, (by.get(k) || 0) + v);
+    if (r.ut) ut.set(k, (ut.get(k) || 0) + r.ut);
+    total += v;
+  }
+  const crumbs = [`<span class="cs">${esc(DIM_ZH[level])}</span>`];
+  const path = [["o", o1, originZh], ["r", one("r"), runZh], ["t", one("t"), taskZh]].filter(x => x[1]);
+  const bc = path.map(([dim, v, zh]) => `<span class="fchip"><span>${esc(zh(v))}</span><button data-rm="${dim}" data-rvs="${esc(enc(v))}" data-rmdeep="1" title="回到上一层 (更深的几层一起清掉)">×</button></span>`);
+  const list = [...by.entries()].filter(e => e[1] > 0 || ut.get(e[0])).sort((a, b) => b[1] - a[1]);
+  if (!list.length) {
+    el.innerHTML = `<div class="crumb">${bc.join("<span class=cs>›</span>")}</div>`
+      + (out > 0 ? `<div class="note">${esc(fmtV(out))} 都不在任何${esc(DIM_ZH[level])}里。</div>` : `<div class="empty">当前筛选下没有数据</div>`);
+    return;
+  }
+  const max = list[0][1] || 1;
+  const zh = {o: originZh, r: runZh, t: taskZh, ro: roleZh}[level];
+  const col = {o: ACCENT, r: "#c98500", t: "#199e70", ro: "#d55181"}[level];
+  let h = `<div class="crumb">${bc.length ? bc.join("<span class=cs>›</span>") + "<span class=cs>›</span>" : ""}${crumbs.join("")}</div>`;
+  for (const [k, v] of list) {
+    const sel = F[level].size && !F[level].has(k) ? " dimm" : "";
+    const hat = level === "ro" && k === "~" ? " hat" : "";
+    const g = level === "r" ? (RUNS[k] || {}) : null;
+    const extra = g ? [g.status ? "控制台报的状态: " + g.status : "", g.grain === "run" ? "运行级: 这个控制台不记会话 id, 分不出角色" : ""] : [];
+    const u = ut.get(k) || 0;
+    const tip = [zh(k) + (u ? " *" : ""), ACCENT + "|" + fmtV(v) + " · 占 " + fmtPct(total ? v / total : 0), ...extra,
+                 u ? "* 含单价未确认的 token (" + fmtTokens(u) + "), 估算或按 $0, 金额不准" : "",
+                 level === "ro" ? "点击只看这个角色" : "点击往下钻一层"];
+    h += `<div class="crow${sel}${hat}" data-f="${level}" data-v="${esc(k)}" data-k="${level}:${esc(enc(k))}"${tipAttr(tip)}>`
+      + `<span class="cl">${esc(zh(k))}${u ? '<span class="warn">*</span>' : ""}</span>`
+      + `<span class="cbar"><i style="width:${(Math.max(0, v) / max * 100).toFixed(1)}%;background:${col}"></i></span>`
+      + `<span class="cv">${esc(fmtV(v))} · ${fmtPct(total ? v / total : 0)}</span></div>`;
+  }
+  if (out > 0) h += `<div class="note">另有 ${esc(fmtV(out))} 不在任何${esc(DIM_ZH[level])}里 (${level === "t" ? "运行开始前 / 任务之间" : "交互会话或未认领的会话"})。</div>`;
+  if (level === "o") {
+    const cons = list.filter(e => String(e[0]).startsWith("console:")).reduce((a, e) => a + e[1], 0);
+    if (total > 0 && cons > 0) h = `<p class="callout">控制台派出的会话占 <b>${fmtPct(cons / total)}</b> 的${isCost() ? "钱" : " token"}</p>` + h;
+  }
   el.innerHTML = h;
 }
 
@@ -1605,6 +1713,7 @@ function renderTables() {
   const hour = grain() === "hour";
   $("#tables").innerHTML = `<div class="tabs">`
     + `<div><h3>按模型</h3>${table(aggBy(rows, r => r.m), "m", {label: m => m + (unpriced(m) ? " (未知单价)" : "")})}</div>`
+    + ((CUBE.origins || []).length > 1 ? `<div><h3>按归属 (交互 / 控制台 / 未认领 sdk)</h3>${table(aggBy(rows, r => r.o), "o", {head: "归属", label: originZh})}</div>` : "")
     + `<div><h3>按来源 (main / subagent / workflow)</h3>${table(aggBy(rows, r => r.s), "s", {label: s => (SRC_ZH[s] || s) + " · " + s})}</div>`
     + `<div><h3>按项目 <span class="muted" style="font-weight:400">↗ 看它的任务回放</span></h3>${table(aggBy(rows, r => r.p), "p", {link: wfLink})}</div>`
     + `<div><h3>按会话</h3>${table(aggBy(rows, r => r.x), "x", {head: "会话", limit: 30, label: x => x.slice(0, 8), extraHead: "<th style=\"text-align:left\">项目</th>", extra: r => `<td class="lbl" style="text-align:left">${esc((SESS[r.label] || {}).p || "?")}</td>`})}</div>`
@@ -1683,6 +1792,7 @@ function render() {
   safe("heat", renderHeat);
   safe("tree", renderTree);
   safe("pareto", renderPareto);
+  safe("cons", renderCons);
   safe("models", renderModels);
   safe("save", renderSave);
   safe("tables", renderTables);
@@ -1700,7 +1810,7 @@ function showError(msg) {
     msg += " —— 切换没成功, 仍显示「" + was + (ST.scope === "main" ? " · 仅主会话" : "") + (ST.vs ? " · 仅 .vscode" : "") + "」的数据";
   }
   $("#foot").innerHTML = `<span class="err">${esc(msg)}</span>`;
-  if (!CUBE) for (const id of ["burn", "comp", "days", "heat", "tree", "pareto", "models", "pdelta"]) { const el = document.getElementById(id); if (el) el.innerHTML = `<div class="empty">${esc(msg)}</div>`; }
+  if (!CUBE) for (const id of ["burn", "comp", "days", "heat", "tree", "pareto", "cons", "models", "pdelta"]) { const el = document.getElementById(id); if (el) el.innerHTML = `<div class="empty">${esc(msg)}</div>`; }
 }
 
 // ---------------------------------------------------------------- 加载 (reqId: 只让最新一次请求作数)
@@ -1716,7 +1826,8 @@ async function load(manual) {
     if (my !== reqId) return;                 // 期间已有更新的请求发出, 本次作废
     document.body.classList.remove("busy");
     if (!d || d.error || !Array.isArray(d.rows)) { showError("出错: " + ((d && d.error) || "数据格式不对")); return; }
-    const sig = JSON.stringify([d.window, d.scope, d.vscode_only, d.rows, d.baseline && d.baseline.rows, d.span && d.span.d1]);
+    const sig = JSON.stringify([d.window, d.scope, d.vscode_only, d.rows, d.baseline && d.baseline.rows, d.span && d.span.d1,
+                                d.sessions, d.origins, d.tasks, d.runs]);
     const same = sig === SIG && !manual;
     ingest(d);
     SIG = sig;
@@ -1794,6 +1905,10 @@ function onClick(e) {
     for (const raw of (b.getAttribute("data-rvs") || "").split(" ").filter(Boolean)) {
       const v = parseVal(dim, decodeURIComponent(raw));
       if (v !== null && F[dim]) F[dim].delete(v);
+    }
+    if (b.hasAttribute("data-rmdeep")) {         // 控制台卡片的面包屑: 回到上一层 = 这一层以下的筛选一起清
+      const ORD = ["o", "r", "t", "ro"], i = ORD.indexOf(dim);
+      if (i >= 0) for (const d of ORD.slice(i + 1)) F[d].clear();
     }
     return render();
   }

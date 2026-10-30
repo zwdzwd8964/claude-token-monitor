@@ -1,10 +1,12 @@
 # 控制台接入 · 迁移规格
 
-> **【状态章 · 2026-10-29】S0 已交付（0.23.0），等你验收；S1–S3 还没开工。** 你在问卷里选了：
+> **【状态章 · 2026-10-29】S0 已验收（0.23.0）· S1 已交付（0.24.0），S2 接着做（S0 之后约好连着做到 S3）。** 你在问卷里选了：
 > **1A** 在 tokmon 里按 S1 → S3 做 · **2A** 用配置文件列出控制台 · **3A** 先按官方价目修 `pricing.py`，控制台改读它。
 > 开工时你又定了几条：S0 也按官方价算 fast mode 和 us 推理；价目快照默认输出到 stdout，`--out` 写文件；`budget.json` 不动，在停顿点提醒你；
 > 超过 260 字符的 transcript 路径（31 个文件，现在读不到）放到 S1 修；S0 之后停一次给你看，S1→S3 连着做；每一刀都提交并推送。
 > S0 和原文不一样的地方，见 §1 表下面的「S0 落地备注」。
+> S1 开工时你又定了三条：B 加白名单 `<runs_dir>/*/agents/*.json`（只取 id / session_id / role / kind 四个键）；A 做到运行级 + 锦标赛精确；
+> E 的自测探针会话标「控制台 E · 自测」。S1 实测和原文不一样的地方，见「S1 落地备注」。
 >
 > 来源：2026-10-29 的会话分析。问题一：「每个项目配一个控制台」值不值。问题二：控制台的数据能不能进 tokmon。数字都是本机实测。
 > **仓库是公开的**：控制台一律用代号 A–E，真实路径和端口只放在 `~/.tokmon/consoles.json`（本机文件，不进版本库，格式见附录 C）；
@@ -24,8 +26,8 @@
 
 | 代号 | 代 | 方言 | session_id → 运行 / 任务 / 角色 的关联键 |
 |---|---|---|---|
-| A | 1 | conductor | 只能靠 cwd + 时间窗，最细到运行级 |
-| B | 2 | missiond | 只能靠 cwd（每个 mission 一个 worktree），最细到运行级 |
+| A | 1 | conductor | 只能靠 cwd（`runs/<运行>/workspace`），最细到运行级；锦标赛 entry / 裁判目录精确到 agent |
+| B | 2 | missiond | `<运行>/agents/<aid>.json` 的 session_id（白名单只取四个键），会话级；没有 json 时按 worktree 目录兜底到运行级 |
 | C | 3 | office（dispatch） | 每次运行的 `state.json` 里 `agents[].spec.session_id` |
 | D | 4 | office | 同 C |
 | E | 5 | office（档案驱动，项目专属内容都在 `profile.yaml`） | 会话台账 `state/sessions.jsonl` + `state.json` |
@@ -67,6 +69,16 @@ transcript 照常写进 `~/.claude/projects`（目前 198 个主会话文件，�
 
 **S1 追加**：所有读 transcript 的地方都要能读超过 260 字符的路径（Windows 长路径前缀）。现在有 31 个 scratchpad 会话文件读不到，它们本来就是 S1 要认领的对象。
 
+**S1 落地备注（0.24.0）**：
+- 新支柱 `tokmon/consoles.py`（只 import stdlib + project）；内核只加了 `UsageRecord.entrypoint`。scratchpad 里的会话在内核里就归父会话的项目（`project.scratchpad_parent` 纯函数 + `load_records` 末尾一遍，不改缓存里的记录）；控制台标签改项目在展示层做（`/api/summary` 与 `/tokens` 同一份）。
+- `/tokens` 的新维度叫「归属」，不叫「来源」：「来源」已经是 main / subagent / workflow。归属 / 运行 / 角色按会话查表（不加宽每一行），任务按记录切（行多了一个键 `t`）。
+- `/sessions` 的行带 `console` 标签；控制台会话按运行折叠，运行那一行给控制台自己报的状态、角色构成、累计 $、控制台链接（不带口令）。「等你」的判断没动，是 S2。
+- 顺手修了：sdk 会话没有人类提问行，任务简报算出「没有任务」却不进缓存，每次刷新都重排队、「还在算」的计数永远下不去。
+- 规格里的 `控制台 E · 自测` 会话归 E 的项目，运行一栏写「自测」，粒度「只认到控制台」，不切任务。
+- 临时目录里还有一类假项目规格没写到：pytest 的临时目录、演练沙盒里起的 sdk 会话，路径里没有线索指向真项目 → 内核里归到「临时目录」（`project.in_temp_dir`），不再按叶子目录名造项目。
+- 判据 ② 对 C 的最近一次运行**不满足**（+2.9%）：分项看是 C 自己的账本输出 token 少记约 62 倍、漏记 31 条响应；D、E 全部 ≤0.4%。钱以 transcript 为准，不受影响；doctor 标 ⚠ 写明原因。
+- 读「会被 rename 覆盖保存」的文件时连 `os.stat` 都不做（它在 Windows 上也会短暂开句柄），签名从目录列表拿。
+
 **S1 判据④ 的基线**（2026-10-29，S0 代码，另起一份 serve，热缓存，各 5 次取中位数）：`/api/tokens/cube?since=7d` 7.2 秒，`since=today` 9.9 秒，`/api/sessions` 0.14 秒；
 冷启动后第一次取 7 天立方 358 秒。热缓存的数字抖得厉害（同一接口 5.4–13.3 秒，后台各 pump 在同时扫描），S1 对比时用同样的方法、取中位数。
 
@@ -79,7 +91,7 @@ tokmon 改成读清单，配置文件里只列控制台的根目录。
 |---|---|---|
 | 接入方式 | 只读文件适配器，**不改任何控制台**，不轮询控制台的 HTTP 接口 | 控制台没开也能看历史；碰不到它的口令 |
 | 发现方式 | 在 `~/.tokmon/consoles.json` 里显式列出（选项 2A） | 不自动扫描 `.vscode`；新增控制台时手工加一行 |
-| 读哪些文件 | 白名单：`<runs_dir>/*/events.jsonl`、`<runs_dir>/*/state.json`，以及会话台账 | **绝不读** `state/console.token` 这类 `*.token` 文件，也不读 `daemon.log` 和 `agents/*.jsonl` |
+| 读哪些文件 | 白名单：`<runs_dir>/*/events.jsonl`、`<runs_dir>/*/state.json`、会话台账，以及 B 的 `<runs_dir>/*/agents/*.json`（只取四个键，2026-10-29 你加的） | **绝不读** `state/console.token` 这类 `*.token` 文件，也不读 `daemon.log` 和 `agents/*.jsonl`（测试断言从没打开过）。控制台用「写临时文件再 rename 覆盖」保存的文件（`state.json`、agents json），**最后一次修改后安静 5 秒才读**、一次读完立刻关：Windows 上有人拿着句柄，控制台的 rename 就会失败（实测连共享删除打开的也挡；C 不重试） |
 | 钱 | token 和 $ 只有一个来源：transcript → `UsageRecord` → `pricing.py`（I3、I4） | 控制台自己记的 usage 和 $ 只用在 doctor 对账里 |
 | 控制台的价目 | 由 tokmon 导出价目快照，控制台改成读它（选项 3A） | 控制台那边的改动在各自项目里做，不在本仓库 |
 | 内核改动 | `UsageRecord` 只加 `entrypoint`（这是 transcript 里本来就有的事实） | 控制台标签不进内核，在展示层按 session_id 关联（P4、I6） |
@@ -102,8 +114,8 @@ tokmon 改成读清单，配置文件里只列控制台的根目录。
 |---|---|---|---|---|
 | 运行状态 | `session.status`.status：running / idle / closing / stopping / restored / waiting_quota | `run.started` / `run.finished` | `mission.state`.state：starting / planning / running / waiting / finishing / idle | S2 |
 | 任务 | `task.started` / `task.finished`（`status` 字段：done、partial 等） | 同左 | 同左 | S1 / S2 |
-| 角色 | `agent.spawned`（name / role / kind / model / cwd） | `agent.spawned` | 待核（S1 开工时先列出全部类型） | S1 |
-| 用量 | `usage`（model / input / output / cache_read / cache_write / cost） | `usage`（**这一代记多了，不可信**） | 没有 | S3 对账 |
+| 角色 | `state.json` 的 `agents[].spec.kind`（E 另有 shell；`spec.critic` 为真记成 critic） | `agent.spawned` 的 kind（锦标赛 competitor / judge） | `agents/<aid>.json` 的 kind；中控是 `conductor` | S1 |
+| 用量 | `usage`（逐次响应；`reconciled` 是只补钱的行，token 全 0；`agent_cost` / `total_cost` 是累计，别加） | `usage`（逐次调用的真值；但 **A 正常收尾会删掉自己的 transcript**，只剩被杀掉的运行，所以对不上账） | 没有（只在 agents json 里有累计数） | S3 对账 |
 | 额度 | `quota`：`data.windows.five_hour` / `seven_day` 下的 `.utilization`、`.resets_at` | `quota` | `quota.reading`：`data.five_hour` / `seven_day` 是小数 | S3 |
 | 工单 | `ticket.opened`（id / kind / questions）→ `ticket.answered`（同一个 id） | 无 | `question.asked`（question_id / why_blocking）→ `question.answered` | S2 |
 | 停泊 | `agent.parked`（reason / until）、`quota.park` | 无 | `agent.parked`（reason） | S2 |
@@ -115,10 +127,10 @@ tokmon 改成读清单，配置文件里只列控制台的根目录。
 
 | 代 | 首选 | 兜底 / 粒度 |
 |---|---|---|
-| E | 会话台账 `state/sessions.jsonl`：session_id / task（全局编号 T<n>）/ role / agent / cwd / pid / model | 各运行的 `state.json`；会话级 |
-| C、D | `runs/<id>/state.json` 的 `agents[].spec.session_id`（以及 spec.id / kind / role） | 任务号是运行内的序号；会话级 |
-| B | transcript 的 cwd 在 `<项目>/worktrees/<YYYYMMDD-HHMMSS>-…` 下 → 找时间戳相同的 mission 目录；`--aNN` 后缀是 agent 序号 | 运行级；worktree 名可能被截断，**只比较开头的时间戳** |
-| A | transcript 的 cwd 在 `<项目>/runs/<运行 id>/…` 下 → 就是这次运行；cwd 是项目根的 `sdk-py` 会话按时间窗落到对应运行 | 运行级 |
+| E | 会话台账 `state/sessions.jsonl`：session_id / task（全局编号 T<n>）/ role / agent / shell。T<n> → 运行靠各运行 state.json 的 requests / tasks / tnums。台账里 role=`probe:*`、task 不是 T<n> 的是自测探针 → 「自测」 | `state.json` 的当前会话 + `agent.successor` 的 from/to（中控换代）；会话级。**`intake.foreign_session` 里的是别人的会话，不认** |
+| C、D | `runs/<id>/state.json` 的 `agents[].spec.session_id`（以及 spec.id / kind） | 会话级；任务按记录时间切：C 看 `dispatches`、D/E 看 `assignments` 的派活窗口，中控按「最近一个已开始的任务」 |
+| B | `<运行>/agents/<aid>.json` 的 session_id（白名单只取四个键） | 没有 json：transcript 的 cwd 在 `worktrees/<mission>[--aNN]/…` 下，段名去掉 `--aNN` 后**必须和运行目录名完全一致**（slug 本身可能以时间戳开头，不能只比开头）→ 运行级 |
+| A | transcript 的 cwd 在 `<runs_dir>/<运行>/workspace/…` → 这次运行（运行级）；`…/tournaments/tN/entry_X` → 那名选手、`…/tournaments/tN` → 裁判（会话级）；`00000000-*` 是界面样例，不算 | cwd 是项目根的 `sdk-py` 会话：实测没有，不做时间窗 |
 
 ## 4. 落位（tokmon 这一侧）
 
@@ -141,7 +153,8 @@ tokmon 改成读清单，配置文件里只列控制台的根目录。
 - $ 仍然是等价用量价值。S0 之后所有金额整体下降（主会话约为原来的 0.63 倍），**这是价目修正，不是用得少了**。
   tokmon 没有持久化、每次全量重扫，所以历史数字会自动按新价目重算。下游有一个只读 import tokmon 的复盘项目，它的数字也会跟着变，需要它自己把口径版本加 1。
 - 额度读数只在有控制台运行时才有，来自 SDK 的 RateLimitEvent。读数反映的是**整个订阅账户**的窗口，不只是这个控制台的用量；控制台没在跑的时候，不去推测额度。
-- A 和 B 只能做到运行级归属，页面上标「运行级」。
+- A 只能做到运行级（锦标赛的选手 / 裁判除外），页面上标「运行级」；B 加了 agents json 的白名单以后是会话级。
+- A 正常收尾会删掉自己的 transcript：tokmon 看不到 A 收尾了的运行花了多少（只有被杀掉的运行留下来）。
 - 「搭控制台」本身的花费按 cwd 分不出来：交互会话是在项目根启动的，只是改了控制台目录下的文件。S1 不处理；如果要做，用工具调用里的写入路径来归因，另开一刀。
 - 修价不只影响主会话，子 agent 和 workflow 的记录同样按新价目重算。
 
@@ -159,7 +172,7 @@ tokmon 改成读清单，配置文件里只列控制台的根目录。
 | 项 | 实测 |
 |---|---|
 | `sdk-py` 主会话 | 198 个文件，约占主会话 token 的 13% |
-| 控制台自记 token vs transcript | C、D、E 相差 ≤0.6%；A 自记的约为 transcript 的 **9.3 倍**；B 不记 usage |
+| 控制台自记 token vs transcript | C、D、E 相差 ≤0.6%；A 自记的约为 transcript 的 **9.3 倍**——S1 查明不是记多了，是 A 正常收尾时删掉了自己的 transcript（只剩一次被杀掉的运行，那一次逐 agent 对得上 ±5%）；B 不记 usage。S1 复测（按会话精确归属）：D、E 每次运行 ≤0.4%，C 最近一次运行 +2.9%（C 的账本输出 token 少记、漏记 31 条响应，见 CHANGELOG 0.24.0） |
 | 修价影响（主会话，按 transcript 逐条重算） | 合计 ×0.63 · Opus 5.5 ×0.56 · Fable 5.1 ×0.55 · Sonnet 5.5 ×0.56 · Haiku 5.5 ×0.10 · Opus 5 / 4.x ×1.00；控制台会话 ×0.56，交互会话 ×0.64 |
 | 控制台价目表 vs 官方 | 基础价是对的；但缓存写一律按 5 分钟的价格算，而 Claude Code 几乎只写 1 小时缓存（见 [CONTEXT_COST_PLAN.md](CONTEXT_COST_PLAN.md)），所以 Opus 5.5 的缓存写少算 37.5%；Sonnet 5.5 的缓存读按 0.1 倍算（官方是 0.05 倍）；没有 Haiku 5.5 的 10 万阶梯 |
 | 问题一（交互项目 vs 控制台项目，比例） | 你每发一条指令，agent 干活的时长约为原来的 3 倍；每条指令让 agent 停下来等你的时长约为原来的 1/3；每生成 1 个 token 要读入的上下文从 275 降到 151（控制台自动化部分）；控制台时期的交互花费里，约 72% 用在搭建和修补控制台上（按最贵的 22 题人工归类，旧价目口径） |

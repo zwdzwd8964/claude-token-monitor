@@ -1,0 +1,47 @@
+{
+ "version": 1,
+ "consoles": [
+  {
+   "code": "A",
+   "name": "甲",
+   "dialect": "conductor",
+   "generation": 1,
+   "project_root": "{root}/vscode/proj-a",
+   "runs_dir": "{root}/conductor/runs",
+   "join": "cwd_run",
+   "url": "http://127.0.0.1:9001/"
+  },
+  {
+   "code": "B",
+   "name": "乙",
+   "dialect": "missiond",
+   "generation": 2,
+   "project_root": "{root}/vscode/proj-b",
+   "runs_dir": "{root}/missiond/runs",
+   "worktrees_dir": "{root}/missiond/worktrees",
+   "join": "cwd_worktree",
+   "url": ""
+  },
+  {
+   "code": "C",
+   "name": "C",
+   "dialect": "office",
+   "generation": 3,
+   "project_root": "{root}/vscode/proj-c",
+   "runs_dir": "{root}/office/runs_c",
+   "join": "state_json"
+  },
+  {
+   "code": "E",
+   "name": "戊",
+   "dialect": "office",
+   "generation": 5,
+   "project_root": "{root}/vscode/proj-e",
+   "runs_dir": "{root}/office/runs_e",
+   "state_dir": "{root}/office/state",
+   "registry": "{root}/office/state/sessions.jsonl",
+   "join": "registry",
+   "url": "http://127.0.0.1:9005/"
+  }
+ ]
+}

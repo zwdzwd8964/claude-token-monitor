@@ -31,3 +31,24 @@ def test_pages_with_header_get_the_shared_nav():
 def test_serve_does_not_inline_pages_again():
     src = Path(serve.__file__).read_text(encoding="utf-8").lower()
     assert '"""<!doctype html>' not in src                           # 新页面放 tokmon/pages/, 别再内联进 serve.py
+
+
+@pytest.mark.skipif(__import__("shutil").which("node") is None, reason="没装 node")
+@pytest.mark.parametrize("const,fn", LOADED)
+def test_every_page_inline_script_parses(const, fn, tmp_path):
+    """每个页面的内联脚本都得是合法 JS (S1 开发时一次补丁把字符串里的转义写成了真换行, 页面整页白屏 —— 这个测试之前没有)。"""
+    import json
+    import re
+    import subprocess
+    page = getattr(serve, const)
+    scripts = [m.group(1) for m in re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", page, re.S)]
+    if not scripts:
+        pytest.skip(f"{fn} 没有内联脚本")
+    src = tmp_path / "scripts.json"
+    src.write_text(json.dumps(scripts), encoding="utf-8")
+    js = ("const s = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));"
+          "let bad = []; s.forEach((c, i) => { try { new Function(c); } catch (e) { bad.push(i + ': ' + e.message); } });"
+          "console.log(JSON.stringify(bad));")
+    out = subprocess.run(["node", "-e", js, str(src)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip().splitlines()[-1]) == [], f"{fn}: {out.stdout}"

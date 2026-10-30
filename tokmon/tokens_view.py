@@ -30,13 +30,15 @@ from .pricing import (
 )
 from .pricing import cost_parts as _price_parts
 
-# 行 = 7 个键 + 18 个量。列名随响应下发 (`cols`), 前端按名取, 不靠位置。
-KEY_COLS = ["e", "d", "h", "p", "m", "s", "x"]
+# 行 = 8 个键 + 18 个量。列名随响应下发 (`cols`), 前端按名取, 不靠位置。
+# t = 任务 (控制台派出的会话才有; 一个会话常跨好几个任务, 所以按记录切, 不能放进会话表) -> tasks[] 的下标, -1 = 无
+KEY_COLS = ["e", "d", "h", "p", "m", "s", "x", "t"]
 VAL_COLS = ["n", "in", "out", "cr", "cw", "ws", "wf", "c", "ci", "co", "ccw", "ccr", "ct", "un", "ut", "tx", "rb", "rn"]
 COLS = KEY_COLS + VAL_COLS
 _COST_COLS = {"c", "ci", "co", "ccw", "ccr", "ct", "tx", "rb"}
 REBUILD_MIN_CTX = 20_000      # 太小的上下文不算重建 (与回测口径一致)
 SOURCES = ["main", "subagent", "workflow"]      # 固定顺序 -> 前端配色稳定
+ORIGIN_INTERACTIVE, ORIGIN_UNCLAIMED = "interactive", "unclaimed"   # 归属: 交互 / 控制台:<代号> / 未认领的 sdk 会话
 
 
 def cost_parts(rec) -> tuple[float, float, float, float, float]:
@@ -85,15 +87,15 @@ def savings_marks(records) -> dict:
     return marks
 
 
-def _group(records, marks: dict | None = None) -> dict:
-    """(epoch 小时, 本地日期, 本地小时, 项目, 模型, 来源, 会话) -> 18 个量。"""
+def _group(records, marks: dict | None = None, task_of=None) -> dict:
+    """(epoch 小时, 本地日期, 本地小时, 项目, 模型, 来源, 会话, 任务) -> 18 个量。"""
     marks = marks or {}
     out: dict[tuple, list] = {}
     for r in records:
         ts = r.timestamp
         # 末位按「单价是否确认」再分一刀 (不下发): 同一格里确认 / 未确认的不混在一行, 前端按行算单价时分子分母都精确
         k = (int(ts.timestamp() // 3600), ts.date(), ts.hour, r.project, r.model, r.source_kind, r.session_id,
-             bool(r.known_price))
+             task_of(r) if task_of is not None else "", bool(r.known_price))
         a = out.get(k)
         if a is None:
             a = out[k] = [0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0]
@@ -128,8 +130,73 @@ def _rank(records, keyfn, score) -> list:
     return sorted(g, key=lambda k: (-score(g[k]), str(k)))
 
 
-def build(rows, prev_rows, all_records) -> dict:
+def session_origins(records, labels=None) -> dict:
+    """会话 -> (归属, 控制台标签或 None)。会话在这批记录里第一次出现时的 (cwd, entrypoint) 交给控制台标签认
+    (A 只能按 cwd 认); 认不出的 sdk-* 会话 = 未认领, 其余 = 交互。labels: consoles.Snapshot 或任何有 .label() 的对象。
+    「第一次出现」按记录的顺序 (= 文件顺序: 主会话文件在它的子 agent 文件前面, 文件里按时间), 不逐条比时间 (省一遍整表)。"""
+    first: dict = {}
+    for r in records:
+        if r.session_id not in first:
+            first[r.session_id] = (None, r.cwd, r.entrypoint)
+    out = {}
+    for sid, (_t, cwd, ep) in first.items():
+        lab = labels.label(sid, cwd, ep) if labels is not None else None
+        if lab is not None:
+            out[sid] = ("console:" + lab.console, lab)
+        elif (ep or "").startswith("sdk"):
+            out[sid] = (ORIGIN_UNCLAIMED, None)
+        else:
+            out[sid] = (ORIGIN_INTERACTIVE, None)
+    return out
+
+
+def console_projects(records, labels=None) -> list:
+    """控制台标签修正项目归属 (E 的自测探针在临时目录里跑, 按 cwd 会变成假项目): 只换掉要改的那几条 (副本),
+    缓存里的记录不动。/api/summary 与 /tokens 用同一份, 两边按项目的合计才对得上。
+
+    - 「在 .vscode 下」跟着项目走 (控制台的项目根在 .vscode 下就算), 「仅 .vscode」筛选才不会把改过项目的会话筛掉;
+    - 在控制台会话的 scratchpad 里跑的子会话也跟着父会话的控制台项目 (最多往上找 5 层, 与 /sessions 同一条规则)。"""
+    if labels is None or not getattr(labels, "labels", None) and not getattr(labels, "_cwd_rules", None):
+        return records
+    from dataclasses import replace
+
+    from .project import scratchpad_parent
+    fix = {}
+    for sid, (_o, lab) in session_origins(records, labels).items():
+        if lab is not None and lab.project:
+            con = labels.console(lab.console) if hasattr(labels, "console") else None
+            fix[sid] = (lab.project, bool(con and con.under_anchor))
+    if not fix:
+        return records
+    up: dict = {}                                          # scratchpad 子会话 -> 父会话
+    memo: dict = {}
+    for r in records:
+        if r.session_id in up or not r.cwd:
+            continue
+        ref = memo.get(r.cwd, 0)
+        if ref == 0:
+            ref = memo[r.cwd] = scratchpad_parent(r.cwd)
+        if ref is not None:
+            up[r.session_id] = ref.parent_session_id
+    for sid in list(up):
+        if sid in fix:
+            continue                                       # 自己有标签的, 以自己的为准
+        cur = sid
+        for _ in range(5):
+            cur = up.get(cur)
+            if cur is None:
+                break
+            if cur in fix:
+                fix[sid] = fix[cur]
+                break
+    return [replace(r, project=fix[r.session_id][0], subpath="", under_vscode=fix[r.session_id][1])
+            if r.session_id in fix and (r.project, r.under_vscode) != fix[r.session_id] else r
+            for r in records]
+
+
+def build(rows, prev_rows, all_records, labels=None) -> dict:
     """纯函数: 当前窗记录 + 上一周期记录 (可为 None) + 本次加载的全部记录 -> 立方 dict。
+    labels (可选): 控制台标签 (consoles.Snapshot) —— 会话的归属 / 运行 / 角色, 记录的任务。
 
     维度字典的顺序:
     - projects / sessions: 当前窗成本降序, 只在上一周期出现的排在后面 (索引只在本次响应内有效,
@@ -138,8 +205,19 @@ def build(rows, prev_rows, all_records) -> dict:
       (「颜色跟着实体走, 不跟排名走」); 同时给出 `priced` (单价是否已知)。
     """
     marks = savings_marks(all_records)             # 重建要看窗口外的上一轮 -> 在全部记录上判
-    cur = _group(rows, marks)
-    prev = _group(prev_rows, marks) if prev_rows is not None else {}
+    origins = session_origins(list(rows) + list(prev_rows or []), labels)
+
+    def task_of(r) -> str:
+        o = origins.get(r.session_id)
+        lab = o[1] if o else None
+        if lab is None or lab.grain == "console" or not lab.run:
+            return ""
+        tk = labels.task_of(lab, r.timestamp.timestamp())
+        return f"{lab.console}/{lab.run}/{tk}" if tk else ""
+
+    tf = task_of if labels is not None else None
+    cur = _group(rows, marks, tf)
+    prev = _group(prev_rows, marks, tf) if prev_rows is not None else {}
 
     cur_cost = group_by(rows, lambda r: r.project)
     prev_cost = group_by(prev_rows or [], lambda r: r.project)
@@ -184,14 +262,47 @@ def build(rows, prev_rows, all_records) -> dict:
     mi = {m: i for i, m in enumerate(models)}
     si = {s: i for i, s in enumerate(SOURCES)}
     xi = {x: i for i, x in enumerate(sessions)}
+    tasks = sorted(({k[7] for k in cur} | {k[7] for k in prev}) - {""})
+    ti = {t: i for i, t in enumerate(tasks)}
+
+    # 归属 (固定顺序 -> 前端配色稳定): 交互, 控制台 A..E, 未认领 sdk —— 只列这一包里出现的
+    present = {origins[x][0] for x in sessions if x in origins}
+    olist = ([ORIGIN_INTERACTIVE] if ORIGIN_INTERACTIVE in present else []) \
+        + sorted(o for o in present if o.startswith("console:")) \
+        + ([ORIGIN_UNCLAIMED] if ORIGIN_UNCLAIMED in present else [])
+    oi = {o: i for i, o in enumerate(olist)}
+    run_ids: dict = {}
+    for x in sessions:
+        lab = origins.get(x, (None, None))[1]
+        if lab is not None and lab.run:
+            rid = f"{lab.console}/{lab.run}"
+            g = run_ids.setdefault(rid, {"id": rid, "code": lab.console, "run": lab.run, "grain": lab.grain})
+            if lab.grain == "run":
+                g["grain"] = "run"
+    for g in run_ids.values():
+        info = getattr(labels, "runs", {}).get((g["code"], g["run"])) if labels is not None else None
+        g["status"] = info.status if info is not None else ""
+    rlist = sorted(run_ids)
+    ri = {r: i for i, r in enumerate(rlist)}
+
+    def sess_entry(x: str) -> dict:
+        e = {"id": x, "p": proj_of(x), "t0": round(span[x][0], 3), "t1": round(span[x][1], 3)}
+        o, lab = origins.get(x, (ORIGIN_INTERACTIVE, None))
+        e["o"] = oi.get(o, -1)
+        if lab is not None:
+            e["r"] = ri.get(f"{lab.console}/{lab.run}", -1) if lab.run else -1
+            e["ro"] = lab.role or "~"                  # ~ = 运行级, 分不出角色
+            e["ag"] = lab.agent
+            e["g"] = lab.grain
+        return e
 
     def encode(groups: dict) -> list:
         out = []
-        for k in sorted(groups, key=lambda k: (k[0], k[1], k[2], pi[k[3]], mi[k[4]], k[5], xi[k[6]], k[7])):
+        for k in sorted(groups, key=lambda k: (k[0], k[1], k[2], pi[k[3]], mi[k[4]], k[5], xi[k[6]], k[7], k[8])):
             src = k[5] if k[5] in si else "main"      # 未知来源归 main 兜底 (discover 只产出这三种)
             vals = groups[k]
             enc = [round(v, 10) if VAL_COLS[j] in _COST_COLS else v for j, v in enumerate(vals)]
-            out.append([k[0], di[k[1]], k[2], pi[k[3]], mi[k[4]], si[src], xi[k[6]]] + enc)
+            out.append([k[0], di[k[1]], k[2], pi[k[3]], mi[k[4]], si[src], xi[k[6]], ti.get(k[7], -1)] + enc)
         return out
 
     def proj_of(sid: str) -> int:
@@ -207,8 +318,12 @@ def build(rows, prev_rows, all_records) -> dict:
         "models": [{"id": m, "priced": rates(m).known and m not in unconfirmed, "rank": mpos.get(m, len(mpos)),
                     "cr": _cr_mult(m)} for m in models],
         "sources": list(SOURCES),
-        "sessions": [{"id": x, "p": proj_of(x), "t0": round(span[x][0], 3), "t1": round(span[x][1], 3)}
-                     for x in sessions],
+        "sessions": [sess_entry(x) for x in sessions],
+        "origins": olist,
+        "runs": [run_ids[r] for r in rlist],
+        "tasks": tasks,
+        "consoles": [{"code": c.code, "name": c.name, "url": c.url}
+                     for c in (getattr(labels, "consoles", None) or [])],
         "rows": encode(cur),
         "prev_rows": encode(prev) if prev_rows is not None else None,
         # 页面解释「缓存读 = input 单价 × 0.05」时用的倍率 —— 从 pricing.py 读, 前端不再写死一份 (I3 定价集中)。
@@ -218,7 +333,6 @@ def build(rows, prev_rows, all_records) -> dict:
                  "ws": WEB_SEARCH_USD_PER_REQUEST},
         "save": {"line": TAX_LINE},                  # 省钱卡片的参考线, 前端不另写一份
     }
-
 
 
 def _cr_mult(model):

@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import os
 import json
 import time
 from collections import Counter
@@ -24,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import activity
-from .discovery import discover
+from .discovery import discover, fs_path
 from .util import term_text
 
 _EPS = 1.0                 # 评估时刻取 successor 到达前最后一刻
@@ -153,12 +154,12 @@ def _danger(pred: str, truth: str):
 def _read_messages(path: Path, days: int, now: float, max_bytes: int = 8_000_000):
     """独立窗口读取: 近 days 天的有序 (ts, obj) 消息列表 (只 assistant|user)。内存有界 (只读尾部 max_bytes)。"""
     try:
-        size = path.stat().st_size
+        size = os.stat(fs_path(path)).st_size
     except OSError:
         return []
     cutoff = now - days * 86400
     try:
-        with open(path, "rb") as f:
+        with open(fs_path(path), "rb") as f:
             if size > max_bytes:
                 f.seek(size - max_bytes)
                 data = f.read()

@@ -73,6 +73,14 @@
   .evrow.info .evt { color:var(--dim); } .evrow.warning .evt { color:var(--warn); } .evrow.critical .evt { color:var(--bad); }
   .evtime { color:var(--dim); } .evdet { color:var(--dim); } .evproj { opacity:.85; }
   footer { padding:14px 24px; color:var(--dim); font-size:12px; border-top:1px solid var(--line); }
+  /* 控制台的运行 (CONSOLES_PLAN S1): 一次运行一行, 它派出的会话折叠在下面 */
+  .runrow { border-left-style:double; border-left-width:4px; }
+  .runhead { cursor:pointer; } .runhead:hover .title { text-decoration:underline; }
+  .rtog { color:var(--dim); font-size:12px; width:12px; display:inline-block; }
+  .kids { display:flex; flex-direction:column; gap:6px; margin:7px 0 0 18px; }
+  .kids[hidden] { display:none; }   /* 上面的 display:flex 会盖掉浏览器默认的 [hidden] —— 不写这一行, 收起就没用 */
+  .cchip { font-size:11.5px; border:1px solid var(--line); border-radius:6px; padding:0 6px; color:var(--dim); white-space:nowrap; cursor:help; }
+  .cchip.grain { border-style:dashed; }
 </style></head>
 <body>
 <header>
@@ -195,6 +203,11 @@ function evChip(e){
 }
 
 let DATA=null, reqId=0;
+const RKEY='mc_sess_runs_open';
+let OPEN=new Set();                               // 展开着的运行 ("代号:运行"); 记在本机, 刷新不收起
+try { OPEN=new Set(JSON.parse(localStorage.getItem(RKEY)||'[]')); } catch(e) {}
+function toggleRun(k){ if(OPEN.has(k)) OPEN.delete(k); else OPEN.add(k); try{ localStorage.setItem(RKEY, JSON.stringify([...OPEN])); }catch(e){} render(); }
+const runKey = s => s.console ? s.console.code+':'+s.console.run : null;
 async function load(){
   const my=++reqId;
   try{
@@ -265,7 +278,7 @@ function render(){
     if(nullExcl) extra+=` · <span class="muted">另有 ${nullExcl} 个会话时间读不出, 已被时间窗排除</span>`;
     fbar=`<div class="fbar"><b>过滤中</b>：${bits.join(' · ')} <span class="muted">显示 ${rows.length}/${d.sessions.length}</span>${extra} <button id="clearf" class="clearbtn">清除全部过滤</button></div>`;
   }
-  const body = rows.map(s=>{
+  const rowHtml = s=>{
     const cls=CLS[s.state]||'unk';
     const idleBadge = (s.state==='AWAITING_USER'&&s.idle) ? '<span class="idle" title="Claude 已回复你, 超过 10min 没人接话 —— 你欠它一句话">等你已久</span>' : '';
     const wf = s.workflow, live = s.state==='WORKING'||s.state==='PROCESSING'||s.state==='BLOCKED_ON_USER';
@@ -297,6 +310,14 @@ function render(){
     const titleText = s.title || s.project;                 // 标题为主, 无标题回退项目名
     const metaBits = [];
     if(s.title) metaBits.push(esc(s.project)+(s.subpath?' /'+esc(s.subpath):''));   // 有标题时项目名降为辅
+    if(s.console){
+      const L=s.console;
+      metaBits.push(`<span class="cchip" title="${esc('控制台 '+L.code+' 派出的会话'+(L.grain==='session'?'（精确到会话）':(L.grain==='run'?'（只认到这次运行，分不出角色）':''))+'\n运行 '+L.run)}">${esc((L.role||'?')+(L.agent?' · '+L.agent:''))}</span>`);
+    } else if (s.project_source==='temp') {
+      metaBits.push(`<span class="cchip" title="${esc('这个会话在系统临时目录里跑（测试的临时目录 / 演练沙盒），路径里没有线索指向真项目，归到「临时目录」。')}">临时目录</span>`);
+    } else if (s.project_source==='scratchpad') {
+      metaBits.push(`<span class="cchip" title="${esc('这个会话在另一个会话的 scratchpad 目录里跑（测试 / 子进程）。项目按父会话算。\n父会话 '+(s.parent_session_id||''))}">scratchpad</span>`);
+    }
     if(s.git_branch) metaBits.push(esc(s.git_branch));
     if(s.model) metaBits.push(esc(s.model));
     if(wf && wf.tokens) metaBits.push(`本任务 ${wf.partial?'≥ ':''}${fmtTok(wf.tokens)} tok`+(wf.active!=null?` · 活跃 ${esc(fmtDur(wf.active)||'0s')}`:'')
@@ -318,6 +339,43 @@ function render(){
       ${step?`<div class="step">${step}</div>`:''}
       ${evs?`<div class="events">${evs}</div>`:''}
     </div>`;
+  };
+  // 控制台派出的会话按运行折叠: 运行那一行放在它最急的子会话本来的位置 (行已按状态排好序)
+  const runHtml = (k, g, kids)=>{
+    g = g || {};
+    const top = kids[0], cls = CLS[top.state]||'unk', blk = top.state==='BLOCKED_ON_USER' ? ' blk' : '';
+    const open = OPEN.has(k);
+    const total = (g.sessions||[]).length || kids.length;          // 整次运行的会话数 (不随筛选变)
+    const cnt = kids.length < total ? kids.length+'/'+total : String(kids.length);
+    const roles = Object.entries(g.roles||{}).sort((a,b)=>b[1]-a[1]).map(([r,n])=>esc(r)+(n>1?'×'+n:'')).join(' · ');
+    const age = Math.min(...kids.map(x=>x.last_activity_age_s==null?1e12:x.last_activity_age_s));
+    const name = (g.name && g.name!==g.code) ? ' · '+esc(g.name) : '';
+    const runTxt = g.run==='自测' ? '自测会话（搭控制台时的探针）' : esc(g.run||'');
+    const st = g.status ? `<span class="cchip" title="${esc('控制台自己报的这次运行的状态（原样显示；「等你」的判断在下一刀做）')}">${esc(g.status)}</span>` : '';
+    const grain = g.grain==='run' ? `<span class="cchip grain" title="${esc('这个控制台不记会话 id：只认得出是哪次运行，分不出是哪个角色')}">运行级</span>` : '';
+    const link = g.url ? `<a class="wfl" href="${esc(g.url)}" target="_blank" rel="noopener" title="打开控制台页面（链接里不带口令）">控制台 →</a>` : '';
+    const money = g.tokens ? `<span class="money" title="${esc('整次运行（全部 '+total+' 个会话，不随筛选变）的累计等价成本（估算，不是账单）：transcript 的 usage 真值 × 公开单价\n'+fmtTok(g.tokens)+' tok'+(g.unpriced?'\n含单价未确认的模型（估算或按 $0），金额不准':''))}">≈${fmtUsd(g.cost)}${g.unpriced?'*':''}</span>` : '';
+    return `<div class="row runrow ${cls}${blk}" data-run="${esc(k)}">
+      <div class="r1 runhead" data-run="${esc(k)}">
+        <span class="rtog">${open?'▾':'▸'}</span>
+        <span class="title">控制台 ${esc(g.code||'')}${name} · ${runTxt}</span>
+        <span class="sb ${cls}${blk}" title="${esc('子会话里最需要你看的那个: '+(top.state_label||'')+(kids.length<total?'\n筛选后显示 '+kids.length+' 个，整次运行共 '+total+' 个':''))}">${cnt} 个会话 · ${esc(top.state_label||'')}</span>
+        ${st}${grain}${link}
+        ${money}<span class="age"${money?'':' style="margin-left:auto"'}>${fmtAgo(age>=1e12?null:age)}</span>
+      </div>
+      <div class="meta2">${esc(g.project||'')}${roles?' · '+(kids.length<total?'整次运行: ':'')+roles:''}${g.tasks?' · '+g.tasks+' 个任务':''}</div>
+      <div class="kids"${open?'':' hidden'}>${kids.map(rowHtml).join('')}</div>
+    </div>`;
+  };
+  const groups = new Map();
+  rows.forEach(s=>{ const k=runKey(s); if(k){ if(!groups.has(k)) groups.set(k, []); groups.get(k).push(s); } });
+  const done = new Set();
+  const body = rows.map(s=>{
+    const k = runKey(s);
+    if(!k) return rowHtml(s);
+    if(done.has(k)) return '';
+    done.add(k);
+    return runHtml(k, (d.runs||{})[k], groups.get(k));
   }).join('');
   // 无 filter 生效时才用旧的低调 note (被隐藏"等你已久"/文本不匹配); 有 filter 时上面的 fbar 已醒目说清
   const pendNote = d.briefs_pending ? `<div class="meta" style="margin:6px 0">⏳ 还有 ${d.briefs_pending} 个会话的当前任务在后台计算（服务刚启动时会这样，大会话要多等一会儿），算好后下次刷新就出现花费与风险角标。</div>` : '';
@@ -340,6 +398,8 @@ function focusHash(){
   if(!h.startsWith('s-') || h===hashDone) return;
   const el=document.getElementById(h);
   if(!el) return;
+  const box=el.closest('.kids[hidden]');
+  if(box){ const k=box.parentElement.dataset.run; if(k && !OPEN.has(k)){ OPEN.add(k); render(); return; } }   // render 末尾会再进来一次
   hashDone=h; el.scrollIntoView({block:'center'}); el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'), 2400);
 }
 window.addEventListener('hashchange', focusHash);
@@ -356,6 +416,7 @@ $('#refresh').addEventListener('click', tickAll);
 // 事件委托挂在稳定容器上 (pill/chip 每帧重建, 委托不受影响; 选中态从 FILTERS 恢复 §3.1)
 $('#app').addEventListener('click', e=>{
   const pl=e.target.closest('.pill.clk'); if(pl){ toggleState(pl.dataset.st); return; }
+  const rh=e.target.closest('.runhead'); if(rh && !e.target.closest('a')){ toggleRun(rh.dataset.run); return; }
   if(e.target.closest('#clearf')){ clearFilters(); }
 });
 $('#projchips').addEventListener('click', e=>{ const ch=e.target.closest('.chip'); if(ch) toggleProject(ch.dataset.proj); });

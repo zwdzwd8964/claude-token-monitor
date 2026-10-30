@@ -1,0 +1,11 @@
+{
+ "id": "conductor",
+ "kind": "conductor",
+ "role": "conductor",
+ "session_id": "00000000-0000-4000-8000-0000000000b0",
+ "assignment": "不该被读出来",
+ "last_text": "不该被读出来",
+ "usage": {
+  "input": 1
+ }
+}

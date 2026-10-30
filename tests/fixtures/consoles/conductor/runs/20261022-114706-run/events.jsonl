@@ -1,0 +1,5 @@
+{"seq": 0, "ts": 100.0, "type": "run.started", "agent": null, "data": {"task": "x", "title": "x", "run_dir": "x"}}
+{"seq": 1, "ts": 110.0, "type": "task.started", "agent": null, "data": {"index": 1, "title": "t", "task": "x"}}
+{"seq": 2, "ts": 150.0, "type": "tournament.started", "agent": "conductor", "data": {"tid": "t1", "entries": {"entry_A": "e01", "entry_B": "e02"}, "judge_ids": ["j01"]}}
+{"seq": 3, "ts": 400.0, "type": "task.finished", "agent": null, "data": {"index": 1, "status": "done", "requirement_check": [{"status": "met"}]}}
+{"seq": 4, "ts": 500.0, "type": "run.finished", "agent": null, "data": {"status": "done"}}

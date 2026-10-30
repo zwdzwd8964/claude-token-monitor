@@ -19,13 +19,14 @@
 
 from __future__ import annotations
 
+import os
 import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import activity
-from .discovery import discover
+from .discovery import discover, fs_path
 from .util import term_text
 
 # activity 状态机 / 尾读实际依赖或认识的东西 (其余即"未知类型" = 漂移信号)
@@ -96,7 +97,7 @@ def scan_inference(base: Path) -> InferenceReport:
         else:
             rep.msg_ts_missing += 1
         try:
-            if lts is not None and path.stat().st_mtime - lts > 1800:   # mtime 比末条消息新 >30min
+            if lts is not None and os.stat(fs_path(path)).st_mtime - lts > 1800:   # mtime 比末条消息新 >30min
                 rep.mtime_diverged += 1
         except OSError:
             pass

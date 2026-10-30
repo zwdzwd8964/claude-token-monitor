@@ -29,6 +29,7 @@ class UsageRecord:
     under_vscode: bool = False   # 是否位于 .vscode 之下
     speed: str = ""              # usage.speed 原值 ("standard" / "fast"; 缺省 "") —— fast mode 单价不同
     geo: str = ""                # usage.inference_geo 原值 ("global" / "us" / …) —— us 推理 × 1.1
+    entrypoint: str = ""         # 会话怎么起的: claude-vscode / cli / sdk-py / sdk-cli … (transcript 每行都带的事实)
 
     @property
     def cache_write(self) -> int:

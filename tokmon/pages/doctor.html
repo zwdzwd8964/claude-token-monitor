@@ -39,8 +39,9 @@ async function run(){
   try{
     const d=await (await fetch('/api/doctor')).json();
     $('#out').innerHTML = section('推断契约 (activity / events 的格式假设)', d.inference||{})
-                        + section('成本契约 (解析 / 去重 / 定价)', d.cost||{});
-    const tw=(d.inference?.warns||0)+(d.cost?.warns||0);
+                        + section('成本契约 (解析 / 去重 / 定价)', d.cost||{})
+                        + section('控制台 (归属 / 项目修正 / 对账)', d.consoles||{});
+    const tw=(d.inference?.warns||0)+(d.cost?.warns||0)+(d.consoles?.warns||0);
     $('#msg').innerHTML = tw===0 ? '<span style="color:var(--good)">全部健康</span>' : ('共 '+tw+' 项需注意');
   }catch(e){ $('#out').innerHTML='<div class="sec">体检失败: '+esc(e)+'</div>'; }
   finally{ $('#run').disabled=false; }

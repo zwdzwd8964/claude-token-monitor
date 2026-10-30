@@ -1,0 +1,6 @@
+{"seq": 0, "ts": 100.0, "type": "mission.created", "agent": null, "data": {"title": "x", "type": "t"}}
+{"seq": 1, "ts": 110.0, "type": "task.started", "agent": null, "data": {"n": 1}}
+{"seq": 2, "ts": 120.0, "type": "mission.state", "agent": null, "data": {"state": "running", "prev": "planning"}}
+{"seq": 3, "ts": 130.0, "type": "agent.status", "agent": "a01", "data": {"status": "working", "session": "started"}}
+{"seq": 4, "ts": 500.0, "type": "task.finished", "agent": null, "data": {"n": 1, "status": "done"}}
+{"seq": 5, "ts": 510.0, "type": "mission.state", "agent": null, "data": {"state": "idle", "prev": "running"}}

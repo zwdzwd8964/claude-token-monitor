@@ -78,7 +78,7 @@ function renderErrors(label) {
   const re = R("RENDER_ERRORS.splice(0)");
   for (const e of re) errors.push(`${label}: 渲染出错 ${e}`);
 }
-const CHARTS = ["k-cost", "k-tok", "k-unit", "k-hit", "k-out", "k-n", "burn", "comp", "pdelta", "days", "heat", "tree", "pareto", "models", "save", "tables", "foot"];
+const CHARTS = ["k-cost", "k-tok", "k-unit", "k-hit", "k-out", "k-n", "burn", "comp", "pdelta", "days", "heat", "tree", "pareto", "cons", "models", "save", "tables", "foot"];
 const all = () => CHARTS.map(id => String(el(id).innerHTML)).join("\n") + String(el("fx").innerHTML);
 const unesc = s => String(s).replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 function marks() {                       // 页面上所有「可点筛选」的 (维度, 值) —— 就是点击会用到的那份属性
@@ -144,6 +144,45 @@ function checkEscaping(label) {
   }
   renderErrors("filters");
   if ((String(el("k-cost").innerHTML) + String(el("k-n").innerHTML)) !== kpi0) errors.push("清除筛选后 KPI 没有恢复");
+
+  // CONSOLES_PLAN S1: 控制台卡片 —— 归属 -> 运行 -> 任务 -> 角色 一层层钻下去 (夹具里有控制台时); 没有时要写明
+  const consOrigin = ((DATA.cubes["7d"] || {}).origins || []).find(o => o.startsWith("console:"));
+  if (consOrigin) {
+    if (!String(el("cons").innerHTML).includes('data-f="o"')) errors.push("控制台卡片: 首屏没有可点的归属");
+    else seen.cons_card = true;
+    ctx.__O = consOrigin;
+    run("cons o", () => R("applyFilter('o', [parseVal('o', __O)], false)"));
+    let ok = true;
+    for (const [dim, zh] of [["r", "运行"], ["t", "任务"], ["ro", "角色"]]) {
+      const m = marks().find(x => x[0] === dim);
+      if (!m) { errors.push(`控制台卡片: 没有钻到「${zh}」这一层`); ok = false; break; }
+      ctx.__DV = [dim, m[1]];
+      run("cons " + dim, () => R("applyFilter(__DV[0], [parseVal(__DV[0], __DV[1])], false)"));
+      if (R("F[__DV[0]].size") !== 1) { errors.push(`控制台卡片: 点「${zh}」没有生效`); ok = false; break; }
+    }
+    const fx = String(el("fx").innerHTML);
+    if (ok && !(fx.includes("运行") && fx.includes("任务") && fx.includes("角色"))) errors.push("控制台卡片: 下钻以后顶栏没有 运行 / 任务 / 角色 芯片");
+    if (ok) seen.cons_drill = true;
+    renderErrors("cons drill");
+    // 面包屑上「归属」那一格的 ×: 回到最上一层 = 运行 / 任务 / 角色一起清掉 (只清自己那一层会卡在半截)
+    R(`(() => { const btn = {getAttribute: n => ({"data-rm": "o", "data-rvs": encodeURIComponent(__O)})[n] ?? null,
+                             hasAttribute: n => n === "data-rmdeep"};
+                onClick({target: {closest: s => s === "[data-rm]" ? btn : null}}); })()`);
+    if (R("F.o.size + F.r.size + F.t.size + F.ro.size") !== 0) errors.push("控制台卡片: 面包屑的 × 没有把更深的几层一起清掉");
+    else seen.cons_deep = true;
+    // 每次运行都钻得进去: 没切出任务的运行直接到角色这一层, 不会落到「没有数据」
+    run("cons runs", () => R("clearFilters(); applyFilter('o', [parseVal('o', __O)], false)"));
+    const runIds = [...new Set(marks().filter(m => m[0] === "r").map(m => m[1]))];
+    for (const rid of runIds) {
+      ctx.__RID = rid;
+      run("cons run", () => R("F.t.clear(); F.ro.clear(); F.r.clear(); applyFilter('r', [parseVal('r', __RID)], false)"));
+      const h = String(el("cons").innerHTML);
+      if (!h.includes('data-f="t"') && !h.includes('data-f="ro"')) errors.push("控制台卡片: 运行 " + rid + " 钻进去什么都没有");
+    }
+    if (runIds.length >= 2) seen.cons_all_runs = true;
+    run("cons clear", () => R("clearFilters()"));
+  } else if (String(el("cons").innerHTML).includes("没有控制台派出的会话")) seen.cons_none = true;
+  else errors.push("控制台卡片: 没有控制台时应写明「没有控制台派出的会话」");
 
   // 同维度多选 = OR; 跨维度 = AND
   const projects = [...new Set(marks().filter(m => m[0] === "p" && !m[2]).map(m => m[1]))];

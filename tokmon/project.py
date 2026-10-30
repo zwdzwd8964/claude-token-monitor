@@ -69,3 +69,62 @@ def workspace_identity(cwd: str | None, anchor: str = DEFAULT_ANCHOR) -> Workspa
         subpath="",
         cwd=cwd,
     )
+
+
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+@dataclass(frozen=True)
+class ScratchpadRef:
+    parent_session_id: str   # 父会话 id (小写)
+    parent_dir: str          # 父会话的编码 cwd = 它的 transcript 在 ~/.claude/projects 下的那一层目录名
+
+
+def scratchpad_parent(cwd: str | None) -> ScratchpadRef | None:
+    """cwd 在某个会话的 scratchpad 里 -> 那个父会话; 否则 None。
+
+    Claude Code 给每个会话一个一次性目录 `<TEMP>/claude/<编码后的 cwd>/<会话 id>/scratchpad/`。
+    在里面跑起来的会话 (测试套件、子进程派的 agent) 的 cwd 落在这里; 按 workspace_identity 的 basename 兜底,
+    它的「项目」会变成 scratchpad 里某个叶子目录名 (假项目)。它真正属于父会话的项目。
+    纯函数: 只认路径形状 `…/claude/<编码 cwd>/<uuid>/scratchpad/…`, 从右往左找, 嵌套时取最里层。"""
+    if not cwd:
+        return None
+    parts = _split_path(cwd)
+    for i in range(len(parts) - 1, 2, -1):
+        if parts[i].lower() == "scratchpad" and _UUID_RE.match(parts[i - 1]) and parts[i - 3].lower() == "claude":
+            return ScratchpadRef(parts[i - 1].lower(), parts[i - 2])
+    return None
+
+
+TEMP_PROJECT = "临时目录"
+
+
+def in_temp_dir(cwd: str | None) -> bool:
+    """cwd 在系统临时目录里 (…/AppData/Local/Temp/…、C:/Temp/…、/tmp/…)。
+
+    在这里跑的会话 (pytest 的 tmp_path、各种演练沙盒) 的「项目」按 basename 兜底会变成 repo / sandbox 这类假项目;
+    路径里又没有任何线索指向真项目 —— 不如老实归到一个「临时目录」里。scratchpad 与控制台标签的规则优先 (认得出来的先认)。"""
+    parts = [p.lower() for p in _split_path(cwd or "")]
+    for i in range(len(parts) - 1):                      # 最后一段是 temp 本身不算 (那就是在临时目录根上, 少见)
+        if parts[i] in ("temp", "tmp") and (i == 0 or parts[i - 1] == "local"):
+            return True
+    return False
+
+
+_SCRATCH_DIR_RE = re.compile(
+    r"-temp-claude-(.+?)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-scratchpad(?:-|$)", re.I)
+
+
+_TEMP_DIR_RE = re.compile(r"(?:-local-temp-|^[a-z]--temp-)", re.I)
+
+
+def in_temp_dir_from_dir(raw_dir: str | None) -> bool:
+    """同 in_temp_dir, 但只有编码目录名 (文件读不出 / 没有 cwd 时的兜底)。"""
+    return bool(_TEMP_DIR_RE.search(raw_dir or ""))
+
+
+def scratchpad_parent_from_dir(raw_dir: str | None) -> ScratchpadRef | None:
+    """同上, 但只有 transcript 所在的编码目录名 (文件读不出 / 没有 cwd 时的兜底)。
+    `…-Temp-claude-<父会话编码 cwd>-<父会话 id>-scratchpad-…` —— 编码把 / \\ : 空格都变成了 '-', 只能按形状认。"""
+    m = _SCRATCH_DIR_RE.search(raw_dir or "")
+    return ScratchpadRef(m.group(2).lower(), m.group(1)) if m else None

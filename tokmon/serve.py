@@ -29,8 +29,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import (activity, autostart, billing, context_view, control, instances, notify, procmon, remote, runner,
-               tokens_view, trace)
+from . import (activity, autostart, billing, consoles, context_view, control, instances, notify, procmon, remote,
+               runner, tokens_view, trace)
 from .aggregate import Agg, filter_since, group_by, summarize
 from .discovery import default_base
 from .event_sources import activity_source, context_source, cost_source, risk_source
@@ -97,7 +97,10 @@ def _baseline_window(since: str | None, now: datetime, cutoff: datetime | None):
 
 def build_summary(base: Path, since: str, scope: str, vscode_only: bool) -> dict:
     include_kinds = SCOPE_KINDS.get(scope, SCOPE_KINDS["all"])
-    records = load_records(base, include_kinds, vscode_only)
+    # 「仅 .vscode」放在控制台改项目之后筛: 改过项目的会话跟着它的新项目算 (与 build_cube 同一条路)
+    records = tokens_view.console_projects(load_records(base, include_kinds), consoles.snapshot())
+    if vscode_only:
+        records = [r for r in records if r.under_vscode]
 
     now = datetime.now().astimezone()    # 只取一次, 当前窗与基线共用 -> 两段严格等长、首尾相接
     cutoff = parse_since(since)
@@ -155,13 +158,16 @@ def build_cube(base: Path, since: str, scope: str, vscode_only: bool) -> dict:
     同一个 load_records / parse_since / _baseline_window / _filter_window, 所以两边的总量、按天/项目/模型/来源、
     基线都能逐项对上 (tests/test_tokens_view.py 钉死)。`total` / `baseline.total` 随包下发, 前端自己对账。"""
     include_kinds = SCOPE_KINDS.get(scope, SCOPE_KINDS["all"])
-    records = load_records(base, include_kinds, vscode_only)
+    labels = consoles.snapshot()                       # 控制台标签 (CONSOLES_PLAN S1): 归属 / 运行 / 任务 / 角色
+    records = tokens_view.console_projects(load_records(base, include_kinds), labels)
+    if vscode_only:
+        records = [r for r in records if r.under_vscode]
     now = datetime.now().astimezone()
     cutoff = parse_since(since)
     rows = filter_since(records, cutoff)
     bw = _baseline_window(since, now, cutoff)
     prev_rows = _filter_window(records, *bw) if bw is not None else None
-    cube = tokens_view.build(rows, prev_rows, records)
+    cube = tokens_view.build(rows, prev_rows, records, labels)
     prev_enc = cube.pop("prev_rows")
     baseline = None
     if bw is not None:
@@ -225,7 +231,13 @@ def _doctor_status(base: Path) -> dict:
         il, iw = build_inference_lines(scan_inference(base))
     except Exception as e:
         il, iw = [f"inference doctor 出错: {e}"], 1
-    return {"cost": {"lines": cl, "warns": cw}, "inference": {"lines": il, "warns": iw}}
+    try:
+        from .doctor import console_lines
+        kl, kw = console_lines(load_records(base), consoles.snapshot(force=True))
+    except Exception as e:
+        kl, kw = [f"控制台体检出错: {e}"], 1
+    return {"cost": {"lines": cl, "warns": cw}, "inference": {"lines": il, "warns": iw},
+            "consoles": {"lines": kl, "warns": kw}}
 
 
 def _do_terminate(body: dict) -> dict:
@@ -622,6 +634,19 @@ def _wf_running(base) -> set:
 trace.price_class = lambda model, tup, speed, geo: price_class(model, tup[0], tup[2], tup[3], tup[4], speed, geo)
 
 
+def _console_label(session_id, cwd=None, entrypoint=None) -> dict | None:
+    """控制台标签 (CONSOLES_PLAN S1) -> 页面 / activity 用的 dict。控制台支柱与对话活动支柱只在这里汇合 (P4)。"""
+    lab = consoles.snapshot().label(session_id, cwd, entrypoint)
+    if lab is None:
+        return None
+    return {"code": lab.console, "run": lab.run, "role": lab.role, "agent": lab.agent, "project": lab.project,
+            "grain": lab.grain}
+
+
+# activity 的行带上控制台标签 (同样在 import 时注入: 共享的 2 秒快照帧要么都带、要么都不带)
+activity.label_provider = _console_label
+
+
 def _wf_price(by_model: dict) -> tuple:
     """按计价分类 (键 = 模型|条件, 也接受纯模型名) 分别换算 $ -> (美元, 含未知单价模型)。统计层通过注入使用。"""
     total, unknown = 0.0, False
@@ -871,7 +896,7 @@ def _records_view(base) -> dict:
         recs = load_records(base, SCOPE_KINDS["all"], False)
     except Exception:
         recs = None
-    today, ctx = None, {}
+    today, ctx, sess = None, {}, {}
     if recs is not None:
         try:
             todays = filter_since(recs, parse_since("today"))
@@ -885,7 +910,14 @@ def _records_view(base) -> dict:
             ctx = context_view.session_contexts(recs)
         except Exception:
             pass
-    v = {"today": today, "ctx": ctx}
+        for r in recs:                                       # 每个会话的累计 token / 等价 $ (控制台运行那一行要合计)
+            a = sess.get(r.session_id)
+            if a is None:
+                a = sess[r.session_id] = [0.0, 0, False]
+            a[0] += r.cost_usd
+            a[1] += r.total_tokens
+            a[2] = a[2] or (not r.known_price and r.total_tokens > 0)
+    v = {"today": today, "ctx": ctx, "sess": sess}
     _RECS_VIEW.update(t=now, key=key, v=v)
     return v
 
@@ -917,7 +949,8 @@ def _brief_worker():
 
 
 def _brief_nowait(path: str, running: bool):
-    """缓存里的简报 (可能是旧的; 还没有 -> None)。不新鲜就排队让后台线程重算, 本次请求不等。"""
+    """-> (缓存里的简报 (可能是旧的; 还没有 / 这个会话没有任务 -> None), 是否新鲜)。
+    不新鲜就排队让后台线程重算, 本次请求不等。"""
     brief, fresh = trace.brief_peek(path, running=running)
     if not fresh:
         with _BRIEF_GUARD:
@@ -928,7 +961,7 @@ def _brief_nowait(path: str, running: bool):
             if _BRIEF_THREAD[0] is None or not _BRIEF_THREAD[0].is_alive():
                 _BRIEF_THREAD[0] = threading.Thread(target=_brief_worker, name="mc-brief", daemon=True)
                 _BRIEF_THREAD[0].start()
-    return brief
+    return brief, fresh
 
 
 _ATTN_TYPES = ["PERMISSION_NEEDED", "QUESTION_PENDING", "CONTEXT_LARGE",   # CONTEXT_LARGE 只有页面上勾了才弹
@@ -973,11 +1006,11 @@ def _sessions_with_briefs(base) -> dict:
             r["context"] = c                                 # 省钱 S1: 主线程最后一轮的上下文 / 每轮 $ / 缓存有效期
         if row.get("file") and (age is None or age < _BRIEF_MAX_AGE):
             try:
-                b = _brief_nowait(row["file"], row.get("state") in ("WORKING", "PROCESSING", "BLOCKED_ON_USER"))
+                b, fresh = _brief_nowait(row["file"], row.get("state") in ("WORKING", "PROCESSING", "BLOCKED_ON_USER"))
             except Exception:
-                b = None
-            if b is None:
-                pending += 1
+                b, fresh = None, True
+            if b is None and not fresh:
+                pending += 1                                 # 真的还没算; 算过但没有任务 (控制台的 sdk 会话) 不算「还在算」
             if b:
                 cost, unpriced = _wf_price(b.get("by_model"))
                 r["workflow"] = {"task": b["task"], "changes": b["changes"], "files": b["files"],
@@ -988,10 +1021,54 @@ def _sessions_with_briefs(base) -> dict:
                                  "burn": trace.recent_tokens(b.get("usage_ts") or [], now - BURN_WINDOW_S)}
         rows.append(r)
     out["sessions"] = rows
+    out["runs"] = _console_runs(rows, rv.get("sess") or {})
     out["spend_today"] = rv["today"]
     out["burn_window_s"] = BURN_WINDOW_S
     out["context_line"], out["big_ctx"] = context_view.TAX_LINE, context_view.BIG_CTX
     out["briefs_pending"] = pending                      # 还没算出当前任务的会话数 (服务刚启动时会有)
+    return out
+
+
+def _console_runs(rows: list, sess: dict) -> dict:
+    """控制台派出的会话按运行归组 (CONSOLES_PLAN S1): "代号:运行" -> 这次运行的一行 (页面把会话折叠在它下面)。
+
+    状态取子会话里最急的那个 (与会话排序同一个顺序); 钱 = 子会话累计等价 $ 之和 (整个会话都属于这次运行)。
+    控制台自己报的状态 (status) 原样带上, 不在这里推断「等你」—— 那是 S2 的状态机。"""
+    cs = consoles.snapshot()
+    out: dict = {}
+    for r in rows:
+        lab = r.get("console")
+        if not lab:
+            continue
+        key = f"{lab['code']}:{lab['run']}"
+        g = out.get(key)
+        if g is None:
+            info = cs.runs.get((lab["code"], lab["run"]))
+            con = cs.console(lab["code"])
+            g = out[key] = {"key": key, "code": lab["code"], "run": lab["run"], "name": con.name if con else lab["code"],
+                            "url": con.url if con else "", "project": lab["project"],
+                            "status": info.status if info else "", "started": info.started if info else None,
+                            "finished": info.finished if info else None,
+                            "tasks": len({k for _, k in info.task_starts}) if info else 0,
+                            "task_status": dict(info.task_status) if info else {},
+                            "sessions": [], "roles": {}, "grain": lab["grain"], "cost": 0.0, "tokens": 0,
+                            "unpriced": False, "state": None, "age": None}
+        g["sessions"].append(r.get("session_id"))
+        role = lab.get("role") or "?"
+        g["roles"][role] = g["roles"].get(role, 0) + 1
+        if lab.get("grain") == "run":
+            g["grain"] = "run"
+        t = sess.get(r.get("session_id"))
+        if t:
+            g["cost"] = round(g["cost"] + t[0], 4)
+            g["tokens"] += t[1]
+            g["unpriced"] = g["unpriced"] or t[2]
+        st = r.get("state")
+        if g["state"] is None or activity._STATE_ORDER.get(st, 4) < activity._STATE_ORDER.get(g["state"], 4):
+            g["state"] = st
+        age = r.get("last_activity_age_s")
+        if age is not None and (g["age"] is None or age < g["age"]):
+            g["age"] = age
     return out
 
 

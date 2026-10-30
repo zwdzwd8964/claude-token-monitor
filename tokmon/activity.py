@@ -23,6 +23,7 @@ classify_state 是**纯函数**(无 I/O), 便于单测 (参照 project.py 的 I2
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -30,8 +31,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .discovery import default_base, discover, friendly_project
-from .project import workspace_identity
+from .discovery import default_base, discover, friendly_project, fs_path
+from .project import (TEMP_PROJECT, in_temp_dir, in_temp_dir_from_dir, scratchpad_parent, scratchpad_parent_from_dir,
+                      workspace_identity)
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,11 @@ class ActivityConfig:
 
 _LOCK = threading.Lock()
 _LAST_SNAP: dict | None = None
+
+# 控制台标签钩子 (CONSOLES_PLAN S1; 由 serve 注入, 本模块不 import 控制台支柱 —— P4)。
+# 签名 (session_id, cwd, entrypoint) -> {"code","run","role","agent","project","grain"} | None。
+# 用模块钩子而不是 snapshot() 的参数: 2 秒的共享帧被六个调用方复用, 带不带标签必须每帧一致, 不能闪。
+label_provider = None
 _LAST_SNAP_T = 0.0
 _TAIL_BYTES = 262144                 # 只读每个文件最后 ~256KB (transcript 可达数 MB, 不能全读)
 _MAX_TAIL_BYTES = 4_000_000          # 末条记录比窗口还大(巨型 thinking)时, 退一步多读的封顶
@@ -316,7 +323,7 @@ def _classify_transcript(last_msg: dict | None, now: float, cfg: ActivityConfig)
 def _read_tail(path: Path) -> list[dict] | None:
     """只读文件尾部 ~256KB, 解析其中完整的 JSONL 行。(mtime,size) 缓存。坏文件返回 None。"""
     try:
-        st = path.stat()
+        st = os.stat(fs_path(path))
     except OSError:
         return None
     key = str(path)
@@ -324,7 +331,7 @@ def _read_tail(path: Path) -> list[dict] | None:
     if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
         return cached[2]
     try:
-        with open(path, "rb") as f:
+        with open(fs_path(path), "rb") as f:
             if st.st_size > _TAIL_BYTES:
                 f.seek(st.st_size - _TAIL_BYTES)
                 data = f.read()
@@ -537,7 +544,7 @@ def _session_row(path: Path, raw_dir: str, now: float, cfg: ActivityConfig,
                  live=None) -> dict:
     objs = _read_tail(path)
     try:
-        mtime = int(path.stat().st_mtime)
+        mtime = int(os.stat(fs_path(path)).st_mtime)
     except OSError:
         mtime = None
     if not objs:
@@ -553,6 +560,7 @@ def _session_row(path: Path, raw_dir: str, now: float, cfg: ActivityConfig,
     last = _last_message(objs)
     cwd = (last or {}).get("cwd")
     sid = (last or {}).get("sessionId") or path.stem
+    entrypoint = (last or {}).get("entrypoint") or next((o.get("entrypoint") for o in objs if o.get("entrypoint")), None)
     liveness = live.status(sid, cwd) if live is not None else None
     ss = getattr(live, "session_status", None)
     proc = (ss(sid) or ss(path.stem)) if ss is not None else None
@@ -584,9 +592,60 @@ def _session_row(path: Path, raw_dir: str, now: float, cfg: ActivityConfig,
         "proc_status": (proc or {}).get("status"),          # 进程自报的原始状态 (无注册表 -> None), 供页面标注来源
         "waiting_for": (proc or {}).get("waiting_for"),
         "proc_status_at": (proc or {}).get("status_at"),     # 进入这个自报状态的时刻 (事件层: 等你多久了)
+        "entrypoint": entrypoint,                            # 会话怎么起的: claude-vscode / sdk-py / cli …
+        "console": None,                                     # 控制台派出的会话: {code, run, role, agent, project, grain}
+        "project_source": "cwd" if wid else "dir",
     }
+    lp = label_provider
+    if lp is not None:
+        try:
+            lab = lp(row["session_id"], cwd, entrypoint)
+        except Exception:
+            lab = None                                       # 标签坏了不拖垮这一行 (渐进降级)
+        if lab:
+            row["console"] = lab
+            if lab.get("project"):
+                row["project"], row["subpath"], row["project_source"] = lab["project"], "", "console"
     row.update(st)
     return row
+
+
+def _scratchpad_to_parent(sessions: list[dict]) -> None:
+    """在别的会话的 scratchpad 里跑的会话: 项目改成父会话的项目 (原地改这一帧的行)。
+
+    按 cwd 认 (project.scratchpad_parent); 文件读不出、只有目录名的行按目录名认。父会话的行就在同一帧里 ——
+    它自己也在别人的 scratchpad 里就再往上找 (最多 5 层); 父会话不在 (已删) 就按父会话的编码目录名兜底。
+    控制台标签已经定了项目的行不动。"""
+    by_sid = {s.get("session_id"): s for s in sessions}
+    refs = {}
+    for s in sessions:
+        if s.get("project_source") == "console":
+            continue
+        raw_dir = Path(s.get("file") or "").parent.name
+        ref = scratchpad_parent(s.get("cwd")) if s.get("cwd") else None
+        if ref is None and not s.get("cwd"):
+            ref = scratchpad_parent_from_dir(raw_dir)
+        if ref is not None:
+            refs[s.get("session_id")] = ref
+        elif in_temp_dir(s.get("cwd")) or (not s.get("cwd") and in_temp_dir_from_dir(raw_dir)):
+            # 其余在系统临时目录里跑的 (pytest 的 tmp_path、演练沙盒…): 路径里没有线索指向真项目, 不造假项目
+            s["project"], s["subpath"], s["project_source"] = TEMP_PROJECT, "", "temp"
+    for sid, ref in refs.items():
+        s = by_sid[sid]
+        cur, project = ref, None
+        for _ in range(5):
+            parent = by_sid.get(cur.parent_session_id)
+            if parent is not None and cur.parent_session_id not in refs:
+                project = parent.get("project")
+                break
+            nxt = refs.get(cur.parent_session_id)
+            if nxt is None:
+                break
+            cur = nxt
+        s["project"] = project or friendly_project(cur.parent_dir)
+        s["subpath"] = ""
+        s["project_source"] = "scratchpad"
+        s["parent_session_id"] = ref.parent_session_id
 
 
 # BLOCKED_ON_USER 排最前: 回合卡在你身上 (授权/回答), 是整页最该先看的一行。
@@ -628,6 +687,7 @@ def snapshot(base: Path | None = None, cfg: ActivityConfig | None = None, live=N
 
         for k in [k for k in _tail_cache if k not in live_paths]:   # 清掉已删除/轮转文件的缓存, 防无限增长
             _tail_cache.pop(k, None)
+        _scratchpad_to_parent(sessions)
 
         sessions.sort(key=lambda s: (_STATE_ORDER.get(s["state"], 4),
                                      s["last_activity_age_s"] if s["last_activity_age_s"] is not None else 1e12))

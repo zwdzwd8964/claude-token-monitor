@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tokmon import autostart, cli, instances
+from tokmon import autostart, cli, consoles, instances
 
 _REAL_INSTANCES = Path.home() / ".tokmon" / "instances"
 
@@ -38,7 +38,9 @@ def _never_touch_real_tokmon_home(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(autostart, "_SERVE_LOG", sandbox / "logs" / "serve.log")
     monkeypatch.setattr(autostart, "_LAUNCHER", sandbox / "autostart" / "tokmon-boot.pyw")
     monkeypatch.setattr(cli, "_SERVE_LOG", sandbox / "logs" / "serve.log")
+    consoles.set_config(sandbox / "consoles.json")      # 默认「没配控制台」: 测试绝不读你真实的控制台清单
     before = _snapshot(_REAL_INSTANCES)
     yield
+    consoles.set_config(sandbox / "consoles.json")
     instances.set_home(sandbox / "parked")
     assert _snapshot(_REAL_INSTANCES) == before, "测试写穿到了真实的 ~/.tokmon/instances"

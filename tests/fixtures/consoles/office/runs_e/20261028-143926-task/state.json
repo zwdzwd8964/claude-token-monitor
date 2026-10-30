@@ -1,0 +1,76 @@
+{
+ "id": "20261028-143926-task",
+ "status": "closed",
+ "agents": [
+  {
+   "spec": {
+    "id": "core",
+    "kind": "core",
+    "shell": "core",
+    "session_id": "00000000-0000-4000-8000-0000000000e1"
+   },
+   "status": "idle"
+  },
+  {
+   "spec": {
+    "id": "w01",
+    "kind": "verifier",
+    "shell": "verifier",
+    "critic": true,
+    "session_id": "00000000-0000-4000-8000-0000000000e2"
+   },
+   "status": "retired"
+  }
+ ],
+ "assignments": {
+  "A-001": {
+   "id": "A-001",
+   "agent": "w01",
+   "tn": "T5",
+   "task": 1,
+   "started": 5000.0,
+   "ended": 6000.0,
+   "assignment_text": "不该被读出来"
+  }
+ },
+ "requests": [
+  {
+   "index": 1,
+   "tn": "T5",
+   "text": "x"
+  },
+  {
+   "index": 2,
+   "tn": "T6",
+   "text": "x"
+  }
+ ],
+ "tasks": [
+  {
+   "index": 1,
+   "tn": "T5"
+  },
+  {
+   "index": 2,
+   "tn": "T6"
+  }
+ ],
+ "tnums": {
+  "T5": {
+   "id": "T5"
+  },
+  "T6": {
+   "id": "T6"
+  }
+ },
+ "ledger": {
+  "total": {
+   "input": 1,
+   "output": 2,
+   "cache_read": 3,
+   "cache_write": 4,
+   "calls": 1,
+   "cost": 0.01
+  }
+ }
+}

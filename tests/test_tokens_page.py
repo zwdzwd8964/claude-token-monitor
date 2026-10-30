@@ -59,8 +59,63 @@ def test_tokens_page_runs_clean(base, tmp_path):  # noqa: F811
               "f_p", "f_m", "f_s", "f_x", "f_d", "f_h", "f_wd", "f_c", "f_k", "f_e",
               # 审查修复的回归 (触屏半截框选 / 悬停坐标 / 未知单价项目 / 图例自筛 / 切窗口在途与失败 / 今天按星期的假基线 / 按时段不外推)
               "touch_cancel", "burn_hover", "ghost", "legend_self", "switch_inflight", "switch_fail",
-              "today_wd_nobase", "no_proj_hour"):
+              "today_wd_nobase", "no_proj_hour",
+              "cons_none"):                                          # 没配控制台: 控制台卡片写明, 不出可点的东西
         assert seen.get(k), f"页面没有覆盖到 {k}: {seen}"
+
+
+@pytest.fixture
+def console_base(base, tmp_path):  # noqa: F811
+    """在 base 上加一个合成的 office 控制台 (认领 s-delta, 两个任务) + 一个认不出的 sdk 会话 -> 三种归属都有。"""
+    import os
+    import time
+    from datetime import datetime, timedelta
+
+    from tokmon import consoles
+    from test_tokens_view import VS, _asst, _write
+
+    now = datetime.now().astimezone()
+    run = tmp_path / "console" / "runs" / "20261029-000000-task"
+    run.mkdir(parents=True)
+    (run / "state.json").write_text(json.dumps({"status": "running", "agents": [
+        {"spec": {"id": "core", "kind": "core", "session_id": "s-delta"}}]}), encoding="utf-8")
+    ev = lambda seq, dt, typ, data: {"seq": seq, "ts": (now - dt).timestamp(), "type": typ, "agent": None, "data": data}  # noqa: E731
+    (run / "events.jsonl").write_text("".join(json.dumps(x) + "\n" for x in [
+        ev(0, timedelta(hours=5), "session.started", {}),
+        ev(1, timedelta(hours=4), "task.started", {"index": 1}),
+        ev(2, timedelta(hours=1), "task.started", {"index": 2})]), encoding="utf-8")
+    old = time.time() - 3600
+    os.utime(run / "state.json", (old, old))
+    run2 = tmp_path / "console" / "runs" / "20261029-010000-notask"          # 第二次运行: 没有 task.* 事件 (切不出任务)
+    run2.mkdir()
+    (run2 / "state.json").write_text(json.dumps({"status": "idle", "agents": [
+        {"spec": {"id": "core", "kind": "core", "session_id": "s-gamma"}}]}), encoding="utf-8")
+    (run2 / "events.jsonl").write_text(json.dumps(ev(0, timedelta(days=9), "session.started", {})) + "\n", encoding="utf-8")
+    os.utime(run2 / "state.json", (old, old))
+    cfg = tmp_path / "consoles.json"
+    cfg.write_text(json.dumps({"version": 1, "consoles": [
+        {"code": "D", "name": "丁", "dialect": "office", "project_root": VS + r"\delta",
+         "runs_dir": str(run.parent), "url": "http://127.0.0.1:9004/"}]}), encoding="utf-8")
+    consoles.set_config(cfg)
+    lines = [_asst(1, now - timedelta(hours=2), "s-sdk", "claude-sonnet-5-5", 30, 30, cr=300),
+             _asst(2, now - timedelta(minutes=30), "s-sdk", "claude-sonnet-5-5", 30, 30, cr=300)]
+    for x in lines:
+        x["entrypoint"] = "sdk-py"
+    _write(base / "c--vs-sdk" / "s-sdk.jsonl", VS + r"\sdkproj", lines)
+    return base
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="没装 node")
+def test_tokens_page_console_card_drills_down(console_base, tmp_path):
+    data = _export(console_base, tmp_path / "data.json")
+    assert data["cubes"]["7d"]["origins"] == ["interactive", "console:D", "unclaimed"]
+    proc = subprocess.run(["node", str(HARNESS), str(_page_html(tmp_path)), str(tmp_path / "data.json")],
+                          capture_output=True, text=True, encoding="utf-8", timeout=120)
+    assert proc.stdout.strip(), proc.stderr
+    report = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert report["errors"] == [], report["errors"]
+    for k in ("cons_card", "cons_drill", "cons_deep", "cons_all_runs", "f_o", "reconciled"):
+        assert report["seen"].get(k), f"页面没有覆盖到 {k}: {report['seen']}"
 
 
 def test_tokens_page_is_offline_and_uses_global_nav():

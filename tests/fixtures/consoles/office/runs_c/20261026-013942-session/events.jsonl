@@ -1,0 +1,9 @@
+{"seq": 0, "ts": 900.0, "type": "session.started", "agent": null, "data": {"title": "合成", "dir": "x"}}
+{"seq": 1, "ts": 950.0, "type": "task.started", "agent": null, "data": {"index": 1, "title": "t", "task": "不该被读出来的任务原文"}}
+{"seq": 2, "ts": 960.0, "type": "agent.text", "agent": "conductor", "data": {"text": "不该被读出来的回答"}}
+{"seq": 3, "ts": 2500.0, "type": "task.finished", "agent": null, "data": {"index": 1, "status": "done", "report": "r"}}
+{"seq": 4, "ts": 2900.0, "type": "task.started", "agent": null, "data": {"index": 2, "title": "t", "task": "x"}}
+{"seq": 5, "ts": 2901.0, "type": "session.status", "agent": null, "data": {"status": "running", "detail": ""}}
+{"seq": 6, "ts": 4500.0, "type": "task.finished", "agent": null, "data": {"index": 2, "status": "waiting_decision"}}
+{"seq": 7, "ts": 4600.0, "type": "session.status", "agent": null, "data": {"status": "idle", "detail": ""}}
+{"seq": 8, "ts": 4700.0, "type": "task.started", "agent": null, "data": {"index"

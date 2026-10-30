@@ -1,0 +1,105 @@
+{
+ "id": "20261026-013942-session",
+ "title": "合成",
+ "status": "idle",
+ "agents": [
+  {
+   "spec": {
+    "id": "conductor",
+    "kind": "conductor",
+    "name": "x",
+    "system": "不该被读出来的系统提示",
+    "session_id": "00000000-0000-4000-8000-0000000000c0",
+    "started": true
+   },
+   "status": "idle"
+  },
+  {
+   "spec": {
+    "id": "server",
+    "kind": "seat",
+    "seat": "server",
+    "session_id": "00000000-0000-4000-8000-0000000000c1",
+    "started": true
+   },
+   "status": "idle"
+  },
+  {
+   "spec": {
+    "id": "h01",
+    "kind": "helper",
+    "seat": null,
+    "session_id": "00000000-0000-4000-8000-0000000000c2",
+    "started": true
+   },
+   "status": "idle"
+  }
+ ],
+ "dispatches": {
+  "1": {
+   "no": 1,
+   "agent": "server",
+   "seat": "server",
+   "task_index": 1,
+   "started": 1000.0,
+   "finished": 2000.0,
+   "title": "t"
+  },
+  "2": {
+   "no": 2,
+   "agent": "server",
+   "seat": "server",
+   "task_index": 2,
+   "started": 3000.0,
+   "finished": 4000.0,
+   "title": "t"
+  },
+  "3": {
+   "no": 3,
+   "agent": "h01",
+   "seat": null,
+   "task_index": 1,
+   "started": 3100.0,
+   "finished": 3200.0,
+   "title": "t"
+  },
+  "4": {
+   "no": 4,
+   "agent": "h01",
+   "seat": null,
+   "task_index": 2,
+   "started": 3300.0,
+   "title": "t"
+  },
+  "0": {
+   "no": 0,
+   "agent": "h01",
+   "seat": null,
+   "task_index": 1,
+   "started": 1000.0,
+   "title": "t"
+  }
+ },
+ "tasks": [
+  {
+   "index": 1,
+   "title": "t",
+   "status": "done"
+  },
+  {
+   "index": 2,
+   "title": "t",
+   "status": "waiting_decision"
+  }
+ ],
+ "ledger": {
+  "total": {
+   "input": 10,
+   "output": 20,
+   "cache_read": 30,
+   "cache_write": 40,
+   "calls": 2,
+   "cost": 0.1
+  }
+ }
+}

@@ -1,0 +1,7 @@
+{"seq": 0, "ts": 4800.0, "type": "intake.foreign_session", "agent": null, "data": {"sessions": [{"session_id": "00000000-0000-4000-8000-0000000000f9"}]}}
+{"seq": 1, "ts": 4900.0, "type": "session.started", "agent": null, "data": {"title": "x"}}
+{"seq": 2, "ts": 4950.0, "type": "task.started", "agent": null, "data": {"index": 1, "tn": "T5", "title": "t"}}
+{"seq": 3, "ts": 5500.0, "type": "agent.successor", "agent": "core", "data": {"predecessor": "core", "successor": "core", "reason": "handoff", "from_session": "00000000-0000-4000-8000-0000000000e0", "to_session": "00000000-0000-4000-8000-0000000000e1"}}
+{"seq": 4, "ts": 6900.0, "type": "task.finished", "agent": null, "data": {"index": 1, "tn": "T5", "status": "done"}}
+{"seq": 5, "ts": 7000.0, "type": "task.started", "agent": null, "data": {"index": 2, "tn": "T6", "title": "t"}}
+{"seq": 6, "ts": 8000.0, "type": "session.finished", "agent": null, "data": {"status": "done"}}

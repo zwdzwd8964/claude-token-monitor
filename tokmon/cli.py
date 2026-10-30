@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import __version__, autostart, pricing
 from .discovery import default_base
-from .doctor import run_doctor
+from .doctor import run_console_doctor, run_doctor
 from .inference_backtest import run_backtests
 from .inference_doctor import run_inference_doctor
 from .parser import load_records
@@ -200,6 +200,8 @@ def main(argv: list[str] | None = None) -> int:
         run_doctor(base)               # 成本/测量层契约
         print()
         run_inference_doctor(base)     # 推断层契约 (M4.5: activity/events 的假设)
+        print()
+        run_console_doctor(base)       # 控制台: 归属 / 项目修正 / 每次运行的 token 对账 (CONSOLES_PLAN S1)
     elif args.cmd == "backtest":
         run_backtests(base, days=args.days)   # L2: classify_state 准确率回测 (三把尺)
     elif args.cmd == "serve":

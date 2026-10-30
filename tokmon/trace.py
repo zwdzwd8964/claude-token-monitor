@@ -34,6 +34,7 @@ import base64
 import bisect
 import hashlib
 import json
+import os
 import re
 import struct
 import threading
@@ -42,7 +43,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .discovery import default_base, friendly_project
+from .discovery import default_base, friendly_project, fs_path, is_dir, iter_files, list_files
 from .project import workspace_identity
 
 # ---------------------------------------------------------------- 常量
@@ -1967,7 +1968,7 @@ def load_file(path: Path) -> FileTrace | None:
     path = Path(path)
     key = str(path)
     try:
-        st = path.stat()
+        st = os.stat(fs_path(path))
     except OSError:
         return None
     sig = (st.st_mtime, st.st_size)
@@ -1978,7 +1979,7 @@ def load_file(path: Path) -> FileTrace | None:
         if ft is None or st.st_size < ft.offset:
             ft = FileTrace(path)                              # 新文件 / 被截断重写 -> 全量
         try:
-            with open(path, "rb") as fh:
+            with open(fs_path(path), "rb") as fh:
                 fh.seek(ft.offset)
                 off = ft.offset
                 for raw in fh:
@@ -2006,7 +2007,7 @@ def load_file(path: Path) -> FileTrace | None:
 def read_line_at(path: Path, off: int) -> dict | None:
     """按字节偏移读回原始行 (明细面板取完整原文用, 不常驻内存)。"""
     try:
-        with open(path, "rb") as fh:
+        with open(fs_path(path), "rb") as fh:
             fh.seek(off)
             raw = fh.readline()
         o = json.loads(raw.decode("utf-8", "replace"))
@@ -2035,8 +2036,8 @@ def _agent_files(sdir: Path) -> dict[str, Path]:
         return dict(hit[1])
     out = {}
     sub = sdir / "subagents"
-    if sub.is_dir():
-        for p in sub.rglob("agent-*.jsonl"):
+    if is_dir(sub):
+        for p in iter_files(sub, "agent-*.jsonl"):
             out[p.stem[len("agent-"):]] = p
     _AGENT_IDX[str(sdir)] = (now, out)
     return dict(out)
@@ -2045,14 +2046,15 @@ def _agent_files(sdir: Path) -> dict[str, Path]:
 def agent_meta(path: Path) -> dict:
     mp = path.with_name(path.stem + ".meta.json")
     try:
-        mt = mp.stat().st_mtime
+        mt = os.stat(fs_path(mp)).st_mtime
     except OSError:
         return {}
     hit = _META.get(str(mp))
     if hit and hit[0] == mt:
         return hit[1]
     try:
-        d = json.loads(mp.read_text(encoding="utf-8"))
+        with open(fs_path(mp), encoding="utf-8") as fh:
+            d = json.loads(fh.read())
         d = d if isinstance(d, dict) else {}
     except (OSError, ValueError):
         d = {}
@@ -2555,8 +2557,8 @@ def _workflow_node(run_id: str, name: str, ctx: _Ctx, depth: int, summary: str |
         except OSError:
             pass
     agents: list[dict] = []
-    if rdir.is_dir():
-        for p in sorted(rdir.glob("agent-*.jsonl")):
+    if is_dir(rdir):
+        for p in list_files(rdir, "agent-*.jsonl"):
             aid = p.stem[len("agent-"):]
             ctx.agents.setdefault(aid, p)
             a = _agent_node(aid, ctx, depth + 1, meta=agent_meta(p))
@@ -2586,7 +2588,7 @@ def _workflow_node(run_id: str, name: str, ctx: _Ctx, depth: int, summary: str |
                        "meta": {"agents": len(members)}})
     t0s = [p["t0"] for p in phases if p.get("t0")]
     t1s = [p["t1"] for p in phases if p.get("t1")]
-    exists = rdir.is_dir()
+    exists = is_dir(rdir)
     return {"id": f"wf:{run_id}", "kind": "workflow", "label": smeta.get("name") or name, "run_id": run_id,
             "detail": smeta.get("description") or summary or "", "t0": min(t0s) if t0s else None,
             "t1": max(t1s) if t1s else None, "children": phases,
@@ -2846,7 +2848,7 @@ def main_files(base: Path) -> list[Path]:
     out = []
     for proj in base.iterdir():
         if proj.is_dir():
-            out.extend(p for p in proj.glob("*.jsonl") if p.is_file())
+            out.extend(p for p in proj.glob("*.jsonl") if os.path.isfile(fs_path(p)))
     return out
 
 
@@ -2871,7 +2873,7 @@ def _iter_built(base: Path, since: float | None, project: str | None, running_se
     bl = baseline(base, ttl=300)
     for mp in list(main_files(base)):
         try:
-            if since is not None and mp.stat().st_mtime < since:
+            if since is not None and os.stat(fs_path(mp)).st_mtime < since:
                 continue                                   # 整个文件都比窗口旧
         except OSError:
             continue
@@ -3580,7 +3582,7 @@ def session_brief(main_path, running: bool = False) -> dict | None:
     不等耗时基线: 简报里的数都用不到「偏慢」, 基线没热好时照样算 (服务重启后角标不再空窗十几秒)。"""
     mp = Path(main_path)
     try:
-        st = mp.stat()
+        st = os.stat(fs_path(mp))
     except OSError:
         return None
     sig = (st.st_mtime, st.st_size, running)
@@ -3604,7 +3606,7 @@ def brief_peek(main_path, running: bool = False) -> tuple:
     """只看缓存, 不算: -> (简报或 None, 是否新鲜)。高频接口用它, 不新鲜的交给后台线程去算 (session_brief)。"""
     mp = Path(main_path)
     try:
-        st = mp.stat()
+        st = os.stat(fs_path(mp))
     except OSError:
         return None, True                                # 文件没了: 没什么可算的
     hit = _BRIEF.get(str(mp))
@@ -3614,6 +3616,9 @@ def brief_peek(main_path, running: bool = False) -> tuple:
 def _session_brief(mp: Path, running: bool, sig: tuple, now: float) -> dict | None:
     tasks, _ = session_tasks(mp)
     if not tasks:
+        # 没有「你发起的任务」(控制台派出的 sdk 会话没有人类提问行): 也记进缓存 —— 不记的话每次刷新都当它没算过,
+        # 后台线程反复重算、页面的「还在算」计数永远下不去。文件变了 (sig 变) 会重新判。
+        _BRIEF[str(mp)] = (sig, None, now)
         return None
     t = tasks[-1]
     _TASK_INDEX[t["id"]] = mp
@@ -3740,8 +3745,8 @@ def get_script(task_id: str, run_id: str, base: Path | None = None) -> dict | No
     smap = script_map(src)
     agents = {}
     rdir = Path(loc[1])
-    if rdir.is_dir():
-        for p in sorted(rdir.glob("agent-*.jsonl")):
+    if is_dir(rdir):
+        for p in list_files(rdir, "agent-*.jsonl"):
             agents[p.stem[len("agent-"):]] = match_agent_line(agent_meta(p).get("description"), smap["agents"])
     return {"name": Path(loc[0]).name, "text": src, "lines": smap["lines"], "phases": smap["phases"],
             "phase_how": smap["phase_how"], "agents": agents,
@@ -3757,7 +3762,7 @@ def baseline(base: Path | None = None, ttl: float = 300) -> dict:
     base = Path(base or default_base())
     durs: dict = defaultdict(list)
     if base.exists():
-        for p in list(base.rglob("*.jsonl")):
+        for p in list(iter_files(base, "*.jsonl")):
             if p.name == "journal.jsonl":
                 continue
             ft = load_file(p)

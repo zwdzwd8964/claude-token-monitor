@@ -13,12 +13,13 @@ doctor 做一次原始扫描, 把「格式是否还如我们假设」量化出�
 
 from __future__ import annotations
 
+import os
 import json
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .discovery import discover
+from .discovery import discover, fs_path
 from .parser import _parse_ts
 from .pricing import PRICING_FETCHED, STANDARD_GEOS, STANDARD_SPEEDS, rates
 from .util import fmt_tokens, term_text
@@ -84,7 +85,7 @@ def scan(base: Path) -> DoctorReport:
         by_kind[kind] += 1
         file_usage = 0
         try:
-            fh = open(path, "r", encoding="utf-8")
+            fh = open(fs_path(path), "r", encoding="utf-8")
         except OSError:
             continue
         with fh:
@@ -275,6 +276,138 @@ def build_lines(rep: DoctorReport) -> tuple[list[str], int]:
     else:
         out.append(f"结论: ⚠ {warns} 项需注意 (见上)。若刚升级过 Claude Code, 优先核对格式是否变化。")
     return out, warns
+
+
+# ---- 控制台归属与对账 (CONSOLES_PLAN S1) ----
+
+CLAIM_GOOD, CLAIM_WARN = 95.0, 80.0          # sdk 会话 token 的认领率: >= 95% 算健康 (S1 判据 ①)
+RECON_TOL = 0.01                             # 每次运行 transcript 与控制台账本的 token 差在 1% 内算对得上 (判据 ②)
+
+
+def console_lines(records, snap, top: int = 8) -> tuple[list[str], int]:
+    """控制台一节: 认领率、没认领的 sdk 会话、项目修正了多少、每次运行的 token 对账。纯函数 (记录 + 控制台快照进, 行出)。
+
+    钱和 token 只以 transcript 为准 (I3/I4); 控制台账本只拿来对账 —— 对不上说明控制台记账有偏差, 不影响 tokmon 的数字。"""
+    from .project import TEMP_PROJECT, in_temp_dir, scratchpad_parent
+    out: list[str] = []
+    warns = 0
+    first: dict = {}
+    tok: Counter = Counter()
+    proj_of: dict = {}
+    for r in records:
+        f = first.get(r.session_id)
+        if f is None or r.timestamp < f[0]:
+            first[r.session_id] = (r.timestamp, r.cwd, r.entrypoint)
+        tok[r.session_id] += r.total_tokens
+        proj_of.setdefault(r.session_id, r.project)
+
+    cons = getattr(snap, "consoles", None) or []
+    if not cons:
+        out.append("  · 没配控制台 (~/.tokmon/consoles.json 不存在或为空): 控制台派出的会话会算在「未认领 sdk」里")
+    else:
+        out.append(f"  · 控制台 {len(cons)} 个: " + " · ".join(f"{c.code} {c.dialect}" for c in cons)
+                   + f" · 认得的会话 {len(snap.labels)} 个 · 运行 {len(snap.runs)} 次")
+    probs = Counter(p for p in getattr(snap, "problems", []) or [])
+    if probs:
+        warns += 1
+        out.append("  ⚠ 读控制台文件时的问题: " + "; ".join(f"{p}" + (f" ×{n}" if n > 1 else "") for p, n in probs.most_common(6)))
+
+    labels = {}
+    for sid, (_t, cwd, ep) in first.items():
+        lab = snap.label(sid, cwd, ep) if snap is not None else None
+        if lab is not None:
+            labels[sid] = lab
+    sdk = [s for s, (_t, _c, ep) in first.items() if (ep or "").startswith("sdk")]
+    sdk_tok = sum(tok[s] for s in sdk)
+    claimed = sum(tok[s] for s in sdk if s in labels)
+    if sdk_tok:
+        pct = 100.0 * claimed / sdk_tok
+        icon = _icon(pct, CLAIM_GOOD, CLAIM_WARN)
+        if icon != "✓":
+            warns += 1
+        out.append(f"  {icon} sdk 会话 (entrypoint=sdk-*) 的 token 认领率 {pct:.2f}% "
+                   f"({len(sdk)} 个会话, 认领 {sum(1 for s in sdk if s in labels)} 个)")
+    by_con: dict = {}
+    for sid, lab in labels.items():
+        e = by_con.setdefault(lab.console, Counter())
+        e[lab.grain] += 1
+    if by_con:
+        zh = {"session": "会话级", "run": "运行级", "console": "只认到控制台"}
+        out.append("  · 按控制台: " + " · ".join(
+            f"{c} " + "/".join(f"{n} 个{zh.get(g, g)}" for g, n in sorted(e.items())) for c, e in sorted(by_con.items())))
+    un = sorted(((tok[s], s) for s in sdk if s not in labels), reverse=True)
+    if un:
+        out.append(f"  · 没认领的 sdk 会话 {len(un)} 个 (按 token 排, 前 {min(top, len(un))} 个; 不是控制台派的就该留在这里):")
+        for t, s in un[:top]:
+            ts, _cwd, ep = first[s]
+            out.append(f"       {s[:8]}  {proj_of.get(s, '?')[:28]:28} {fmt_tokens(t):>8} tokens  {ts.date()}  {ep}")
+
+    kind: dict = {}                                        # cwd -> "sp" / "tmp" / None (每个 cwd 只判一次)
+    for r in records:
+        if r.cwd and r.cwd not in kind:
+            kind[r.cwd] = "sp" if scratchpad_parent(r.cwd) is not None else ("tmp" if in_temp_dir(r.cwd) else None)
+    sp = [r for r in records if r.cwd and kind[r.cwd] == "sp"]
+    tmp = [r for r in records if r.cwd and kind[r.cwd] == "tmp" and r.session_id not in labels]
+    lab_fix = {s for s, lab in labels.items() if lab.project and lab.project != proj_of.get(s)}
+    out.append(f"  · 项目修正: scratchpad 里的会话归父会话的项目 {len({r.session_id for r in sp})} 个会话 / {len(sp)} 条记录; "
+               f"控制台标签改了项目 {len(lab_fix)} 个会话 / {sum(1 for r in records if r.session_id in lab_fix)} 条记录; "
+               f"其余在系统临时目录里跑的归「{TEMP_PROJECT}」{len({r.session_id for r in tmp})} 个会话 / {len(tmp)} 条记录")
+
+    # 每次运行: transcript (按会话级标签归到这次运行) vs 控制台账本 ledger.total
+    comp = {}
+    for r in records:
+        lab = labels.get(r.session_id)
+        if lab is None or lab.grain != "session":
+            continue
+        a = comp.setdefault((lab.console, lab.run), [0, 0, 0, 0, 0])
+        a[0] += r.input_tokens
+        a[1] += r.output_tokens
+        a[2] += r.cache_read
+        a[3] += r.cache_write
+        a[4] += 1
+    runs = sorted((k, v) for k, v in (getattr(snap, "runs", {}) or {}).items() if v.ledger)
+    if runs:
+        out.append("  · 每次运行的 token 对账 (transcript ÷ 控制台账本; 只对账, 钱以 transcript 为准):")
+    bad = 0
+    for (code, run), info in runs:
+        led = info.ledger
+        L = [int(led.get(k) or 0) for k in ("input", "output", "cache_read", "cache_write")]
+        T = comp.get((code, run), [0, 0, 0, 0, 0])
+        lt, tt = sum(L), sum(T[:4])
+        if lt == 0 and tt == 0:
+            continue
+        ratio = tt / lt if lt else float("inf")
+        ok = abs(ratio - 1) <= RECON_TOL
+        bad += 0 if ok else 1
+        parts = []
+        for name, t, l in zip(("输入", "输出", "缓存读", "缓存写"), T[:4], L):
+            if l and abs(t / l - 1) > RECON_TOL:
+                parts.append(f"{name} ×{t / l:.2f}")
+            elif not l and t:
+                parts.append(f"{name} 账本为 0")
+        calls = led.get("calls")
+        if isinstance(calls, int) and calls != T[4]:
+            parts.append(f"响应 {T[4]} vs 账本 {calls}")
+        out.append(f"       {'✓' if ok else '⚠'} {code} {run[:40]:40} 合计 ×{ratio:.4f}" + (f"  ({'; '.join(parts)})" if parts else ""))
+    if bad:
+        warns += 1
+        out.append(f"  ⚠ {bad} 次运行对不上 (差 > {RECON_TOL:.0%}): 控制台账本和 transcript 不一致 —— 多半是控制台记账的问题"
+                   f" (比如输出 token 记少了、漏记了响应), tokmon 的数字照 transcript 算, 不受影响")
+    skipped = sorted({c.code for c in cons if c.dialect in ("conductor", "missiond")})
+    if skipped:
+        out.append(f"  · {'/'.join(skipped)} 不做对账: A 正常收尾时会删掉自己的 transcript (只剩被杀掉的运行), B 不记 usage")
+    return out, warns
+
+
+def run_console_doctor(base: Path) -> None:
+    from . import consoles
+    from .parser import load_records
+    lines, _w = console_lines(load_records(base), consoles.snapshot(force=True))
+    title = term_text("控制台归属与对账 (CONSOLES_PLAN S1)")
+    print(title)
+    print("=" * len(title))
+    for ln in lines:
+        print(term_text(ln))
 
 
 def run_doctor(base: Path) -> None:
