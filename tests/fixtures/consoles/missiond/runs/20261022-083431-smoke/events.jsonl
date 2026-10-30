@@ -9,3 +9,5 @@
 {"seq": 12, "ts": 200.0, "type": "agent.parked", "agent": "a01", "data": {"reason": "idle"}}
 {"seq": 13, "ts": 210.0, "type": "meter.warning", "agent": null, "data": {"meter": "ram", "reason": "x"}}
 {"seq": 14, "ts": 300.0, "type": "approval.requested", "agent": null, "data": {"approval_id": "ap1", "kind": "user_action", "summary_zh": "不该被读出来", "cost_usd": 0, "command": "x"}}
+{"seq": 15, "ts": 320.0, "type": "quota.reading", "agent": null, "data": {"five_hour": 0.05, "seven_day": 0.5, "status": "allowed", "delta_points": 0.0, "drift": 0.0, "attributed": {}}}
+{"seq": 16, "ts": 330.0, "type": "mystery.thing", "agent": null, "data": {}}

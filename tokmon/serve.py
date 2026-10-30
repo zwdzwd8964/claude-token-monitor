@@ -231,13 +231,24 @@ def _doctor_status(base: Path) -> dict:
         il, iw = build_inference_lines(scan_inference(base))
     except Exception as e:
         il, iw = [f"inference doctor 出错: {e}"], 1
+    from .doctor import console_lines, contract_lines
     try:
-        from .doctor import console_lines
-        kl, kw = console_lines(load_records(base), consoles.snapshot(force=True))
-    except Exception as e:
-        kl, kw = [f"控制台体检出错: {e}"], 1
+        recs, snap = load_records(base), consoles.snapshot(force=True)
+    except Exception as e:                                # 两节都没跑成: 都要说出来, 不能显示「健康」
+        recs = snap = None
+        kl, kw = [f"控制台体检没跑: 读记录 / 控制台快照出错: {e}"], 1
+        ql, qw = [f"控制台契约体检没跑: 读记录 / 控制台快照出错: {e}"], 1
+    if snap is not None:
+        try:
+            kl, kw = console_lines(recs, snap)
+        except Exception as e:
+            kl, kw = [f"控制台体检出错: {e}"], 1
+        try:
+            ql, qw = contract_lines(recs, snap)
+        except Exception as e:
+            ql, qw = [f"控制台契约体检出错: {e}"], 1
     return {"cost": {"lines": cl, "warns": cw}, "inference": {"lines": il, "warns": iw},
-            "consoles": {"lines": kl, "warns": kw}}
+            "consoles": {"lines": kl, "warns": kw}, "contract": {"lines": ql, "warns": qw}}
 
 
 def _do_terminate(body: dict) -> dict:
@@ -1042,6 +1053,7 @@ def _sessions_with_briefs(base) -> dict:
         rows.append(r)
     out["sessions"] = rows
     out["runs"] = _console_runs(rows, rv.get("sess") or {})
+    out["quota"] = consoles.snapshot().quota_now(time.time())   # S3: 页顶额度条 (控制台记下的订阅额度读数)
     out["spend_today"] = rv["today"]
     out["burn_window_s"] = BURN_WINDOW_S
     out["context_line"], out["big_ctx"] = context_view.TAX_LINE, context_view.BIG_CTX

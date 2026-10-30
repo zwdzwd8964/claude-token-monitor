@@ -78,6 +78,17 @@
   .runhead { cursor:pointer; } .runhead:hover .title { text-decoration:underline; }
   .rtog { color:var(--dim); font-size:12px; width:12px; display:inline-block; }
   .kids { display:flex; flex-direction:column; gap:6px; margin:7px 0 0 18px; }
+  /* 订阅额度 (CONSOLES_PLAN S3): 填充色带严重程度, 轨道是同一色相的暗一档; 百分比永远写成文字 (不只靠颜色) */
+  .quota { display:flex; gap:18px; align-items:center; flex-wrap:wrap; margin:0 0 10px; font-size:12.5px; }
+  .quota .qh { color:var(--dim); cursor:help; }
+  .qw { display:inline-flex; gap:7px; align-items:center; cursor:help; }
+  .qw .ql { color:var(--dim); } .qw .qd { color:var(--dim); font-size:11.5px; }
+  .qm { width:110px; height:8px; border-radius:4px; overflow:hidden; display:inline-block; }
+  .qm i { display:block; height:100%; border-radius:4px; }
+  .qm.q-ok { background:#1d2740; } .qm.q-ok i { background:var(--accent); }
+  .qm.q-warn { background:#3a3320; } .qm.q-warn i { background:var(--warn); }
+  .qm.q-bad { background:#3d1f27; } .qm.q-bad i { background:var(--bad); }
+  .qw.stale { opacity:.45; filter:grayscale(1); }
   .kids[hidden] { display:none; }   /* 上面的 display:flex 会盖掉浏览器默认的 [hidden] —— 不写这一行, 收起就没用 */
   .cchip { font-size:11.5px; border:1px solid var(--line); border-radius:6px; padding:0 6px; color:var(--dim); white-space:nowrap; cursor:help; }
   .cchip.grain { border-style:dashed; }
@@ -220,6 +231,36 @@ async function load(){
     if(d.error){ $('#app').innerHTML='<div class="row unk warn">读取失败: '+esc(d.error)+'</div>'; $('#foot').textContent=''; return; }
     DATA=d; render();
   }catch(e){ if(my===reqId) $('#foot').textContent='请求失败: '+e; }
+}
+
+// 订阅额度 (CONSOLES_PLAN S3): 控制台从 SDK 限流事件里记下的读数 —— 整个订阅账户的窗口, 不只是控制台自己的用量;
+// 控制台没在跑就没有新读数, 这里不推测: 超过 1 小时的置灰, 过了重置时刻的说「作废」
+const QWIN = {five_hour:'5 小时', seven_day:'7 天'};
+const WDAY = ['周日','周一','周二','周三','周四','周五','周六'];
+function fmtReset(epoch){
+  if(!epoch) return '重置时刻未知';
+  const t=new Date(epoch*1000), now=new Date(), same=t.toDateString()===now.toDateString();
+  const far=(t-now)>6*86400e3;                     // 7 天窗口: 重置那天的重置之后, 下一次是「下周同一天」, 别写成像今天
+  return (same?'':(far?'下':'')+WDAY[t.getDay()]+' ')+fmtHM(epoch)+' 重置';
+}
+function quotaBar(qd){
+  const ws=Object.keys(QWIN).filter(w=>qd && qd[w] && qd[w].utilization!=null);
+  if(!ws.length) return '';
+  const cells=ws.map(w=>{
+    const r=qd[w], u=Math.max(0, +r.utilization), pct=Math.round(u*100);
+    const lvl=(pct>=90||r.status==='rejected')?'bad':(pct>=70?'warn':'ok');   // 跟写出来的百分比同一个数比 (不然 89.6% 写成 90% 却不红)
+    const grey=r.stale||r.expired;
+    const when=r.expired?'已过重置时刻, 读数作废':fmtReset(r.resets_at);
+    const tip=QWIN[w]+'窗口已用 '+pct+'%（控制台 '+r.console+' 记下的读数，'+fmtAgo(r.age_s)+'）\n'
+      +(r.resets_at?('重置时刻 '+new Date(r.resets_at*1000).toLocaleString()+'\n'):'控制台没报重置时刻\n')
+      +(r.rejected_at?('控制台 '+fmtHM(r.rejected_at)+' 报了「被拒」(触顶): 利用率仍是之前那条读数的\n'):(r.status?('状态: '+r.status+'\n'):''))
+      +(r.expired?'已经过了重置时刻: 这个读数属于上一个窗口, 作废\n':(r.stale?'读数超过 1 小时: 控制台没在跑就没有新读数, 不推测\n':''))
+      +'读数是整个订阅账户的, 不只是控制台自己的用量';
+    return `<span class="qw ${grey?'stale':''}" data-q="${w}" title="${esc(tip)}"><span class="ql">${QWIN[w]}</span>`
+      +`<span class="qm q-${lvl}"><i style="width:${Math.min(100,pct)}%"></i></span><b>${lvl==='bad'?'⚠ ':''}${pct}%</b>`
+      +`<span class="qd">${esc(when)} · ${fmtAgo(r.age_s)} · 来自 ${esc(r.console)}</span></span>`;
+  }).join('');
+  return `<div class="quota"><span class="qh" title="${esc('订阅额度: 控制台从 SDK 的限流事件里记下的 5 小时 / 7 天窗口利用率。\n只有控制台在跑时才有新读数; tokmon 自己算不出额度, 也不推测。')}">订阅额度</span>${cells}</div>`;
 }
 
 function render(){
@@ -395,7 +436,7 @@ function render(){
   // 无 filter 生效时才用旧的低调 note (被隐藏"等你已久"/文本不匹配); 有 filter 时上面的 fbar 已醒目说清
   const pendNote = d.briefs_pending ? `<div class="meta" style="margin:6px 0">⏳ 还有 ${d.briefs_pending} 个会话的当前任务在后台计算（服务刚启动时会这样，大会话要多等一会儿），算好后下次刷新就出现花费与风险角标。</div>` : '';
   const shownNote = (!bits.length && rows.length<d.sessions.length) ? `<span class="meta">（显示 ${rows.length}/${d.sessions.length}，已隐藏「等你已久」/不匹配）</span>` : '';
-  $('#app').innerHTML = fbar + counts + pendNote + `<div class="sess">${body||'<div class="muted">无匹配会话</div>'}</div>` + (shownNote?`<div style="margin-top:6px">${shownNote}</div>`:'');
+  $('#app').innerHTML = fbar + quotaBar(d.quota) + counts + pendNote + `<div class="sess">${body||'<div class="muted">无匹配会话</div>'}</div>` + (shownNote?`<div style="margin-top:6px">${shownNote}</div>`:'');
   focusHash();
 
   const ts=new Date(d.generated_at_epoch*1000).toLocaleTimeString();

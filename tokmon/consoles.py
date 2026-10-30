@@ -29,11 +29,17 @@ transcript 照常进 ~/.claude/projects —— tokmon 算得到它们的钱, 却
 - missiond (B): <mission>/agents/<aid>.json 的 session_id 精确到会话 (白名单只取四个键); 没有 json 时按 worktree 目录认到运行。
 - conductor (A): 从不记 session_id, 且正常收尾会删掉自己的 transcript; 按 cwd 认: workspace 下的到运行级,
   锦标赛 entry / 裁判目录精确到 agent。
+
+S3 (额度与对账): 每个控制台每个窗口 (5 小时 / 7 天) 最近一条额度读数 (`Snapshot.quota`, 页顶额度条用 `quota_now`);
+A 的 usage 事件加总成账本 (与 office 的 state.json 账本同形, 只对账); `contract()` 给 doctor 数每个控制台的
+events.jsonl: 读不读得了、信封合不合规、各类型多少条 —— 用到的 / 登记在案不用的 (REGISTERED_TYPES, 即 CONSOLES_PLAN §3.2)
+之外的就是「没认出的类型」(控制台升级加了新事件, 这里第一个知道)。只数, 不留内容。
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import threading
@@ -51,6 +57,8 @@ _LOCK = threading.Lock()
 _CACHE: dict = {"t": 0.0, "snap": None, "cfg_sig": None}
 _FILES: dict[str, tuple] = {}       # path -> ((size, mtime), 解析结果)   state.json / agents json / 台账
 _TAILS: dict[str, "_Tail"] = {}     # events.jsonl -> 尾读状态
+_COUNTS: dict[str, "_Count"] = {}   # events.jsonl -> 契约计数 (doctor 用, 按需)
+_COUNT_LOCK = threading.Lock()      # 契约计数第一次要读完全部 events (几十 MB): 不占快照的锁
 
 SELF_TEST = "自测"                  # E 的自测探针会话: 运行一栏与角色一栏都写它
 _A_FIXTURE = "00000000-"            # A 的合成样例运行 (界面自测用), 不算真运行
@@ -65,6 +73,7 @@ def set_config(path) -> None:
         _CACHE.update(t=0.0, snap=None, cfg_sig=None)
         _FILES.clear()
         _TAILS.clear()
+        _COUNTS.clear()
 
 
 def config_path() -> Path:
@@ -93,7 +102,8 @@ class RunInfo:
     status: str = ""                                   # 控制台最近报的状态 (running / idle / done / failed …)
     task_starts: list = field(default_factory=list)    # [(开始时刻, 任务键)] 按时间排序
     task_status: dict = field(default_factory=dict)    # 任务键 -> 结束状态
-    ledger: dict | None = None                         # office: state.json ledger.total (对账用, 不当真值)
+    ledger: dict | None = None                         # 控制台自记的账 {input, output, cache_read, cache_write, calls, cost} (只对账, 不当真值)
+    ledger_src: str = ""                               # "state" = office 的 state.json ledger.total; "events" = A 的 usage 事件加总
     # ---- S2 状态机的料 (都是控制台自己写下的事实; 工单只记 id / 种类 / 开关时刻 / 是否阻塞, **不记题目和正文**)
     tickets: dict = field(default_factory=dict)        # 工单 id -> {"kind", "opened", "closed", "blocking"}
     park_until: float | None = None                    # 控制台报的额度停泊到几点
@@ -165,6 +175,23 @@ class Console:
     url: str
     project: str
     under_anchor: bool = False      # 项目根在 .vscode 下 (「仅 .vscode」筛选时, 改了项目的会话跟着项目走)
+    runs_dir: str = ""              # 契约计数用 (doctor)
+
+
+QUOTA_WINDOWS = {"five_hour": 5 * 3600, "seven_day": 7 * 86400}   # 订阅额度的两个窗口 -> 窗口长度 (秒)
+QUOTA_STALE_S = 3600                                              # 额度读数超过这么久就置灰 (控制台没在跑时不推测)
+
+
+@dataclass(frozen=True)
+class QuotaReading:
+    """控制台从 SDK 的限流事件里记下的一条额度读数 (整个订阅账户的, 不只是这个控制台的用量)。"""
+    console: str
+    run: str
+    window: str                     # five_hour / seven_day
+    ts: float                       # 控制台记下它的时刻
+    utilization: float              # 0..1 (只报重置时刻、没有利用率的读数 —— C 的 —— 只进 Snapshot.resets)
+    resets_at: float | None         # 这个窗口几点重置; B 不报, A 只报触顶的那个窗口
+    status: str = ""                # 这个窗口的状态 (allowed / allowed_warning / rejected …); 不知道是哪个窗口的就空着
 
 
 class Snapshot:
@@ -176,6 +203,9 @@ class Snapshot:
         self.runs: dict[tuple[str, str], RunInfo] = {}
         self.windows: dict[tuple[str, str, str], list] = {}   # (代号, 运行, agent) -> [(t0, t1, 任务键)] 派活窗口
         self.problems: list[str] = []                   # 读不了的文件 / 对不上的记录 (doctor 用, 不含内容)
+        self.quota: dict[tuple[str, str], QuotaReading] = {}   # (代号, 窗口) -> 这个控制台最近一条带利用率的读数
+        self.reset_marks: dict[str, set] = {}                  # 窗口 -> 各控制台报过的所有重置时刻 (C 只报这个; 借重置时刻 / 判断作废用)
+        self.rejected: dict[tuple[str, str], tuple] = {}       # (代号, 窗口) -> 最近一次「被拒」的 (时刻, 重置时刻)
         self._cwd_rules: list[tuple] = []               # (代号, 规范化的根, 方言, 项目, 附加数据)
         self._cwd_memo: dict[str, Label | None] = {}
 
@@ -211,6 +241,33 @@ class Snapshot:
 
     def console(self, code: str) -> Console | None:
         return next((c for c in self.consoles if c.code == code), None)
+
+    def quota_now(self, now: float) -> dict:
+        """页顶额度条: 每个窗口取所有控制台里最新的、带利用率的那条读数。
+        - 没带重置时刻的 (B, A 的 7 天窗口) 借别人报的、同一个窗口周期的重置时刻 (读数落在 (重置 - 窗口长, 重置] 里);
+        - 作废 (expired): 过了重置时刻; 或者有人报过一个**更晚开始、而且已经开始了**的窗口 (读数属于上一个窗口);
+        - 之后又有控制台报了这个窗口「被拒」(A / C 的被拒事件不带利用率): 状态改成 rejected, 利用率不编, 仍是那条读数的。
+        -> {窗口: {utilization, resets_at, ts, age_s, console, status, rejected_at, stale, expired} 或 None}"""
+        out: dict = {}
+        for w, span in QUOTA_WINDOWS.items():
+            util = max((q for (c, ww), q in self.quota.items() if ww == w), key=lambda q: q.ts, default=None)
+            if util is None:
+                out[w] = None
+                continue
+            marks = self.reset_marks.get(w, ())
+            resets = util.resets_at
+            if resets is None:
+                cands = [r for r in marks if r - span < util.ts <= r]
+                resets = max(cands) if cands else None
+            newer = any(util.ts + 60 <= r - span <= now for r in marks)   # 新的窗口已经开始了 (60 秒容差: 重置时刻会抖)
+            rej = max((v for (c, ww), v in self.rejected.items()
+                       if ww == w and v[0] > util.ts and (v[1] is None or v[1] > now)), default=None)
+            out[w] = {"utilization": util.utilization, "resets_at": resets, "ts": util.ts,
+                      "age_s": max(0, int(now - util.ts)), "console": util.console,
+                      "status": "rejected" if rej else util.status, "rejected_at": rej[0] if rej else None,
+                      "stale": now - util.ts > QUOTA_STALE_S,
+                      "expired": (resets is not None and now > resets) or newer}
+        return out
 
     # ---- 按 cwd 认 (A / B)
 
@@ -261,13 +318,15 @@ def _build() -> Snapshot:
         if not isinstance(c, dict) or not c.get("code") or not isinstance(c.get("runs_dir"), str):
             continue
         code, dialect = str(c["code"]), str(c.get("dialect") or "")
+        if not os.path.isdir(c["runs_dir"]):
+            snap.problems.append(f"{code}: runs_dir 不存在或列不出 (consoles.json 里的路径过期了?)")
         root = c.get("project_root")
         if root is not None and not isinstance(root, str):
             snap.problems.append(f"{code}: project_root 不是字符串")
             root = None
         wid = workspace_identity(root) if root else None
         con = Console(code, str(c.get("name") or code), dialect, str(c.get("url") or ""),
-                      wid.project if wid else code, bool(wid and wid.under_anchor))
+                      wid.project if wid else code, bool(wid and wid.under_anchor), str(c["runs_dir"]))
         snap.consoles.append(con)
         try:
             if dialect == "office":
@@ -296,6 +355,7 @@ def _office(snap: Snapshot, con: Console, c: dict) -> None:
         if isinstance(st, dict):
             led = (st.get("ledger") or {}).get("total")
             info.ledger = led if isinstance(led, dict) else None
+            info.ledger_src = "state" if info.ledger is not None else ""
             for a in st.get("agents") or []:
                 spec = (a or {}).get("spec") or {}
                 aid = str(spec.get("id") or "")
@@ -339,6 +399,8 @@ def _office(snap: Snapshot, con: Console, c: dict) -> None:
                 _ticket_close(info, d.get("id"), ts)
             elif t == "budget" and d.get("level"):
                 info.budget_level = str(d["level"])
+            elif t == "quota":
+                _quota(snap, code, run, ts, d)
             elif t == "quota.park" and not d.get("injected"):
                 info.park_until = _num(d.get("until"))
             elif t == "quota.resume":
@@ -372,7 +434,7 @@ def _office(snap: Snapshot, con: Console, c: dict) -> None:
 
 _OFFICE_TYPES = ("session.started", "session.status", "session.finished", "task.started", "task.finished",
                  "agent.successor", "ticket.opened", "ticket.answered", "ticket.superseded", "ticket.adopted",
-                 "budget", "quota.park", "quota.resume", "agent.parked")
+                 "budget", "quota", "quota.park", "quota.resume", "agent.parked")
 
 
 def _office_state_now(info: RunInfo, st: dict, st_t: float | None = None, fresh: bool = True) -> None:
@@ -513,6 +575,8 @@ def _missiond(snap: Snapshot, con: Console, c: dict) -> None:
                 _ticket_close(info, "a:" + str(d.get("approval_id") or ""), ts)
             elif t == "agent.parked" and d.get("reason") == "quota" and _num(d.get("until")):
                 info.park_until = max(info.park_until or 0.0, _num(d.get("until")))     # idle 那种停泊不是额度
+            elif t == "quota.reading":
+                _quota(snap, code, run, ts, d)
             elif t == "meter.warning" and d.get("meter") in ("five_hour", "quota_share", "time_box"):
                 info.budget_level, info.budget_at = "warn", ts    # ram / capacity / sessions 是机器负载, 不是预算
             elif t == "task.started" and ts is not None and d.get("n") is not None:
@@ -527,7 +591,8 @@ def _missiond(snap: Snapshot, con: Console, c: dict) -> None:
 
 
 _MISSIOND_TYPES = ("mission.created", "mission.state", "task.started", "task.finished", "question.asked",
-                   "question.answered", "approval.requested", "approval.resolved", "agent.parked", "meter.warning")
+                   "question.answered", "approval.requested", "approval.resolved", "agent.parked", "meter.warning",
+                   "quota.reading")
 
 
 def _b_label(code: str, project: str, rest: list, missions: set) -> Label | None:
@@ -551,8 +616,7 @@ def _conductor(snap: Snapshot, con: Console, c: dict) -> None:
         if run.startswith(_A_FIXTURE):
             continue
         info = snap.runs.setdefault((code, run), RunInfo(code, run))
-        for ev in _events(rdir / "events.jsonl", ("run.started", "run.status", "run.finished", "task.started",
-                                                   "task.finished", "tournament.started", "budget", "quota"), snap):
+        for ev in _events(rdir / "events.jsonl", _CONDUCTOR_TYPES, snap):
             t, d = ev.get("type"), ev.get("data") or {}
             ts = _num(ev.get("ts"))
             if t == "run.started":
@@ -570,6 +634,16 @@ def _conductor(snap: Snapshot, con: Console, c: dict) -> None:
                 info.budget_level = str(d["level"])
             elif t == "quota":                                    # A 没有停泊: 被拒 (rejected) 就等到重置
                 info.park_until = _num(d.get("resets_at")) if d.get("status") == "rejected" else None
+                _quota(snap, code, run, ts, d)
+            elif t == "usage" and not d.get("reconciled"):        # A 的账本: 逐次调用加总 (agent_cost / total_cost 是累计, 不加)
+                led = info.ledger if info.ledger_src == "events" else None
+                if led is None:
+                    led = info.ledger = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "calls": 0, "cost": 0.0}
+                    info.ledger_src = "events"
+                for k in ("input", "output", "cache_read", "cache_write"):
+                    led[k] += int(_num(d.get(k)) or 0)
+                led["calls"] += 1
+                led["cost"] += _num(d.get("cost")) or 0.0
             elif t == "tournament.started" and d.get("tid"):
                 ent = d.get("entries") if isinstance(d.get("entries"), dict) else {}
                 tours.setdefault(run.lower(), {})[str(d["tid"]).lower()] = (
@@ -580,6 +654,10 @@ def _conductor(snap: Snapshot, con: Console, c: dict) -> None:
         info.task_starts.sort()
     snap._cwd_rules.append((code, _norm(c["runs_dir"]), "conductor", con.project,
                             {"tours": tours, "runs": {k[1].lower(): k[1] for k in snap.runs if k[0] == code}}))
+
+
+_CONDUCTOR_TYPES = ("run.started", "run.status", "run.finished", "task.started", "task.finished",
+                    "tournament.started", "budget", "quota", "usage")
 
 
 def _a_label(code: str, project: str, rest: list, extra: dict) -> Label | None:
@@ -597,6 +675,165 @@ def _a_label(code: str, project: str, rest: list, extra: dict) -> Label | None:
             return Label(code, run, "judge", judges[0] if len(judges) == 1 else "", project,
                          "session" if len(judges) == 1 else "run")
     return Label(code, run, "", "", project, "run")
+
+
+# ---------------------------------------------------------------- 额度读数 (S3)
+
+def _frac(x) -> float | None:
+    return float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) else None
+
+
+def _quota(snap: Snapshot, code: str, run: str, ts, d: dict) -> None:
+    """一条额度事件 -> 每个窗口一条读数 (每个控制台每个窗口只留最新的)。各代形状 (CONSOLES_PLAN §3.2):
+    D / E: windows.{窗口}.{utilization, resets_at};  A: windows.{窗口} 是小数 + limit / resets_at (只是 limit 那个窗口的);
+    B: 顶层 five_hour / seven_day 小数, 不报重置时刻;  C: 只有 limit + resets_at, utilization 是空的。
+    E 的故障注入 (injected) 不认; known=False (还没读到过) 不认。"""
+    if ts is None or not math.isfinite(ts) or d.get("injected") or d.get("known") is False:
+        return
+    wins = d.get("windows") if isinstance(d.get("windows"), dict) else {}
+    for w in QUOTA_WINDOWS:
+        x = wins.get(w, d.get(w))
+        if isinstance(x, dict):
+            util, resets = _frac(x.get("utilization")), _frac(x.get("resets_at"))
+            wst = x.get("status")                            # D 的窗口自己带状态
+        else:
+            util, resets, wst = _frac(x), None, None
+        if d.get("limit") == w:                              # 事件的状态只属于 limit 指的那个窗口 (E / B 一条事件一个状态: 不知道是哪个窗口的, 不认)
+            resets = resets or _frac(d.get("resets_at"))
+            util = util if util is not None else _frac(d.get("utilization"))
+            wst = wst or d.get("status")
+        wst = str(wst or "")
+        if resets:
+            snap.reset_marks.setdefault(w, set()).add(resets)
+        if wst == "rejected":
+            old = snap.rejected.get((code, w))
+            if old is None or ts >= old[0]:
+                snap.rejected[(code, w)] = (ts, resets or None)
+        if util is None:
+            continue                                         # 只报了重置时刻 / 被拒 (C; A 被拒那几条): 不盖掉之前带利用率的读数
+        old = snap.quota.get((code, w))
+        if old is None or ts >= old.ts:
+            snap.quota[(code, w)] = QuotaReading(code, run, w, ts, util, resets or None, wst)
+
+
+# ---------------------------------------------------------------- 契约: 类型登记 + 计数 (S3, doctor 用)
+
+# 各代控制台写、tokmon **有意不用**的事件类型 (2026-10-29 在真数据上盘点; 为什么不用见 CONSOLES_PLAN §3.2)。
+# 用到的 (各方言解析器订阅的) + 这里登记的之外, 就是「没认出的类型」: 控制台升级加了新事件, doctor 第一个知道。
+REGISTERED_TYPES = {
+    "office": frozenset({
+        "agent.status", "agent.tool_call", "agent.tool_result", "agent.thinking", "agent.text",      # agent 过程流水
+        "agent.spawned", "agent.finished", "agent.retired", "agent.denied", "agent.audit", "agent.backstop",
+        "agent.handoff_due", "agent.park_requested", "agent.park_cleared", "agent.released", "agent.resumed",
+        "assign.started", "assign.finished", "dispatch.started", "dispatch.finished", "dispatch.concurrency",  # 派活 (state.json 里有)
+        "usage", "usage.reported",                                                                   # 用量 (对账用 state.json 账本)
+        "plan.updated", "verify.state", "checks.run", "decision.recorded", "progress.reported",       # 计划与验收
+        "message", "board.post", "human.message", "notify",                                          # 消息与通知
+        "error", "policy.changed", "policy.task", "audit.violation", "secret.blocked",              # 错误、策略与审计
+        "git.commit", "git.tag", "session.restored", "quota.injected",
+        "ticket.reminder",                       # E 对开了几小时的阻塞工单自己的提醒: 不改工单状态 (tokmon 在 60 秒时已提醒过)
+        "constraints.prescanned", "eyes.confirmed", "finish.rejected", "handoff.written", "intake.foreign_session",
+        "job.claimed", "job.started", "job.finished", "next.added", "next.rendered", "next.taken",
+        "report.written", "sources.manifest", "understand.recorded", "understand.rejected",
+    }),
+    "conductor": frozenset({
+        "agent.status", "agent.tool_call", "agent.tool_result", "agent.thinking", "agent.text",
+        "agent.spawned", "agent.finished", "board.post", "message", "human.message", "error", "file.write",
+        "policy.changed", "tournament.round", "tournament.finished",
+    }),
+    "missiond": frozenset({
+        "tool.call", "tool.result", "tool.error", "agent.status", "agent.text", "agent.thinking", "agent.message",
+        "agent.checkpoint", "agent.finished", "agent.interrupted", "agent.spawned", "agent.submitted",
+        "subagent.task", "subagent.started", "subagent.finished", "phase.status", "plan.posted", "report.written",
+        "job.state", "job.submitted", "job.finished", "spend.reserved", "spend.settled",
+        "daemon.started", "daemon.lag", "daemon.draining", "daemon.stopped", "pod.alarm", "pod.reaped", "pod.released",
+        "policy.denied", "integrity", "git.merge", "operator.message", "operator.delivered",
+    }),
+}
+USED_TYPES = {"office": frozenset(_OFFICE_TYPES), "conductor": frozenset(_CONDUCTOR_TYPES),
+              "missiond": frozenset(_MISSIOND_TYPES)}
+_ENVELOPE = frozenset({"seq", "ts", "type", "agent", "data"})
+
+
+class _Count:
+    __slots__ = ("sig", "offset", "lines", "ok", "types")
+
+    def __init__(self):
+        self.sig, self.offset, self.lines, self.ok = None, 0, 0, 0
+        self.types: dict[str, int] = {}
+
+
+def _count_file(path: Path) -> "_Count | None":
+    """一份 events.jsonl 的契约计数 (增量, 与尾读同一套偏移规则)。读不了 -> None。"""
+    key = str(path)
+    c = _COUNTS.get(key)
+    if c is None:
+        c = _COUNTS[key] = _Count()
+    sig = _sig(path)
+    if sig is None:
+        return None
+    if sig == c.sig:
+        return c
+    if sig[0] < c.offset:
+        _COUNTS[key] = c = _Count()                              # 截断 / 重写: 从头数
+    try:
+        with _open_shared(path) as f:
+            f.seek(c.offset)
+            chunk = f.read()
+    except OSError:
+        return None
+    end = chunk.rfind(b"\n") + 1
+    for line in chunk[:end].splitlines():
+        if not line.strip():
+            continue
+        c.lines += 1
+        try:
+            o = json.loads(line.decode("utf-8-sig"))
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if not isinstance(o, dict):
+            continue
+        t = o.get("type")
+        if _ENVELOPE <= o.keys() and isinstance(t, str) and _frac(o.get("ts")) is not None and isinstance(o.get("data"), dict):
+            c.ok += 1
+        if isinstance(t, str):
+            c.types[t] = c.types.get(t, 0) + 1
+    c.offset += end
+    c.sig = (c.offset, sig[1]) if end == len(chunk) else None
+    return c
+
+
+def contract(snap: Snapshot) -> dict:
+    """每个控制台的契约计数: {代号: {dialect, files, unreadable, lines, ok, types, unknown}}。
+    unknown = 用到的和登记在案的之外的类型 -> 条数。按需 (doctor), 第一次读完全部 events, 之后增量。"""
+    out = {}
+    with _COUNT_LOCK:
+        for con in snap.consoles:
+            known = USED_TYPES.get(con.dialect, frozenset()) | REGISTERED_TYPES.get(con.dialect, frozenset())
+            e = {"dialect": con.dialect, "files": 0, "unreadable": 0, "lines": 0, "ok": 0, "types": {}, "unknown": {},
+                 "missing": not con.runs_dir or not os.path.isdir(con.runs_dir)}
+            for rdir in _run_dirs(con.runs_dir) if con.runs_dir else ():
+                p = rdir / "events.jsonl"
+                try:
+                    with os.scandir(rdir) as it:
+                        has = any(x.name == "events.jsonl" for x in it)
+                except OSError:
+                    e["unreadable"] += 1                         # 运行目录列不出: 算读不了, 不当它不存在
+                    continue
+                if not has:
+                    continue
+                e["files"] += 1
+                c = _count_file(p)
+                if c is None:
+                    e["unreadable"] += 1
+                    continue
+                e["lines"] += c.lines
+                e["ok"] += c.ok
+                for t, n in c.types.items():
+                    e["types"][t] = e["types"].get(t, 0) + n
+            e["unknown"] = {t: n for t, n in e["types"].items() if t not in known}
+            out[con.code] = e
+    return out
 
 
 # ---------------------------------------------------------------- 文件读取 (共享删除, 读完即关)

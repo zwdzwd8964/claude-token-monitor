@@ -353,61 +353,170 @@ def console_lines(records, snap, top: int = 8) -> tuple[list[str], int]:
                f"控制台标签改了项目 {len(lab_fix)} 个会话 / {sum(1 for r in records if r.session_id in lab_fix)} 条记录; "
                f"其余在系统临时目录里跑的归「{TEMP_PROJECT}」{len({r.session_id for r in tmp})} 个会话 / {len(tmp)} 条记录")
 
-    # 每次运行: transcript (按会话级标签归到这次运行) vs 控制台账本 ledger.total
-    comp = {}
+    out.append("  · 每次运行的 token / $ 对账见下一节「控制台契约」")
+    return out, warns
+
+
+def _labelled(records, snap) -> tuple[dict, dict]:
+    """会话 -> (最早一条的 (时刻, cwd, entrypoint)), 会话 -> 标签 (认得出的)。"""
+    first: dict = {}
+    for r in records:
+        f = first.get(r.session_id)
+        if f is None or r.timestamp < f[0]:
+            first[r.session_id] = (r.timestamp, r.cwd, r.entrypoint)
+    labels = {}
+    for sid, (_t, cwd, ep) in first.items():
+        lab = snap.label(sid, cwd, ep) if snap is not None else None
+        if lab is not None:
+            labels[sid] = lab
+    return first, labels
+
+
+A_RECON_TOL = 0.05                           # A 被杀掉的运行: 最后几次调用可能只落了一边 (S1 实测逐 agent ±5%)
+
+
+def contract_lines(records, snap, stats: dict | None = None) -> tuple[list[str], int]:
+    """控制台契约一节 (CONSOLES_PLAN S3): 按控制台列文件是否可读、信封合规率、类型覆盖 (没认出的类型)、关联覆盖率、
+    每次运行的 token 对账、控制台自记的 $ 和 tokmon 的 $ 差多少。纯函数 (记录 + 快照 + 契约计数进, 行出)。
+
+    钱和 token 只以 transcript 为准 (I3/I4); 控制台的账只拿来对账 —— 对不上说明控制台记账有偏差, 不影响 tokmon 的数字。"""
+    from . import consoles as _consoles
+    out: list[str] = []
+    warns = 0
+    cons = getattr(snap, "consoles", None) or []
+    if not cons:
+        return ["  · 没配控制台 (~/.tokmon/consoles.json 不存在或为空)"], 0
+    stats = stats if stats is not None else _consoles.contract(snap)
+    first, labels = _labelled(records, snap)
+
+    # transcript 一侧: 按标签归到运行 (会话级和运行级都算: A 只认得到运行)
+    comp: dict = {}
     for r in records:
         lab = labels.get(r.session_id)
-        if lab is None or lab.grain != "session":
+        if lab is None or not lab.run or lab.grain == "console":
             continue
-        a = comp.setdefault((lab.console, lab.run), [0, 0, 0, 0, 0])
+        a = comp.setdefault((lab.console, lab.run), [0, 0, 0, 0, 0, 0.0])
         a[0] += r.input_tokens
         a[1] += r.output_tokens
         a[2] += r.cache_read
         a[3] += r.cache_write
         a[4] += 1
-    runs = sorted((k, v) for k, v in (getattr(snap, "runs", {}) or {}).items() if v.ledger)
-    if runs:
-        out.append("  · 每次运行的 token 对账 (transcript ÷ 控制台账本; 只对账, 钱以 transcript 为准):")
-    bad = 0
-    for (code, run), info in runs:
-        led = info.ledger
-        L = [int(led.get(k) or 0) for k in ("input", "output", "cache_read", "cache_write")]
-        T = comp.get((code, run), [0, 0, 0, 0, 0])
-        lt, tt = sum(L), sum(T[:4])
-        if lt == 0 and tt == 0:
+        a[5] += r.cost_usd
+    found = {s.lower() for s in first}
+
+    for con in cons:
+        code = con.code
+        e = stats.get(code) or {}
+        used = _consoles.USED_TYPES.get(con.dialect, frozenset())
+        types = e.get("types") or {}
+        unknown = e.get("unknown") or {}
+        lines, ok = e.get("lines", 0), e.get("ok", 0)
+        env = 100.0 * ok / lines if lines else 100.0
+        icon = "✓" if not e.get("missing") and not e.get("unreadable") and not unknown and env >= 99.9 else "⚠"
+        if icon == "⚠":
+            warns += 1
+        if e.get("missing"):
+            out.append(f"  ⚠ {code} 的 runs_dir 不存在或列不出 (consoles.json 里的路径过期了?)")
+        out.append(f"  {icon} {code} {con.dialect:9} events {e.get('files', 0)} 份 (读不了 {e.get('unreadable', 0)}) · "
+                   f"信封合规 {ok}/{lines} ({env:.1f}%) · 类型 {len(types)} 种: 用到 {sum(1 for t in types if t in used)} · "
+                   f"登记不用 {sum(1 for t in types if t not in used and t not in unknown)} · 没认出 {len(unknown)}")
+        if unknown:
+            out.append("       没认出的类型 (控制台升级加的? 认了就登记进 CONSOLES_PLAN §3.2 和 consoles.REGISTERED_TYPES): "
+                       + ", ".join(f"{t} ×{n}" for t, n in sorted(unknown.items(), key=lambda x: -x[1])[:8]))
+
+        # 关联覆盖率: 控制台记下的会话里, transcript 找得到几个; 运行里有几次接上了 transcript
+        known = [s for s, lab in snap.labels.items() if lab.console == code and lab.grain == "session"]
+        runs = [k for k in snap.runs if k[0] == code and k[1] != _consoles.SELF_TEST]
+        joined = sum(1 for k in runs if comp.get(k))
+        bits = []
+        if known:
+            hit = sum(1 for s in known if s in found)
+            bits.append(f"控制台记下的会话 {len(known)} 个, transcript 里找得到 {hit} 个 ({100.0 * hit / len(known):.0f}%)")
+        elif con.dialect == "conductor":
+            bits.append("A 不记 session_id, 只按目录认到运行")
+        bits.append(f"运行 {len(runs)} 次, 接上 transcript 的 {joined} 次")
+        out.append("       关联: " + " · ".join(bits))
+
+        # 对账: 每次运行 transcript vs 控制台自记的账 (office: state.json 账本; A: usage 事件加总; B 不记)
+        if con.dialect == "missiond":
+            out.append("       对账: B 不记 usage (只在 agents json 里有累计数, 不在白名单里), 不对账")
             continue
-        ratio = tt / lt if lt else float("inf")
-        ok = abs(ratio - 1) <= RECON_TOL
-        bad += 0 if ok else 1
-        parts = []
-        for name, t, l in zip(("输入", "输出", "缓存读", "缓存写"), T[:4], L):
-            if l and abs(t / l - 1) > RECON_TOL:
-                parts.append(f"{name} ×{t / l:.2f}")
-            elif not l and t:
-                parts.append(f"{name} 账本为 0")
-        calls = led.get("calls")
-        if isinstance(calls, int) and calls != T[4]:
-            parts.append(f"响应 {T[4]} vs 账本 {calls}")
-        out.append(f"       {'✓' if ok else '⚠'} {code} {run[:40]:40} 合计 ×{ratio:.4f}" + (f"  ({'; '.join(parts)})" if parts else ""))
-    if bad:
-        warns += 1
-        out.append(f"  ⚠ {bad} 次运行对不上 (差 > {RECON_TOL:.0%}): 控制台账本和 transcript 不一致 —— 多半是控制台记账的问题"
-                   f" (比如输出 token 记少了、漏记了响应), tokmon 的数字照 transcript 算, 不受影响")
-    skipped = sorted({c.code for c in cons if c.dialect in ("conductor", "missiond")})
-    if skipped:
-        out.append(f"  · {'/'.join(skipped)} 不做对账: A 正常收尾时会删掉自己的 transcript (只剩被杀掉的运行), B 不记 usage")
+        tol = A_RECON_TOL if con.dialect == "conductor" else RECON_TOL
+        rows, deleted, bad = [], 0, 0
+        sum_t = sum_l = 0
+        cost_t = cost_l = 0.0
+        for (c, run), info in sorted(snap.runs.items()):
+            if c != code or not info.ledger:
+                continue
+            led = info.ledger
+            L = [int(led.get(k) or 0) for k in ("input", "output", "cache_read", "cache_write")]
+            T = comp.get((c, run), [0, 0, 0, 0, 0, 0.0])
+            lt, tt = sum(L), sum(T[:4])
+            if lt == 0 and tt == 0:
+                continue
+            sum_l, sum_t = sum_l + lt, sum_t + tt
+            if tt == 0 and con.dialect == "conductor":
+                deleted += 1                                       # A 正常收尾删掉了自己的 transcript
+                continue
+            ratio = tt / lt if lt else float("inf")
+            # A 收尾的 agent 会删掉自己的 transcript: 被杀掉的运行只剩还活着的那几个 -> transcript 少是预期的, 多了才是账的问题
+            partial = con.dialect == "conductor" and ratio < 1 - tol
+            good = abs(ratio - 1) <= tol or partial
+            bad += 0 if good else 1
+            parts = []
+            cols_ok = True                                       # 每一列都对得上 (合计对得上也可能是一列多一列少)
+            for name, t, l in zip(("输入", "输出", "缓存读", "缓存写"), T[:4], L):
+                if l and abs(t / l - 1) > tol:
+                    parts.append(f"{name} ×{t / l:.2f}")
+                    cols_ok = False
+                elif not l and t:
+                    parts.append(f"{name} 账本为 0")
+                    cols_ok = False
+            calls = led.get("calls")
+            if isinstance(calls, int) and calls != T[4]:
+                parts.append(f"响应 {T[4]} vs 账本 {calls}")
+            lc = _consoles._num(led.get("cost"))
+            if lc and T[5] and abs(ratio - 1) <= tol and cols_ok:   # $ 只比每列 token 都对得上的运行: 否则差的有漏记 / 删掉的, 不全是价目
+                cost_l, cost_t = cost_l + lc, cost_t + T[5]
+                parts.append(f"$ 控制台÷tokmon ×{lc / T[5]:.2f}")
+            elif lc and T[5]:
+                parts.append("$ 不比: token 先对不上")
+            if partial:
+                parts.insert(0, "transcript 只剩一部分: A 收尾的 agent 会删掉自己的 transcript")
+            rows.append(f"         {'·' if partial else ('✓' if good else '⚠')} {run[:40]:40} token transcript÷控制台 ×{ratio:.4f}"
+                        + (f"  ({'; '.join(parts)})" if parts else ""))
+        head = f"       对账 (只对账, 钱以 transcript 为准; 差 > {tol:.0%} 标 ⚠):"
+        if sum_l and sum_t:
+            head += f" 合计 transcript÷控制台 ×{sum_t / sum_l:.4f}"
+            if con.dialect == "conductor":
+                head += f" (即控制台自记的是 transcript 的 {sum_l / sum_t:.1f} 倍)"
+        if cost_l and cost_t:
+            head += f" · $ 控制台÷tokmon ×{cost_l / cost_t:.2f} (每列 token 都对得上的运行)"
+        out.append(head)
+        out.extend(rows)
+        if deleted:
+            out.append(f"         · 另有 {deleted} 次运行 transcript 已不在: A 正常收尾时会删掉自己的 transcript (只剩被杀掉的运行)")
+        if bad:
+            warns += 1
+            out.append(f"         ⚠ {bad} 次运行对不上: 控制台的账和 transcript 不一致 —— 多半是控制台记账的问题"
+                       f" (比如输出 token 记少了、漏记了响应), tokmon 的数字照 transcript 算, 不受影响")
+    out.append("  · $ 只比每列 token 都对得上的运行: 那里 $ 差多少是两边的价目不同 (控制台的缓存写一律按 5 分钟价、"
+               "部分模型的缓存读倍率旧了, 见 CONSOLES_PLAN 附录 A) —— 控制台自记的 $ 不当真值")
     return out, warns
 
 
 def run_console_doctor(base: Path) -> None:
     from . import consoles
     from .parser import load_records
-    lines, _w = console_lines(load_records(base), consoles.snapshot(force=True))
-    title = term_text("控制台归属与对账 (CONSOLES_PLAN S1)")
-    print(title)
-    print("=" * len(title))
-    for ln in lines:
-        print(term_text(ln))
+    recs, snap = load_records(base), consoles.snapshot(force=True)
+    for title, (lines, _w) in (("控制台归属 (CONSOLES_PLAN S1)", console_lines(recs, snap)),
+                               ("控制台契约: 文件 / 信封 / 类型 / 关联 / 对账 (CONSOLES_PLAN S3)", contract_lines(recs, snap))):
+        title = term_text(title)
+        print(title)
+        print("=" * len(title))
+        for ln in lines:
+            print(term_text(ln))
+        print()
 
 
 def run_doctor(base: Path) -> None:

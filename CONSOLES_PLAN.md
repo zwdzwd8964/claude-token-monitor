@@ -1,6 +1,7 @@
 # 控制台接入 · 迁移规格
 
-> **【状态章 · 2026-10-29】S0 已验收（0.23.0）· S1（0.24.0）· S2（0.25.0）已交付，S3 接着做（S0 之后约好连着做到 S3）。** 你在问卷里选了：
+> **【状态章 · 2026-10-29】S0 已验收（0.23.0）· S1（0.24.0）· S2（0.25.0）· S3（0.26.0）已交付，待你验收。**
+> 还差两件要你在场的：S2 判据 ③（铃铛在真机上响一次）、S3 判据 ①（额度读数和控制台页面上显示的对一次）。你在问卷里选了：
 > **1A** 在 tokmon 里按 S1 → S3 做 · **2A** 用配置文件列出控制台 · **3A** 先按官方价目修 `pricing.py`，控制台改读它。
 > 开工时你又定了几条：S0 也按官方价算 fast mode 和 us 推理；价目快照默认输出到 stdout，`--out` 写文件；`budget.json` 不动，在停顿点提醒你；
 > 超过 260 字符的 transcript 路径（31 个文件，现在读不到）放到 S1 修；S0 之后停一次给你看，S1→S3 连着做；每一刀都提交并推送。
@@ -82,6 +83,19 @@ transcript 照常写进 `~/.claude/projects`（目前 198 个主会话文件，�
 **S1 判据④ 的基线**（2026-10-29，S0 代码，另起一份 serve，热缓存，各 5 次取中位数）：`/api/tokens/cube?since=7d` 7.2 秒，`since=today` 9.9 秒，`/api/sessions` 0.14 秒；
 冷启动后第一次取 7 天立方 358 秒。热缓存的数字抖得厉害（同一接口 5.4–13.3 秒，后台各 pump 在同时扫描），S1 对比时用同样的方法、取中位数。
 
+**S3 落地备注（0.26.0）**：
+- 各代的额度读数形状比 §3.2 原来写的杂（2026-10-29 盘点真数据后回填进 §3.2「额度」一行）：A 的 `windows` 里直接是小数、`resets_at` 只属于 `limit` 那个窗口；
+  B 顶层小数、不报重置时刻；**C 只报重置时刻、利用率一直是空的**；D / E 是完整的 `windows.{窗口}.{utilization, resets_at}`；E 的故障注入（`injected`）不认。
+  所以「带利用率的读数」和「重置时刻」分开存：页顶取所有控制台里最新的带利用率的那条；它没带重置时刻时，借别的控制台报的、**同一个窗口周期**的重置时刻（读数落在 (重置 − 窗口长, 重置] 里），借不到就写「重置时刻未知」。
+- 页顶额度条只在有读数时出现；超过 1 小时置灰，过了重置时刻、或有控制台报过一个已经开始的新窗口，写「读数作废」（属于上一个窗口）。读数是整个订阅账户的，不只是控制台自己的用量，提示里写明。
+- 「被拒」只认得出是哪个窗口的才算：A / C 的 `limit` 指的窗口、D 的窗口自己的 `status`；E / B 一条事件一个状态、不说是哪个窗口的，不认。
+  A / C 被拒的事件不带利用率：单独记下，额度条变红加 ⚠，利用率仍是之前那条读数的（不编），到重置为止或有了更新的读数为止。
+- doctor 的 $ 只比**每列** token 都对得上的运行：合计对得上、某一列差好几倍（C 的输出 token）的也不比，不然差的不全是价目。
+- doctor 原来「控制台」一节里的每次运行对账挪进新的「控制台契约」一节，并补上 A（usage 事件逐次加总）和「控制台自记的 $ ÷ tokmon 的 $」。
+  A 收尾的 agent 会删掉自己的 transcript：transcript **少**于账本是预期（标「·」不报警），**多**了才报 ⚠。
+- 「没认出的类型」= 各方言解析器用到的 + `consoles.REGISTERED_TYPES` 登记在案不用的之外的类型。现有的全部登记进 §3.2（下表之后），真数据上为 0。
+- 契约计数第一次要读完全部 events（本机约 45 MB，0.3 秒），之后按偏移增量读；只在 doctor 里算，不进 `/sessions` 的刷新路径。
+
 **S4（可选，等控制台收敛成一个引擎以后再做）**：由控制台写一份清单 `console.json`（名字、端口、项目根、runs 和 state 目录、schema 版本），
 tokmon 改成读清单，配置文件里只列控制台的根目录。
 
@@ -116,10 +130,20 @@ tokmon 改成读清单，配置文件里只列控制台的根目录。
 | 任务 | `task.started` / `task.finished`（`status` 字段：done、partial 等） | 同左 | 同左 | S1 / S2 |
 | 角色 | `state.json` 的 `agents[].spec.kind`（E 另有 shell；`spec.critic` 为真记成 critic） | `agent.spawned` 的 kind（锦标赛 competitor / judge） | `agents/<aid>.json` 的 kind；中控是 `conductor` | S1 |
 | 用量 | `usage`（逐次响应；`reconciled` 是只补钱的行，token 全 0；`agent_cost` / `total_cost` 是累计，别加） | `usage`（逐次调用的真值；但 **A 正常收尾会删掉自己的 transcript**，只剩被杀掉的运行，所以对不上账） | 没有（只在 agents json 里有累计数） | S3 对账 |
-| 额度 | `quota`：`data.windows.five_hour` / `seven_day` 下的 `.utilization`、`.resets_at` | `quota` | `quota.reading`：`data.five_hour` / `seven_day` 是小数 | S3 |
+| 额度 | `quota`：D / E 是 `data.windows.five_hour` / `seven_day` 下的 `.utilization`、`.resets_at`（0–1 的小数）；**C 只有 `limit` + `resets_at`，`utilization` 一直是空的**；E 的 `injected` 不为空是故障注入，不认；`known=false` 不认 | `quota`：`windows.five_hour` / `seven_day` 直接是小数，`resets_at` 只属于 `limit` 那个窗口；被拒（rejected）的几条 `windows` 是空的 | `quota.reading`：`data.five_hour` / `seven_day` 是小数，不报重置时刻 | S3 |
 | 工单 | `ticket.opened`（id / kind / questions；E 另有 blocking / blocked_since）→ `ticket.answered`（同一个 id）；E 还有 `ticket.superseded`、不阻塞的 `ticket.adopted`；**当前状态以 `state.json` 的 `tickets[id].status` 为准** | 无 | `question.asked`（question_id / why_blocking）→ `question.answered`；`approval.requested`（approval_id / kind）→ `approval.resolved` | S2 |
 | 停泊 | `quota.park`（until；E 的 `injected` 是故障注入，不认）→ `quota.resume`；`agent.parked` 只认 cause=quota；C / D 只有 `session.status`=waiting_quota；`state.json` 的 `quota.paused_until` | `quota` 的 status=rejected + resets_at（没有专门的停泊事件） | `agent.parked` 只认 reason=quota（**idle 那种是空闲收起，不是额度**）；`mission.state`=parked（until） | S2 |
 | 预算 | `budget`（spent / cap / pct / level：ok / warn / soft_stop / hard_stop） | `budget`（同左） | `meter.warning` 只认 meter ∈ five_hour / quota_share / time_box（ram / capacity / sessions 是机器负载） | S2 |
+
+**登记在案、有意不用的类型**（S3，2026-10-29 盘点真数据；代码里是 `consoles.REGISTERED_TYPES`，doctor 把这些和用到的之外的叫「没认出的类型」）：
+- **office（C / D / E）**：agent 过程流水（`agent.status / tool_call / tool_result / thinking / text`）、agent 生命周期（`agent.spawned / finished / retired / denied / audit / backstop / handoff_due / park_requested / park_cleared / released / resumed`）；
+  派活（`assign.*`、`dispatch.*`——窗口从 `state.json` 读）；用量（`usage`、`usage.reported`——对账用 `state.json` 账本）；计划与验收（`plan.updated`、`verify.state`、`checks.run`、`decision.recorded`、`progress.reported`）；
+  消息与通知（`message`、`board.post`、`human.message`、`notify`）；错误、策略与审计（`error`、`policy.changed`、`policy.task`、`audit.violation`、`secret.blocked`）；
+  其余（`git.commit / tag`、`session.restored`、`quota.injected`、E 的 `constraints.prescanned`、`eyes.confirmed`、`finish.rejected`、`handoff.written`、`intake.foreign_session`、`job.*`、`next.*`、`report.written`、`sources.manifest`、`understand.*`）；
+  E 的 `ticket.reminder`（S3 真机验收时契约一节当场点名的新类型：控制台对开了几小时的阻塞工单自己的提醒，不改工单状态——tokmon 在 60 秒时已经提醒过一次）。
+- **conductor（A）**：agent 过程流水与生命周期、`board.post`、`message`、`human.message`、`error`、`file.write`、`policy.changed`、`tournament.round / finished`（锦标赛的分组从 `tournament.started` 读）。
+- **missiond（B）**：`tool.*`、agent 过程流水与生命周期（含 `agent.checkpoint / interrupted / submitted`）、`subagent.*`、`phase.status`、`plan.posted`、`report.written`、`job.*`、
+  `spend.reserved / settled`（控制台的钱，只对账不当真值；B 没有逐次 usage）、`daemon.*`、`pod.*`、`policy.denied`、`integrity`、`git.merge`、`operator.message / delivered`。
 
 **阻塞的判定**（S2 对照各代源码核实后回填，2026-10-29）：
 - **C、D**：工单**没有**「是否阻塞」的字段。只有中控能开工单、工具立刻返回，中控接着做不依赖答案的事；没有任何自动采纳，所以**每张开着的工单都在等你**。

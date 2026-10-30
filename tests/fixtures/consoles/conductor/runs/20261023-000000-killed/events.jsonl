@@ -1,2 +1,5 @@
 {"seq": 0, "ts": 1000.0, "type": "run.started", "agent": null, "data": {"task": "x"}}
 {"seq": 1, "ts": 1010.0, "type": "run.status", "agent": null, "data": {"status": "running", "detail": ""}}
+{"seq": 2, "ts": 1020.0, "type": "usage", "agent": "w01", "data": {"model": "claude-opus-5-5", "input": 100, "output": 10, "cache_read": 0, "cache_write": 0, "cost": 0.5, "agent_cost": 0.5, "total_cost": 0.5}}
+{"seq": 3, "ts": 1030.0, "type": "usage", "agent": "w01", "data": {"model": "claude-opus-5-5", "input": 100, "output": 10, "cache_read": 0, "cache_write": 0, "cost": 0.5, "agent_cost": 1.0, "total_cost": 1.0}}
+{"seq": 4, "ts": 1040.0, "type": "quota", "agent": null, "data": {"status": "allowed", "limit": "five_hour", "resets_at": 18000, "utilization": null, "windows": {"five_hour": 0.42, "seven_day": 0.61}}}

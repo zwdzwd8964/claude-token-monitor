@@ -11,3 +11,5 @@
 {"seq": 23, "ts": 7300.5, "type": "ticket.adopted", "agent": null, "data": {"id": "Q-002", "by": "default"}}
 {"seq": 24, "ts": 7400.0, "type": "quota.park", "agent": null, "data": {"reason": "x", "until": 9999999999.0, "source": "window", "injected": true}}
 {"seq": 25, "ts": 7500.0, "type": "budget", "agent": null, "data": {"spent": 1.0, "cap": 2.0, "pct": 50, "level": "warn"}}
+{"seq": 26, "ts": 7600.0, "type": "quota", "agent": null, "data": {"status": "allowed", "known": true, "overage": false, "injected": null, "windows": {"five_hour": {"utilization": 0.3, "resets_at": 18000.0}, "seven_day": {"utilization": 0.2, "resets_at": 600000.0}}, "paused_until": 0, "reason": "", "ceiling": 0.9}}
+{"seq": 27, "ts": 7700.0, "type": "quota", "agent": null, "data": {"status": "rejected", "known": true, "overage": false, "injected": {"status": "rejected", "ts": 7700.0, "until": 9999.0}, "windows": {"five_hour": {"utilization": 0.99, "resets_at": 18000.0}, "seven_day": {"utilization": 0.99, "resets_at": 600000.0}}, "paused_until": 0, "reason": "", "ceiling": 0.9}}

@@ -71,6 +71,22 @@ const tick = () => new Promise(r => setImmediate(r));
   if (!h.includes(`${kids.length} 个会话`)) errors.push("首屏: 运行那一行没写会话数");
   else seen.folded = true;
 
+  // S3 额度条: 每个有利用率的窗口一格, 百分比写成文字; 旧读数 / 过了重置时刻的置灰
+  const Q = DATA.quota || {};
+  for (const w of ["five_hour", "seven_day"]) {
+    const r = Q[w];
+    if (!r || r.utilization == null) { if (h.includes(`data-q="${w}"`)) errors.push("额度条: 没读数的窗口不该画"); continue; }
+    const m = h.match(new RegExp(`<span class="qw ([a-z]*)" data-q="${w}"[^]*?</span></span>`));
+    if (!m) { errors.push("额度条: 缺 " + w); continue; }
+    if (!new RegExp("<b>(⚠ )?" + Math.round(r.utilization * 100) + "%</b>").test(m[0])) errors.push("额度条: " + w + " 的百分比没写成看得见的文字");
+    if ((r.stale || r.expired) !== (m[1] === "stale")) errors.push("额度条: " + w + " 置灰不对");
+    if (!m[0].includes("来自 " + r.console)) errors.push("额度条: " + w + " 没写来自哪个控制台");
+    const pct = Math.round(r.utilization * 100), want = (pct >= 90 || r.status === "rejected") ? "bad" : (pct >= 70 ? "warn" : "ok");
+    if (!m[0].includes(`class="qm q-${want}"`)) errors.push("额度条: " + w + " 的颜色档和写出来的 " + pct + "% 对不上 (该是 " + want + ")");
+    if ((want === "bad") !== m[0].includes("<b>⚠ ")) errors.push("额度条: " + w + " 到红档要加 ⚠ (不只靠颜色)");
+    seen["quota_" + w] = true;
+  }
+
   R(`toggleRun(${JSON.stringify(run)})`);
   h = String(el("app").innerHTML);
   if (/<div class="kids" hidden>/.test(runBlock(h, run))) errors.push("点开: 还是收起的");

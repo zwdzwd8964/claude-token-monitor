@@ -153,9 +153,13 @@ def test_doctor_console_section(world):
     # 控制台标签改项目: E 的自测探针 + C 的两个会话 (夹具的项目根在 pytest 的临时目录里, 内核先归「临时目录」, 标签再改回)
     assert "scratchpad 里的会话归父会话的项目 2 个会话" in text and "控制台标签改了项目 3 个会话" in text
     assert "归「临时目录」1 个会话" in text
-    # 夹具里 C 的账本合计 100 token, transcript 有 1230: 对不上 -> 标出来, 并说清是控制台记账的事
-    assert "⚠ C 20261026-013942-session" in text and "响应 3 vs 账本 2" in text and "对不上" in text
-    assert "A/B 不做对账" in text and warns >= 2                            # 认领率 < 80% (夹具很小) + 对账
+    assert warns >= 1                                                      # 认领率 < 80% (夹具很小)
+    # 每次运行的对账在 S3 挪进了「控制台契约」一节: 夹具里 C 的账本合计 100 token, transcript 有 1230 -> 标出来, 说清是控制台记账的事
+    from tokmon.doctor import contract_lines
+    text, cwarns = contract_lines(parser.load_records(world["base"]), consoles.snapshot(force=True))
+    text = "\n".join(text)
+    assert "⚠ 20261026-013942-session" in text and "响应 3 vs 账本 2" in text and "对不上" in text
+    assert "B 不记 usage" in text and cwarns >= 1
 
 
 def test_temp_dir_shapes():
@@ -259,17 +263,26 @@ def test_sessions_page_folds_console_runs(world, tmp_path):
     run = "C:20261026-013942-session"
     kids = sorted(out["runs"][run]["sessions"])
     out.update(__run=run, __kids=kids, __loose=PARENT, __kidsFilter="uniq-only-one-kid")
-    data = tmp_path / "s.json"
-    data.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    out["quota"]["seven_day"].update(stale=False, expired=False, utilization=0.896)   # 新鲜的一格; 89.6% 写成 90% 就得是红的
     page = tmp_path / "sessions.html"
     page.write_text(serve.SESS_PAGE, encoding="utf-8")
     harness = Path(__file__).parent / "js" / "sessions_smoke.js"
-    proc = subprocess.run(["node", str(harness), str(page), str(data)], capture_output=True, text=True,
-                          encoding="utf-8", timeout=120)
-    assert proc.stdout.strip(), proc.stderr
-    report = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert report["errors"] == [], report["errors"]
-    for k in ("folded", "toggle_open", "filtered_count", "hash_expand"):
-        assert report["seen"].get(k), f"没覆盖到 {k}: {report['seen']}"
+
+    def smoke(d):
+        data = tmp_path / "s.json"
+        data.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        proc = subprocess.run(["node", str(harness), str(page), str(data)], capture_output=True, text=True,
+                              encoding="utf-8", timeout=120)
+        assert proc.stdout.strip(), proc.stderr
+        report = json.loads(proc.stdout.strip().splitlines()[-1])
+        assert report["errors"] == [], report["errors"]
+        return report["seen"]
+
+    seen = smoke(out)
+    for k in ("folded", "toggle_open", "filtered_count", "hash_expand", "quota_five_hour", "quota_seven_day"):
+        assert seen.get(k), f"没覆盖到 {k}: {seen}"
+    out["quota"]["five_hour"] = None                                   # 这个窗口没有读数: 那一格不画
+    seen = smoke(out)
+    assert not seen.get("quota_five_hour") and seen.get("quota_seven_day")
     # JS 里写了 hidden 不够: .kids 的 display:flex 会盖掉浏览器默认的 [hidden] (审查发现收起没用), 要有这条
     assert ".kids[hidden] { display:none; }" in serve.SESS_PAGE

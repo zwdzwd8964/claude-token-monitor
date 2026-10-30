@@ -7,4 +7,5 @@
 {"seq": 6, "ts": 4500.0, "type": "task.finished", "agent": null, "data": {"index": 2, "status": "waiting_decision"}}
 {"seq": 7, "ts": 4600.0, "type": "session.status", "agent": null, "data": {"status": "idle", "detail": ""}}
 {"seq": 20, "ts": 3050.0, "type": "ticket.opened", "agent": null, "data": {"id": "Q-001", "kind": "question", "title": "不该被读出来的题目", "questions": [{"question": "不该被读出来"}]}}
+{"seq": 21, "ts": 3060.0, "type": "quota", "agent": null, "data": {"status": "allowed", "limit": "five_hour", "resets_at": 20000, "utilization": null}}
 {"seq": 8, "ts": 4700.0, "type": "task.started", "agent": null, "data": {"index"
