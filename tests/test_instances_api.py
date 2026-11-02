@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 from tokmon import activity, events, notify, procmon, remote, serve
+from tokmon import instances as _real_instances
 
 TOKEN = "test-token-inst-123"
 SERVE_PORT = 18765                      # 交给 _make_handler 的「本服务端口」(与测试服务器实际端口无关)
@@ -53,11 +54,11 @@ class FakeInstances:
             "env": {"API_KEY": "not-a-real-secret"}, "ports": [18080], "open_path": "/",
             "deps": [], "boot": "manual", "stop_grace_s": 10, "start_timeout_s": 60}}
 
-    def _hit(self, name, *args, **kw):
-        self.calls.append((name, args, kw))
-        if name in self.boom:
+    def _hit(self, fn, *args, **kw):              # fn 不叫 name: edit_groups 自己有个 name= 参数
+        self.calls.append((fn, args, kw))
+        if fn in self.boom:
             raise RuntimeError("boom")
-        return self.results.get(name, {"ok": True})
+        return self.results.get(fn, {"ok": True})
 
     def named(self, name):
         return [c for c in self.calls if c[0] == name]
@@ -108,6 +109,21 @@ class FakeInstances:
 
     def boot_ack(self, action):
         return self._hit("boot_ack", action)
+
+    # 分组 (0.27): 规则 (组 id 形状 / 动作名) 用真模块的, 只把会改清单的动作换成记账
+    GROUP_ACTIONS = _real_instances.GROUP_ACTIONS
+    group_id_ok = staticmethod(_real_instances.group_id_ok)
+
+    def load_groups(self):
+        return [{"id": "core", "name": "核心", "view": "cards", "builtin": True},
+                {"id": "g1", "name": "量化工具", "view": "cards", "builtin": False},
+                {"id": "backup", "name": "备用", "view": "table", "builtin": True}]
+
+    def move_instance(self, iid, group, before=None):
+        return self._hit("move_instance", iid, group, before)
+
+    def edit_groups(self, action, *, gid=None, name=None, view=None, order=None):
+        return self._hit("edit_groups", action, gid=gid, name=name, view=view, order=order)
 
     def start_supervisor(self, *, boot=False, serve_port=None, emit=None):
         self.calls.append(("start_supervisor", (), {"boot": boot, "serve_port": serve_port}))
@@ -198,10 +214,12 @@ ALL_POSTS = [
     ("/api/instances/get", {"id": "demo-api"}),
     ("/api/instances/draft", {"pid": 4321, "create_time": 1.5}),
     ("/api/instances/boot-ack", {"action": "dismiss"}),
+    ("/api/instances/groups", {"action": "create", "name": "量化工具"}),
+    ("/api/instances/move", {"id": "demo-api", "group": "g1"}),
     ("/api/autostart", {"on": True}),
 ]
 MUTATORS = ("start", "stop", "restart", "start_group", "save_instance", "patch_instance",
-            "delete_instance", "draft_from_pid", "boot_ack")
+            "delete_instance", "draft_from_pid", "boot_ack", "move_instance", "edit_groups")
 
 
 def _no_mutation(w):
@@ -331,7 +349,8 @@ def test_peer_is_loopback(peer, ok):
 def test_not_owner_passes_through_and_is_audited(world):
     """另一个 tokmon 拿着实例层的锁: 实例层回 not-owner, serve 原样透传 (页面据此提示去哪边操作), 审计记 not-owner。"""
     detail = "另一个 tokmon（pid 4321 · 端口 18777）在管理实例，请在它的页面操作"
-    for name in ("start", "stop", "restart", "start_group", "save_instance", "patch_instance", "delete_instance", "boot_ack"):
+    for name in ("start", "stop", "restart", "start_group", "save_instance", "patch_instance", "delete_instance", "boot_ack",
+                 "move_instance", "edit_groups"):
         world.inst.results[name] = {"ok": False, "reason": "not-owner", "detail": detail}
     url = world.start()
     for path, body in ALL_POSTS:
@@ -340,7 +359,7 @@ def test_not_owner_passes_through_and_is_audited(world):
         code, d = _post(url, path, body)
         assert code == 200 and d == {"ok": False, "reason": "not-owner", "detail": detail}, path
     assert world.audit and all(outcome == "not-owner" for _, _, outcome in world.audit), world.audit
-    assert len(world.audit) == 8
+    assert len(world.audit) == 10
 
 
 def test_status_passes_owner_through(world):
@@ -438,6 +457,42 @@ def test_audit_targets_never_carry_command_or_path(world):
         assert "C:/Users/u" not in target and "http.server" not in target and "abcdefgh" not in target, (kind, target)
 
 
+def test_group_edits_and_moves_dispatch_and_audit_with_names(world):
+    """分组 (0.27): 参数原样交给实例层; 审计目标写组名 / 实例名 (改名、删组前先取名字), 不写别的。"""
+    url = world.start()
+    _post(url, "/api/instances/groups", {"action": "create", "name": "量化工具", "view": "table"})
+    _post(url, "/api/instances/groups", {"action": "rename", "id": "g1", "name": "回测"})
+    _post(url, "/api/instances/groups", {"action": "view", "id": "backup", "view": "cards"})
+    _post(url, "/api/instances/groups", {"action": "reorder", "order": ["g1", "core", "backup"]})
+    _post(url, "/api/instances/groups", {"action": "delete", "id": "g1"})
+    _post(url, "/api/instances/groups", {"action": "delete", "id": "g7"})          # 形状对、清单里没有: 交给实例层判
+    _post(url, "/api/instances/move", {"id": "demo-api", "group": "g1", "before": "other"})
+    _post(url, "/api/instances/move", {"id": "demo-api", "group": "core", "before": ""})
+    _post(url, "/api/instances/start-group", {"group": "g1"})
+    c = world.inst
+    assert [x[1:] for x in c.named("edit_groups")] == [
+        (("create",), {"gid": None, "name": "量化工具", "view": "table", "order": None}),
+        (("rename",), {"gid": "g1", "name": "回测", "view": None, "order": None}),
+        (("view",), {"gid": "backup", "name": None, "view": "cards", "order": None}),
+        (("reorder",), {"gid": None, "name": None, "view": None, "order": ["g1", "core", "backup"]}),
+        (("delete",), {"gid": "g1", "name": None, "view": None, "order": None}),
+        (("delete",), {"gid": "g7", "name": None, "view": None, "order": None}),
+    ]
+    assert [x[1] for x in c.named("move_instance")] == [("demo-api", "g1", "other"), ("demo-api", "core", None)]
+    assert [x[1] for x in c.named("start_group")] == [("g1",)]
+    assert world.audit == [
+        ("instance-groups", "create 量化工具", "ok"),
+        ("instance-groups", "rename 量化工具", "ok"),
+        ("instance-groups", "view 备用", "ok"),
+        ("instance-groups", "reorder", "ok"),
+        ("instance-groups", "delete 量化工具", "ok"),
+        ("instance-groups", "delete g7", "ok"),
+        ("instance-move", "示例 API", "ok"),
+        ("instance-move", "示例 API", "ok"),
+        ("instance-start-group", "group g1", "ok"),
+    ]
+
+
 def test_get_returns_full_record_locally_and_is_not_audited(world):
     url = world.start()
     code, d = _post(url, "/api/instances/get", {"id": "demo-api"})
@@ -451,6 +506,14 @@ def test_get_returns_full_record_locally_and_is_not_audited(world):
 def test_bad_arguments_are_rejected_before_the_module(world):
     url = world.start()
     assert _post(url, "/api/instances/start-group", {"group": "../etc"})[1] == {"ok": False, "reason": "bad-group"}
+    assert _post(url, "/api/instances/start-group", {"group": ["core"]})[1] == {"ok": False, "reason": "bad-group"}
+    assert _post(url, "/api/instances/groups", {"action": "nuke"})[1] == {"ok": False, "reason": "bad-action"}
+    assert _post(url, "/api/instances/groups", {"action": ["create"]})[1] == {"ok": False, "reason": "bad-action"}
+    assert _post(url, "/api/instances/groups", {"action": "delete", "id": "../g1"})[1] == {"ok": False, "reason": "bad-group"}
+    assert _post(url, "/api/instances/groups", {"action": "rename", "name": "x"})[1] == {"ok": False, "reason": "bad-group"}
+    assert _post(url, "/api/instances/move", {"id": "demo-api", "group": "G1"})[1] == {"ok": False, "reason": "bad-group"}
+    assert _post(url, "/api/instances/move", {"id": "demo-api", "group": "g1", "before": 3})[1] == \
+        {"ok": False, "reason": "bad-before"}
     assert _post(url, "/api/instances/boot-ack", {"action": "nuke"})[1] == {"ok": False, "reason": "bad-action"}
     assert _post(url, "/api/instances/draft", {"pid": "x"})[1] == {"ok": False, "reason": "bad-pid"}
     assert _post(url, "/api/instances/save", {"instance": "nope"})[1]["reason"] == "invalid"

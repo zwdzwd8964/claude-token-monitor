@@ -10,6 +10,8 @@
 // degraded / unknown / ambiguous / note; not-owner / degraded / ambiguous 的中文原因。
 // 修复轮 2: 没有端口 -> portless-confirm 确认后 force 重试 (取消就不发); 保存 / 改开机策略回 portless-auto 的中文;
 // 端口被另一个登记过的实例占着 (by) -> 说实例名; 批量 / 开机提醒跳过的也说出来; 原主人已退出 (stale) -> 「正在接管」横幅 + 快轮询。
+// 分组 (0.27): 每组一节 #ix-g-<组 id> (核心 / 量化工具 卡片, 备用 折叠表格默认收起); 拖卡片换组 / 组内排序 / 拖组头调组顺序
+// (落点计算 + 放下走 move / reorder) · ⋯ 里的「移到」/ 上移 / 下移 · 新建 / 改名 / 换显示 / 删除分组 · 远程不画把手、不能拖。
 // 输出一行 JSON: {errors: [...], checks: {名字: bool}}; 有错误时退出码 1。
 "use strict";
 const fs = require("fs"), vm = require("vm");
@@ -28,18 +30,18 @@ function mk(id) {
 function el(id) { if (!els[id]) els[id] = mk(id); return els[id]; }
 el("inst-log").hidden = true;                       // 与 HTML 里的初始状态一致
 el("inst-modal").hidden = true;
-el("inst-backup").hidden = true;
-el("inst-backup").contains = x => !!x && String(el("ix-bk-body").innerHTML).includes(`id="${x.id}"`);   // 备用表在 details 里
 const rendered = id => Object.keys(els).some(k => String(els[k].innerHTML).includes(`id="${id}"`));
 
 const store = { mc_ctl_token: "tok-test" };
-const calls = [], alerts = [], confirms = [], errors = [];
+const calls = [], alerts = [], confirms = [], errors = [], prompts = [], promptAnswers = [];
 let mode = "local", confirmAnswer = true;
 const replies = JSON.parse(JSON.stringify(DATA.replies || {}));
 const resp = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => JSON.parse(JSON.stringify(body)) });
 
 const timeouts = [];                                  // 轮询间隔 (stale 时要快)
+const rafQ = [];                                      // requestAnimationFrame: 攒着, 测试里手动跑
 const ctx = {
+  requestAnimationFrame: f => { rafQ.push(f); return rafQ.length; },
   console, setTimeout: (f, ms) => { timeouts.push(ms); return 0; }, clearTimeout: () => {}, setInterval: () => 1, clearInterval: () => {},
   Date, Math, JSON, Object, Array, String, Number, Set, Map, Infinity, NaN, isNaN, isFinite, parseFloat, parseInt,
   encodeURIComponent, decodeURIComponent, Promise, RegExp, Error,
@@ -47,7 +49,11 @@ const ctx = {
   localStorage: { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); }, removeItem: k => { delete store[k]; } },
   confirm: m => { confirms.push(String(m)); return confirmAnswer; },
   alert: m => { alerts.push(String(m)); },
-  prompt: m => { errors.push("prompt() 被调用了: " + m); return null; },
+  prompt: m => {                                      // 只有排好了答案才许弹 (新建 / 改名分组); 没排就是意外
+    prompts.push(String(m));
+    if (!promptAnswers.length) { errors.push("意外的 prompt(): " + m); return null; }
+    return promptAnswers.shift();
+  },
   navigator: {}, window: { addEventListener() {} },
   document: {
     hidden: false, activeElement: null,
@@ -86,23 +92,52 @@ async function run(label, code) {
   try { await R(code); await settle(); } catch (e) { errors.push(`${label}: ${(e && e.message) || e}`); }
 }
 const H = id => String(el(id).innerHTML);
-const allInst = () => ["ix-head", "ix-notes", "ix-banners", "ix-core", "ix-bk-body"].map(H).join("\n");
+const allInst = () => ["ix-head", "ix-notes", "ix-banners", "ix-groups"].map(H).join("\n");
 const posts = p => calls.filter(c => c.method === "POST" && c.url === p);
 const lastPost = p => { const a = posts(p); return a.length ? a[a.length - 1] : null; };
-const card = id => { const h = H("ix-core"), k = h.indexOf(`id="ic-${id}"`); if (k < 0) return ""; const e = h.indexOf('<div class="icard', k + 1); return h.slice(k, e < 0 ? h.length : e); };
+// 一组一节: <section class="igrp" id="ix-g-<gid>"> … 到下一节为止
+const grp = gid => { const h = H("ix-groups"), k = h.indexOf(`id="ix-g-${gid}"`); if (k < 0) return ""; const e = h.indexOf('<section class="igrp', k + 1); return h.slice(k, e < 0 ? h.length : e); };
+const cardIn = (gid, id) => { const h = grp(gid), k = h.indexOf(`id="ic-${id}"`); if (k < 0) return ""; const e = h.indexOf('<div class="icard', k + 1); return h.slice(k, e < 0 ? h.length : e); };
+const card = id => cardIn("core", id);
+// 假的 DOM 节点: 给落点计算用 (closest / getBoundingClientRect / classList)
+function fakeNode(o) {
+  const n = Object.assign({ dataset: {}, tagName: "DIV", cls: new Set(), rect: { top: 0, height: 100, left: 0, width: 200 } }, o);
+  n.classList = { add: (...c) => c.forEach(x => n.cls.add(x)), remove: (...c) => c.forEach(x => n.cls.delete(x)), toggle() {}, contains: c => n.cls.has(c) };
+  n.getBoundingClientRect = () => n.rect;
+  n.closest = s => (n.match && n.match(s)) ? n : (n.parent ? n.parent.closest(s) : null);
+  return n;
+}
 const checks = {};
 
 (async () => {
   await settle();
 
   // ---- 首屏 (本机) ----
-  const core = H("ix-core");
+  const core = grp("core");
   checks.core_cards = ["demo-api", "demo-web", "demo-busy", "demo-crash", "tokmon-self", "demo-deg", "demo-unk", "demo-amb", "modal", "log",
     "demo-var", "demo-np"]
     .every(id => core.includes(`id="ic-${id}"`));
-  checks.backup_not_in_core = !core.includes('id="ic-demo-old"') && !core.includes('id="ic-backup"');
-  checks.backup_collapsed = el("inst-backup").hidden === false && el("inst-backup").open === false
-    && el("ix-bk-sum").textContent === "备用实例 (2)" && H("ix-bk-body").includes('id="ic-demo-old"') && H("ix-bk-body").includes('id="ic-backup"');
+  checks.backup_not_in_core = !core.includes('id="ic-demo-old"') && !core.includes('id="ic-backup"') && !core.includes('id="ic-demo-q"');
+  // 分组: 按服务端给的顺序一节一节画; 自建组「量化工具」是卡片; 备用是折叠表格, 默认收起 (只有组头和计数)
+  const G = H("ix-groups");
+  checks.groups_in_order = G.indexOf('id="ix-g-core"') >= 0 && G.indexOf('id="ix-g-core"') < G.indexOf('id="ix-g-g1"')
+    && G.indexOf('id="ix-g-g1"') < G.indexOf('id="ix-g-backup"');
+  const q = grp("g1");
+  checks.custom_group_cards = q.includes('<span class="ignm">量化工具</span>') && q.includes("1 个") && cardIn("g1", "demo-q").includes("回测样例")
+    && q.includes('class="igrid"') && q.includes('data-act="g-start" data-gid="g1"');
+  checks.backup_collapsed = grp("backup").includes("▸ 备用") && grp("backup").includes("2 个") && grp("backup").includes('data-act="g-toggle" data-gid="backup"')
+    && !grp("backup").includes('id="ic-demo-old"') && !grp("backup").includes("<table");
+  checks.group_menus = q.includes('data-act="g-rename" data-gid="g1"') && q.includes("显示为折叠表格") && q.includes('data-act="g-delete" data-gid="g1"')
+    && !core.includes('data-act="g-delete"') && !grp("backup").includes('data-act="g-delete"')        // 内置组不能删
+    && core.includes('data-act="g-up" data-gid="core" disabled') && grp("backup").includes('data-act="g-down" data-gid="backup" disabled')
+    && grp("backup").includes("显示为卡片");
+  checks.drag_handles = core.includes('draggable="true" data-drag="group" data-gid="core"')
+    && card("demo-api").includes('id="ic-demo-api" draggable="true" data-drag="inst" data-id="demo-api"');
+  checks.move_menu = card("demo-api").includes('data-act="move-to" data-id="demo-api" data-gid="g1">移到「量化工具」')
+    && card("demo-api").includes('data-gid="backup">移到「备用」') && !card("demo-api").includes('data-gid="core">移到')
+    && card("demo-api").includes('data-act="move-up" data-id="demo-api" disabled')                  // 组里第一个: 不能再上移
+    && !card("demo-api").includes('data-act="move-down" data-id="demo-api" disabled')
+    && card("demo-np").includes('data-act="move-down" data-id="demo-np" disabled');                // 组里最后一个
   // c19: 实例 id 叫 modal / log / backup 也不会画出 id="inst-..." (那是 position:fixed 的抽屉 / 弹窗 / 备用容器)
   checks.no_inst_ids_rendered = !/id="inst-/.test(allInst());
   checks.legacy_hash_scrolls = scrolled.includes("ic-demo-api");
@@ -120,11 +155,11 @@ const checks = {};
   checks.shared_port = api.includes("与 旧版 API 共用端口 18080");
   checks.note_line = api.includes('<div class="inote">ⓘ 端口由 com.docker.backend.exe 代理</div>')
     && api.split("端口由 com.docker.backend.exe 代理").length === 2;          // note 和 last_error 同一句只说一次
-  checks.head_count_truth = H("ix-head").includes("16 个 · 3 个在跑");       // degraded / unknown / 认不准 都不算在跑
+  checks.head_count_truth = H("ix-head").includes("17 个 · 3 个在跑");       // degraded / unknown / 认不准 都不算在跑
   checks.boot_handled_title = H("ix-head").includes("上次开机拉起：");
   // 新状态: degraded (琥珀, 停止/重启) / unknown (灰, 启动/停止) / ambiguous (认不准, 不显示运行中, 不给启停)
   const deg = card("demo-deg");
-  checks.degraded_card = deg.startsWith('id="ic-demo-deg"') && H("ix-core").includes('<div class="icard warn" id="ic-demo-deg">')
+  checks.degraded_card = deg.startsWith('id="ic-demo-deg"') && grp("core").includes('<div class="icard warn" id="ic-demo-deg"')
     && deg.includes('<span class="pill warn"') && deg.includes("◐ 进程在 · 端口没在监听") && !deg.includes("● 运行中")
     && deg.includes("pid 2222") && !deg.includes("打开 ↗") && deg.includes('<div class="iwarn">端口在监听，但持有者 other.exe 认不出是它</div>');
   checks.degraded_buttons = deg.includes('data-act="stop" data-id="demo-deg"') && deg.includes('data-act="restart" data-id="demo-deg"')
@@ -135,7 +170,7 @@ const checks = {};
   const amb = card("demo-amb");
   checks.ambiguous_card = amb.includes("端口 18099 的进程同时像 歧义甲 和 歧义乙，认不准，不显示为运行中")
     && amb.includes("认不准是谁的") && !amb.includes("● 运行中") && !amb.includes('data-act="start"') && !amb.includes('data-act="stop"')
-    && H("ix-core").includes('<div class="icard warn" id="ic-demo-amb">') && card("demo-amb2").includes("同时像 歧义乙 和 歧义甲");
+    && grp("core").includes('<div class="icard warn" id="ic-demo-amb"') && card("demo-amb2").includes("同时像 歧义乙 和 歧义甲");
   // 端口被另一个登记过的实例占着: 说实例名 (主端口在药丸里, 其余端口在冲突行里), 不只说 python.exe
   const vr = card("demo-var");
   checks.port_busy_by_instance = vr.includes("端口 18080 被实例「示例 API」占用") && vr.includes("⚠ 端口 18081 被实例「示例 API」占用")
@@ -146,7 +181,7 @@ const checks = {};
   checks.crash_banner = H("ix-banners").includes("崩溃样例 意外退出（退出码 1）") && H("ix-banners").includes('data-act="log" data-id="demo-crash"');
   checks.boot_banner = H("ix-banners").includes("重启后有 1 个实例等你确认拉起：示例 Web") && H("ix-banners").includes('data-act="boot-start"');
   checks.manifest_banner = H("ix-banners").includes("清单坏了");
-  checks.head = H("ix-head").includes("全部拉起核心") && H("ix-head").includes("+ 新增实例")
+  checks.head = H("ix-head").includes("+ 新建分组") && H("ix-head").includes("+ 新增实例") && !H("ix-head").includes("全部拉起")
     && H("ix-head").includes("开机自启 ✗") && H("ix-head").includes('data-act="autostart-on"');
   const every = allInst();
   checks.escaped = !every.includes("<img src=x") && !every.includes("<script>") && !every.includes("<b>x</b>")
@@ -156,8 +191,14 @@ const checks = {};
     && app.includes('data-pid="5555" data-ct="1700000001.25" onclick="instPin(this)"');
   checks.no_post_on_load = calls.every(c => c.method === "GET");
   R("location.hash='#ic-demo-old'; instJumpHash()");
-  checks.hash_opens_backup = el("inst-backup").open === true && scrolled.includes("ic-demo-old");
-  el("inst-backup").open = false;
+  checks.hash_opens_backup = R("IX_OPEN.backup") === true && grp("backup").includes('id="ic-demo-old"') && scrolled.includes("ic-demo-old");
+  R("IX_OPEN={}; renderInstances(true)");
+  // 折叠表格: 点组名展开 (表格行也能拖), 展开状态记在这台浏览器里; 再点收起
+  await run("toggle backup", "instDo('g-toggle','',{dataset:{gid:'backup'}})");
+  checks.toggle_opens = grp("backup").includes("▾ 备用") && grp("backup").includes('<tr id="ic-demo-old" draggable="true" data-drag="inst" data-id="demo-old">')
+    && JSON.parse(store["mc.inst.open"] || "{}").backup === true && calls.every(c => c.method === "GET");
+  await run("toggle backup again", "instDo('g-toggle','',{dataset:{gid:'backup'}})");
+  checks.toggle_closes = !grp("backup").includes('id="ic-demo-old"') && JSON.parse(store["mc.inst.open"]).backup === false;
   R("location.hash='#inst-nope'; instJumpHash()");                        // 不存在的 id: 什么都不做, 不报错
   checks.hash_missing_quiet = !scrolled.includes("ic-nope");
 
@@ -229,6 +270,8 @@ const checks = {};
     && el("ixf-env").value === "API_KEY=secret-value" && el("ixf-ports").value === "18080, 18081"
     && el("ixf-deps").value === "数据库:18900" && el("ixf-id").value === "demo-api" && el("ixf-boot").value === "auto"
     && el("ixf-command").value === "python -m http.server 18080";
+  checks.edit_group_options = H("ixf-group").includes('<option value="g1">量化工具</option>')
+    && H("ixf-group").indexOf('value="core"') < H("ixf-group").indexOf('value="g1"') && el("ixf-group").value === "core";
 
   el("ixf-cwd").value = "C:/Users/u/nope";
   el("ixf-env").value = " API_KEY = secret-value \nB= two=three \n# 注释\n\n  C=x  ";
@@ -295,15 +338,137 @@ const checks = {};
   const pt = lastPost("/api/instances/patch");
   checks.patch_boot = !!pt && pt.body.id === "demo-api" && pt.body.fields.boot === "ask" && Object.keys(pt.body.fields).length === 1;
 
-  await run("group move", "instDo('group','demo-api',{dataset:{group:'backup'}})");
-  checks.patch_group = lastPost("/api/instances/patch").body.fields.group === "backup";
-
   await run("boot select portless", "instChange({target:{dataset:{act:'boot',id:'demo-np'},value:'auto',blur(){}}})");
   checks.patch_portless_auto = lastPost("/api/instances/patch").body.id === "demo-np"
     && card("demo-np").includes("没改成：") && card("demo-np").includes("开机策略只能用「手动」");
 
-  await run("start-group", "instDo('start-core','')");
-  checks.start_group = lastPost("/api/instances/start-group").body.group === "core" && H("ix-notes").includes("已排队 1 个：示例 Web");
+  // ---- 分组 (0.27): ⋯ 里的「移到」/ 上移 / 下移 ----
+  await run("move-to", "instDo('move-to','demo-api',{dataset:{gid:'g1'}})");
+  const mv = posts("/api/instances/move");
+  checks.move_to_post = mv.length === 1 && JSON.stringify(mv[0].body) === JSON.stringify({ id: "demo-api", group: "g1", before: null })
+    && mv[0].headers["X-Control-Token"] === "tok-test" && card("demo-api").includes("已移到「量化工具」");
+  await run("move-up first", "instDo('move-up','demo-api')");                      // 已经是第一个: 不发
+  await run("move-down", "instDo('move-down','demo-api')");
+  checks.move_down_post = posts("/api/instances/move").length === 2
+    && JSON.stringify(lastPost("/api/instances/move").body) === JSON.stringify({ id: "demo-api", group: "core", before: "demo-busy" })
+    && card("demo-api").includes("已调整顺序");
+  // 本地先挪 (乐观): 和服务端同一套「排在谁前面 / 放到组末尾」
+  R("instLocalMove('demo-web','g1','demo-q'); renderInstances(true)");
+  checks.local_move_before = grp("g1").indexOf('id="ic-demo-web"') >= 0 && grp("g1").indexOf('id="ic-demo-web"') < grp("g1").indexOf('id="ic-demo-q"')
+    && !grp("core").includes('id="ic-demo-web"');
+  R("instLocalMove('demo-web','backup',null); renderInstances(true)");
+  checks.local_move_end = R("instInGroup('backup').map(x=>x.id).join(',')") === "demo-old,backup,demo-web";
+  await run("reload after local", "loadInstances()");
+
+  // ---- 拖拽: 放下的结果 -> 同一套动作 ----
+  const nMv = posts("/api/instances/move").length;
+  await run("drop same place", "instDropApply({type:'inst',id:'demo-web'},{kind:'inst',gid:'core',id:'demo-api',after:true})");
+  checks.drop_noop = posts("/api/instances/move").length === nMv;                   // 放回原处: 不发请求
+  await run("drop before", "instDropApply({type:'inst',id:'demo-web'},{kind:'inst',gid:'core',id:'demo-api',after:false})");
+  checks.drop_before_post = JSON.stringify(lastPost("/api/instances/move").body) === JSON.stringify({ id: "demo-web", group: "core", before: "demo-api" })
+    && card("demo-web").includes("没挪成：要排在它前面的那个实例不在这一组了");
+  await run("drop end of group", "instDropApply({type:'inst',id:'demo-old'},{kind:'end',gid:'g1'})");
+  checks.drop_end_post = JSON.stringify(lastPost("/api/instances/move").body) === JSON.stringify({ id: "demo-old", group: "g1", before: null });
+  // 落点计算: 卡片左半边 = 排在它前面, 右半边 = 排在它后面; 组里空白处 = 末尾; 拖到自己身上 = 不能放
+  const sec = fakeNode({ dataset: { gid: "g1" }, match: s => s === ".igrp" });
+  const qc = fakeNode({ dataset: { drag: "inst", id: "demo-q" }, parent: sec, match: s => s === '[data-drag="inst"]' || s === "[data-drag]" });
+  ctx.__sec = sec; ctx.__qc = qc;
+  R("DRAG={type:'inst', id:'demo-web'}");
+  const left = R("JSON.stringify((({kind,gid,id,after})=>({kind,gid,id,after}))(instDropAt({target:__qc, clientX:40, clientY:10})))");
+  const right = R("instDropAt({target:__qc, clientX:160, clientY:10}).after");
+  const blank = R("instDropAt({target:__sec, clientX:0, clientY:0}).kind");
+  checks.drop_geometry = left === JSON.stringify({ kind: "inst", gid: "g1", id: "demo-q", after: false }) && right === true && blank === "end"
+    && R("instInteracting()") === true;                                              // 拖动中不重画
+  const ours = { types: ["application/x-tokmon-instance"] };                      // 本页拖出来的才带这个类型
+  ctx.__ours = ours;
+  R("instDragOver({target:__qc, clientX:40, clientY:10, preventDefault(){}, dataTransfer:__ours})");
+  checks.drop_marker = qc.cls.has("drop-before") && !qc.cls.has("drop-after");
+  // 拖动中: 连强制重画也推迟 (换掉被拖的节点 dragend 就丢了), 拖完补画
+  const before0 = H("ix-groups");
+  R("instSay('demo-api','拖动中来的回执','ok')");
+  checks.render_deferred_while_dragging = H("ix-groups") === before0 && R("INST_DEFERRED") === true;
+  R("DRAG={type:'inst', id:'demo-q'}");
+  checks.drop_self_refused = R("instDropAt({target:__qc, clientX:40, clientY:10})") === null;
+  R("DRAG={type:'inst', id:'demo-web'}");
+  await run("drop event", "instDropEv({target:__qc, clientX:40, clientY:10, preventDefault(){}, dataTransfer:__ours})");
+  checks.drop_event_post = JSON.stringify(lastPost("/api/instances/move").body) === JSON.stringify({ id: "demo-web", group: "g1", before: "demo-q" })
+    && R("DRAG") === null && !qc.cls.has("drop-before") && R("INST_DEFERRED") === false
+    && card("demo-api").includes("拖动中来的回执");                                 // 推迟的那次补画上了
+  // 残留的拖动状态 + 外面拖进来的东西 (文件 / 文字, 不带本页的类型): 清掉, 不当成挪实例
+  const nMv2 = posts("/api/instances/move").length;
+  R("DRAG={type:'inst', id:'demo-web'}");
+  await run("foreign dragover", "instDragOver({target:__qc, clientX:40, clientY:10, preventDefault(){}, dataTransfer:{types:['Files']}})");
+  checks.foreign_drag_clears_stale = R("DRAG") === null && posts("/api/instances/move").length === nMv2;
+  R("DRAG={type:'inst', id:'demo-web'}");
+  await run("foreign drop", "instDropEv({target:__qc, clientX:40, clientY:10, preventDefault(){}, dataTransfer:{types:['text/plain']}})");
+  checks.foreign_drop_ignored = R("DRAG") === null && posts("/api/instances/move").length === nMv2;
+  // 上一个挪动还在路上: 不在本地先挪, 说一声
+  R("INST_BUSY._move=true");
+  await run("move while busy", "instMoveTo('demo-web','g1',null)");
+  checks.move_busy_refused = posts("/api/instances/move").length === nMv2 && card("demo-web").includes("上一个挪动还没做完")
+    && R("instInGroup('g1').some(x=>x.id==='demo-web')") === false;
+  R("delete INST_BUSY._move; renderInstances(true)");
+  // 从按钮上起的拖动不算 (那是要点它); 从卡片本身起的才算; 只放本页的类型 (不放 text/plain, 免得掉进过滤框)
+  const btnEl = fakeNode({ tagName: "BUTTON", match: s => s.includes("button") });
+  ctx.__btn = btnEl;
+  let prevented = false;
+  const dragData = {};
+  let nodeEnd = null;
+  qc.addEventListener = (t, f, o) => { if (t === "dragend" && o && o.once) nodeEnd = f; };
+  ctx.__ev = { target: qc, preventDefault() { prevented = true; }, dataTransfer: { setData(t, v) { dragData[t] = v; } } };
+  R("DOWN_EL=__btn; instDragStart(__ev)");
+  checks.drag_from_button_ignored = prevented === true && R("DRAG") === null;
+  R("DOWN_EL=__qc; instDragStart(__ev)");
+  const fadedEarly = qc.cls.has("dragging");
+  rafQ.splice(0).forEach(f => f());
+  checks.drag_start = R("DRAG && DRAG.type") === "inst" && R("DRAG.id") === "demo-q"
+    && JSON.stringify(dragData) === JSON.stringify({ "application/x-tokmon-instance": "demo-q" })
+    && !fadedEarly && qc.cls.has("dragging") && nodeEnd === R("instDragEnd");      // 半透明晚一拍; dragend 挂在节点上
+  nodeEnd();                                                                         // 节点自己收到 dragend
+  checks.drag_end_clears = R("DRAG") === null && !qc.cls.has("dragging");
+  // 卡片里的命令行 / 错误: 按下时这张卡片暂时不能拖, 好选中文字
+  const cmdEl = fakeNode({ parent: qc, match: s => s.includes(".icmd") });
+  qc.draggable = true; ctx.__cmd = cmdEl;
+  R("instMouseDown({target:__cmd})");
+  const cmdOff = qc.draggable === false;
+  qc.draggable = true;
+  R("instMouseDown({target:__qc})");
+  checks.text_zone_not_draggable = cmdOff && qc.draggable === true && R("DOWN_EL") === qc;
+
+  // ---- 分组本身: 新建 / 改名 / 换显示 / 调顺序 (菜单 + 拖组头) / 删除 ----
+  promptAnswers.push("  回测研究 ");
+  await run("group new", "instDo('g-new','')");
+  const gp = posts("/api/instances/groups");
+  checks.group_create = gp.length === 1 && JSON.stringify(gp[0].body) === JSON.stringify({ action: "create", name: "回测研究" })
+    && H("ix-notes").includes("已新建分组「回测研究」");
+  promptAnswers.push(null);
+  await run("group rename cancelled", "instDo('g-rename','',{dataset:{gid:'g1'}})");
+  checks.group_rename_cancel = posts("/api/instances/groups").length === 1 && prompts[prompts.length - 1].includes("「量化工具」");
+  promptAnswers.push("量化");
+  await run("group rename", "instDo('g-rename','',{dataset:{gid:'g1'}})");
+  checks.group_rename = JSON.stringify(lastPost("/api/instances/groups").body) === JSON.stringify({ action: "rename", id: "g1", name: "量化" })
+    && H("ix-notes").includes("「量化工具」已改名为「量化」");
+  await run("group view", "instDo('g-view','',{dataset:{gid:'g1'}})");
+  checks.group_view = JSON.stringify(lastPost("/api/instances/groups").body) === JSON.stringify({ action: "view", id: "g1", view: "table" })
+    && R("IX_OPEN.g1") === true;                                                    // 刚换成表格: 展开着
+  await run("group down", "instDo('g-down','',{dataset:{gid:'core'}})");
+  checks.group_shift = JSON.stringify(lastPost("/api/instances/groups").body) === JSON.stringify({ action: "reorder", order: ["g1", "core", "backup"] });
+  await run("group drop", "instDropApply({type:'group',id:'backup'},{kind:'group',gid:'core',after:false})");
+  checks.group_drop = JSON.stringify(lastPost("/api/instances/groups").body) === JSON.stringify({ action: "reorder", order: ["backup", "core", "g1"] })
+    && H("ix-notes").includes("分组没改成：分组顺序对不上");
+  await run("group drop same", "instDropApply({type:'group',id:'core'},{kind:'group',gid:'g1',after:false})");
+  checks.group_drop_noop = posts("/api/instances/groups").length === 5;              // 放回原处: 不发
+  const nCf = confirms.length;
+  await run("group delete", "instDo('g-delete','',{dataset:{gid:'g1'}})");
+  checks.group_delete = JSON.stringify(lastPost("/api/instances/groups").body) === JSON.stringify({ action: "delete", id: "g1" })
+    && confirms.length === nCf + 1 && confirms[nCf].includes("删除分组「量化工具」") && confirms[nCf].includes("回测样例")
+    && confirms[nCf].includes("移到「备用」末尾") && confirms[nCf].includes("不会停掉任何进程")
+    && H("ix-notes").includes("已删除分组「量化工具」，1 个实例移到了「备用」");
+  R("IX_OPEN={}");
+
+  await run("start-group", "instDo('g-start','',{dataset:{gid:'core'}})");
+  checks.start_group = lastPost("/api/instances/start-group").body.group === "core" && H("ix-notes").includes("已排队 1 个：示例 Web")
+    && confirms[confirms.length - 1].includes("「核心」");
 
   await run("boot ack", "instDo('boot-start','')");
   checks.boot_ack = lastPost("/api/instances/boot-ack").body.action === "start"
@@ -322,11 +487,13 @@ const checks = {};
   mode = "remote";
   await run("remote", "loadInstances()");
   const rem = allInst();
-  checks.remote_readonly = ["start", "stop", "restart", "edit", "delete", "group", "start-core", "new", "boot-start", "autostart-on"]
+  checks.remote_readonly = ["start", "stop", "restart", "edit", "delete", "move-to", "move-up", "g-start", "g-new", "g-rename", "g-view",
+    "g-up", "g-delete", "new", "boot-start", "autostart-on"]
     .every(a => !rem.includes(`data-act="${a}"`)) && !rem.includes("<select") && !rem.includes("打开 ↗");
+  checks.remote_no_drag = !rem.includes("draggable") && !rem.includes("data-drag") && rem.includes('data-act="g-toggle" data-gid="backup"');   // 展开收起只是显示, 远程照样能点
   checks.remote_note = H("ix-notes").includes("手机/远程只读 · 启停请在本机操作");
-  checks.remote_cards_still_shown = H("ix-core").includes('id="ic-demo-api"') && H("ix-core").includes("开机：开机自动");
-  checks.remote_log_readable = H("ix-core").includes('data-act="log" data-id="demo-api"');
+  checks.remote_cards_still_shown = grp("core").includes('id="ic-demo-api"') && grp("core").includes("开机：开机自动") && grp("g1").includes('id="ic-demo-q"');
+  checks.remote_log_readable = grp("core").includes('data-act="log" data-id="demo-api"');
   checks.remote_no_pins = !H("app").includes("instPin");
 
   // ---- 另一个 tokmon 在管实例: 本机也只读, 横幅说清是谁 ----
@@ -335,14 +502,15 @@ const checks = {};
   const no = allInst();
   checks.owner_banner = H("ix-banners").includes("🔒 只读：另一个 tokmon（pid 4242 · 端口 18766）在管理实例")
     && H("ix-banners").includes('href="http://localhost:18766/processes#instances"');
-  checks.owner_readonly = ["start", "stop", "restart", "edit", "delete", "group", "start-core", "new", "boot-start", "boot-dismiss",
-    "autostart-on", "autostart-off"].every(a => !no.includes(`data-act="${a}"`)) && !no.includes("<select");
+  checks.owner_readonly = ["start", "stop", "restart", "edit", "delete", "move-to", "g-start", "g-new", "g-rename", "g-delete", "new",
+    "boot-start", "boot-dismiss", "autostart-on", "autostart-off"].every(a => !no.includes(`data-act="${a}"`)) && !no.includes("<select")
+    && !no.includes("draggable");
   checks.owner_still_local = no.includes("打开 ↗") && no.includes('data-act="log" data-id="demo-api"')
     && !H("ix-notes").includes("手机/远程只读");
   checks.owner_no_pins = !H("app").includes("instPin");
   mode = "local";
   await run("owner back", "loadInstances()");
-  checks.owner_back_pins = H("app").includes("instPin") && H("ix-core").includes('data-act="start" data-id="demo-web"')
+  checks.owner_back_pins = H("app").includes("instPin") && grp("core").includes('data-act="start" data-id="demo-web"')
     && !H("ix-banners").includes("另一个 tokmon");
   checks.poll_normal = timeouts[timeouts.length - 1] === 4000;
 
@@ -352,22 +520,24 @@ const checks = {};
   const sl = allInst();
   checks.stale_banner = H("ix-banners").includes("原来管理实例的 tokmon 已退出，正在接管") && !H("ix-banners").includes("另一个 tokmon")
     && !H("ix-banners").includes("去它的页面");
-  checks.stale_readonly = ["start", "stop", "restart", "edit", "delete", "start-core", "new"].every(a => !sl.includes(`data-act="${a}"`));
+  checks.stale_readonly = ["start", "stop", "restart", "edit", "delete", "g-start", "g-new", "move-to", "new"].every(a => !sl.includes(`data-act="${a}"`))
+    && !sl.includes("draggable");
   checks.stale_fast_poll = timeouts[timeouts.length - 1] === 1500;
   mode = "local";
   await run("stale taken over", "loadInstances()");
-  checks.stale_taken_over = !H("ix-banners").includes("正在接管") && H("ix-core").includes('data-act="start" data-id="demo-web"')
+  checks.stale_taken_over = !H("ix-banners").includes("正在接管") && grp("core").includes('data-act="start" data-id="demo-web"')
     && timeouts[timeouts.length - 1] === 4000;
 
   // ---- 缺 psutil / 请求失败 ----
   mode = "unavailable";
   await run("unavailable", "loadInstances()");
-  checks.unavailable_hint = H("ix-notes").includes("psutil") && H("ix-core").includes("还没有登记实例");
+  checks.unavailable_hint = H("ix-notes").includes("psutil") && H("ix-groups").includes("还没有登记实例")
+    && grp("core").includes("这一组还没有实例");
   mode = "local";
   await run("back local", "loadInstances()");
   mode = "fail";
   await run("fail", "loadInstances()");
-  checks.fail_keeps_last = H("ix-notes").includes("实例状态读取失败") && H("ix-notes").includes("boom") && H("ix-core").includes('id="ic-demo-api"');
+  checks.fail_keeps_last = H("ix-notes").includes("实例状态读取失败") && H("ix-notes").includes("boom") && grp("core").includes('id="ic-demo-api"');
 
   for (const k of Object.keys(replies)) {
     if (Array.isArray(replies[k]) && replies[k].length) errors.push(`没用上的应答 ${k}: ${replies[k].length} 条`);

@@ -88,8 +88,24 @@
       min-width:110px; background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:4px; box-shadow:0 8px 24px rgba(0,0,0,.45); }
   details.imenu .ilist button { font-size:12px; text-align:left; border-color:transparent; }
   details.imenu .ilist button.danger { color:var(--bad); }
-  details#inst-backup > summary { cursor:pointer; color:var(--dim); font-size:13px; padding:2px 0; }
-  .ibk { border:1px solid var(--line); border-radius:10px; margin-top:8px; }
+  /* 分组 (0.27): 每组一节 —— 组头 (把手 · 组名 · 计数 · 全部拉起 · ⋯) + 卡片网格或折叠表格; 拖拽时的落点标记 */
+  #ix-groups { display:flex; flex-direction:column; gap:14px; }
+  .igrp { display:flex; flex-direction:column; gap:8px; border-radius:12px; }
+  .ighd { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; min-height:28px; }
+  .ighd .ignm { font-size:13.5px; font-weight:600; }
+  .ighd .count { margin-left:0; }
+  .ighd .tog { font-size:13px; font-weight:600; border-color:transparent; background:none; padding:2px 4px; }
+  .grip { cursor:grab; color:var(--dim); font-size:14px; padding:0 2px; user-select:none; }
+  .igempty { border:1px dashed var(--line); border-radius:12px; padding:12px 14px; font-size:12.5px; color:var(--dim); }
+  .icard[draggable="true"] { cursor:grab; }
+  .icard .icmd, .icard .ierr, .icard .iwarn, .icard .idesc, .icard .inote { cursor:text; }   /* 这几块按下去是选文字, 不是拖 */
+  .ibk tr[draggable="true"] td:first-child { cursor:grab; }
+  .dragging { opacity:.45; }
+  .icard.drop-before { box-shadow:inset 4px 0 0 var(--accent); } .icard.drop-after { box-shadow:inset -4px 0 0 var(--accent); }
+  .ibk tr.drop-before td { box-shadow:inset 0 3px 0 var(--accent); } .ibk tr.drop-after td { box-shadow:inset 0 -3px 0 var(--accent); }
+  .igrp.drop-into { outline:2px dashed var(--accent); outline-offset:4px; }
+  .igrp.drop-above { box-shadow:0 -4px 0 var(--accent); } .igrp.drop-below { box-shadow:0 4px 0 var(--accent); }
+  .ibk { border:1px solid var(--line); border-radius:10px; }
   .ibk td { vertical-align:top; } .ibk td.act { white-space:normal; }
   .ibk .pill { white-space:normal; }
   #inst-log { position:fixed; left:0; right:0; bottom:0; height:min(46vh,440px); z-index:70; background:#0b0d12;
@@ -101,7 +117,7 @@
       justify-content:center; padding:4vh 12px; overflow:auto; }
   #inst-modal form { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px 18px;
       width:min(720px,100%); display:flex; flex-direction:column; gap:10px; }
-  #inst-log[hidden], #inst-modal[hidden], #inst-backup[hidden], .ibanner[hidden] { display:none; }
+  #inst-log[hidden], #inst-modal[hidden], .ibanner[hidden] { display:none; }
   .mh, .mf { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
   .fgrid { display:grid; gap:10px 14px; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); }
   .fld { display:flex; flex-direction:column; gap:3px; min-width:0; } .fld.wide { grid-column:1/-1; }
@@ -126,8 +142,7 @@
     <div class="ihd" id="ix-head"><h2 class="sec">★ 我的实例</h2></div>
     <div id="ix-notes"></div>
     <div id="ix-banners"></div>
-    <div id="ix-core" class="igrid"><div class="muted">加载中…</div></div>
-    <details id="inst-backup" hidden><summary id="ix-bk-sum">备用实例</summary><div id="ix-bk-body"></div></details>
+    <div id="ix-groups"><div class="muted">加载中…</div></div>
   </section>
   <div class="controls">
     <input type="text" id="filter" placeholder="过滤: 进程名 / 端口 / 命令行 / 远端地址…" style="min-width:280px">
@@ -154,7 +169,7 @@
       <div class="fld"><label for="ixf-name">名字 *</label><input type="text" id="ixf-name" maxlength="40" placeholder="比如：示例 API"><div class="ferr" id="ixe-name"></div></div>
       <div class="fld"><label for="ixf-project">项目</label><input type="text" id="ixf-project" maxlength="60"><div class="ferr" id="ixe-project"></div></div>
       <div class="fld wide"><label for="ixf-description">描述</label><textarea id="ixf-description" class="prose" rows="2" maxlength="300" placeholder="它是干什么的 / 什么时候需要开着"></textarea><div class="ferr" id="ixe-description"></div></div>
-      <div class="fld"><label for="ixf-group">分组</label><select id="ixf-group"><option value="core">核心（卡片）</option><option value="backup">备用（默认收起）</option></select><div class="ferr" id="ixe-group"></div></div>
+      <div class="fld"><label for="ixf-group">分组</label><select id="ixf-group"><option value="core">核心</option><option value="backup">备用</option></select><div class="ferr" id="ixe-group"></div></div>
       <div class="fld"><label for="ixf-boot">开机策略</label><select id="ixf-boot"><option value="manual">手动 · 只登记</option><option value="ask">开机提醒 · 你点一下再拉起</option><option value="auto">开机自动 · 自动拉起</option></select><div class="ferr" id="ixe-boot"></div></div>
       <div class="fld wide"><label for="ixf-cwd">工作目录 *</label><input type="text" id="ixf-cwd" spellcheck="false" placeholder="C:/path/to/project"><div class="ferr" id="ixe-cwd"></div></div>
       <div class="fld wide"><label for="ixf-command">启动命令 *</label><textarea id="ixf-command" rows="2" maxlength="2000" spellcheck="false" placeholder="npm run dev"></textarea><div class="hint">在工作目录里后台执行（无窗口），输出写进日志。</div><div class="ferr" id="ixe-command"></div></div>
@@ -364,10 +379,16 @@ async function freePort(btn){
 // 权限: 启停 / 编辑只要控制令牌 (X-Control-Token), **不看**控制模式 —— 那是远程审批开关, 与实例无关;
 // 远程 (手机隧道) 一律只读: 按钮不画, 服务端也会以 local-only 拒绝。服务端给的字符串一律过 esc(), 按钮只带 data-*,
 // 不把 id 拼进 onclick 的 JS 字符串 (HTML 转义挡不住 JS 上下文)。
-// 卡片 / 备用行 id = ic-<id> (不用 inst-: 实例 id 可以叫 log / modal / backup, 撞上 #inst-log / #inst-modal 的
-// position:fixed 样式会盖住整页); 其余容器用 ix- 前缀。三个定位容器 (inst-log/inst-modal/inst-backup) 启动时就抓住引用。
+// 卡片 / 表格行 id = ic-<id> (不用 inst-: 实例 id 可以叫 log / modal, 撞上 #inst-log / #inst-modal 的
+// position:fixed 样式会盖住整页); 其余容器用 ix- 前缀, 组一节 = ix-g-<组 id>。两个定位容器 (inst-log/inst-modal) 启动时就抓住引用。
 // 旧深链 #inst-<id> 仍认 (instJumpHash 映射到 ic-<id>)。
-const IX={log:document.getElementById('inst-log'), modal:document.getElementById('inst-modal'), backup:document.getElementById('inst-backup')};
+// 分组 (0.27): 组和顺序都由服务端清单定 (d.groups, 页面从上到下 = 清单顺序); 拖卡片换组 / 组内排序 / 拖组头调组顺序,
+// 放下时先按新顺序画出来再发请求, 失败就提示并重新拉真实状态。拖动期间不重画 (instInteracting)。
+const IX={log:document.getElementById('inst-log'), modal:document.getElementById('inst-modal')};
+const INST_DEFAULT_GROUPS=[{id:'core',name:'核心',view:'cards',builtin:true},{id:'backup',name:'备用',view:'table',builtin:true}];
+let IX_OPEN={}, DRAG=null, DROP=null, DOWN_EL=null, INST_DEFERRED=false;   // IX_OPEN: 折叠表格组的展开状态 (这台浏览器记着); DRAG/DROP: 拖动中
+const INST_DND_TYPE='application/x-tokmon-instance';   // 只放这个类型: 不会把 id 当文字丢进过滤框; 拖进来的文件 / 文字一概不认
+try{ const x=JSON.parse(localStorage.getItem('mc.inst.open')||'{}'); if(x && typeof x==='object' && !Array.isArray(x)) IX_OPEN=x; }catch(e){}
 const INST_FIELDS=['id','name','project','description','group','boot','cwd','command','ports','open_path','env','deps','stop_grace_s','start_timeout_s'];
 const BOOT_LABEL={auto:'开机自动', ask:'开机提醒', manual:'手动'};
 const FIELD_ERR={required:'必填','too-long':'太长','bad-format':'格式不对','cwd-missing':'目录不存在','bad-port':'端口无效',
@@ -377,7 +398,10 @@ const INST_REASON={'not-found':'找不到这个实例（可能刚被删了）','
   'busy':'上一个启动 / 停止还没做完','port-busy':'端口被占用','deps-not-ready':'依赖未就绪','launch-failed':'启动命令没跑起来',
   'no-psutil':'缺 psutil','not-running':'没在运行','local-only':'只能在本机操作（远程只读）','invalid':'有字段不对',
   'id-exists':'id 已被占用','pid-reused':'进程已变（PID 被复用）','gone':'进程已经不在了','access-denied':'没权限读这个进程（可能要管理员）',
-  'identity-required':'进程信息过期了','bad-create-time':'进程信息不完整','bad-pid':'PID 无效','bad-group':'分组无效',
+  'identity-required':'进程信息过期了','bad-create-time':'进程信息不完整','bad-pid':'PID 无效','bad-group':'分组不存在（可能刚被删了）',
+  'bad-name':'组名要 1–20 个字、不能换行','dup-name':'已经有同名的分组','too-many-groups':'分组太多了（最多 12 个）',
+  'builtin':'核心 / 备用是内置组，不能删（可以改名）','bad-view':'显示方式无效','bad-order':'分组顺序对不上（可能刚有别的改动），已刷新',
+  'bad-before':'要排在它前面的那个实例不在这一组了（可能刚有别的改动），已刷新',
   'bad-action':'动作无效','bad-on':'参数无效','bad-port':'端口无效','unsupported':'这个系统不支持',
   'not-owner':'不归这边管','degraded':'进程还在但端口没在监听，请用「重启」',
   'ambiguous':'端口上的进程认不准是哪个实例的，不敢动它','unknown':'状态未知（读不到端口表）',
@@ -401,7 +425,15 @@ function safeUrl(u){ return (typeof u==='string' && /^https?:\/\/[^\s"'<>`]+$/i.
 function setHTML(sel,html){ if(INST_HTML[sel]===html) return; INST_HTML[sel]=html; $(sel).innerHTML=html; }   // 没变就不动 DOM
 function instSay(id,t,cls){ INST_MSG[id]={t:String(t), cls:cls||'', at:Date.now()}; renderInstances(true); }
 function instMsg(id){ const m=INST_MSG[id]; return (!m||Date.now()-m.at>15000) ? '' : `<div class="imsg ${esc(m.cls)}">${esc(m.t)}</div>`; }
-function instInteracting(){   // 下拉框正拿着焦点 / ⋯ 菜单开着: 这一拍先不重画, 免得把它们关掉 (最多拖 20 秒)
+function instGroups(d){   // 服务端的组 (旧服务端没给 = 默认两组)
+  const gs=d && Array.isArray(d.groups) ? d.groups.filter(g=>g && typeof g.id==='string') : [];
+  return gs.length ? gs : INST_DEFAULT_GROUPS;
+}
+function instGroupOf(i, gs){ return gs.some(g=>g.id===i.group) ? i.group : 'backup'; }   // 组不在列表里 -> 当备用 (与服务端一致)
+function instGroupById(id){ return instGroups(INST).find(g=>g.id===id)||null; }
+function instInGroup(gid){ const gs=instGroups(INST); return ((INST&&INST.instances)||[]).filter(i=>instGroupOf(i,gs)===gid); }
+function instInteracting(){   // 正在拖 / 下拉框正拿着焦点 / ⋯ 菜单开着: 这一拍先不重画, 免得把它们关掉 (最多拖 20 秒)
+  if(DRAG) return true;
   try{
     const a=document.activeElement;
     if(a && a.tagName==='SELECT' && a.closest && a.closest('#instances')) return true;
@@ -433,7 +465,7 @@ async function loadInstances(){
   }catch(e){
     if(my!==INST_REQ) return;
     INST_FETCH_ERR='实例状态读取失败：'+e+(INST?'（下面是上一次的）':'');
-    if(INST) renderInstances(true); else setHTML('#ix-core', `<div class="card muted">${esc(INST_FETCH_ERR)}</div>`);
+    if(INST) renderInstances(true); else setHTML('#ix-groups', `<div class="card muted">${esc(INST_FETCH_ERR)}</div>`);
   }finally{ if(my===INST_REQ) instSchedule(); }
 }
 function instSchedule(){   // 有实例在启动 / 停止 / 等依赖时 1.5 秒一拍, 平时 4 秒; 页面藏起来就只空转不请求
@@ -445,33 +477,62 @@ function instSchedule(){   // 有实例在启动 / 停止 / 等依赖时 1.5 秒
 function instJumpHash(){   // 铃铛点进来是 /processes#instances; 卡片深链 #ic-<id> (旧的 #inst-<id> 也认) 等画出来再滚过去
   try{
     const m=decodeURIComponent(location.hash||'').match(/^#(?:ic|inst)-(.+)$/); if(!m) return;
+    const i=instById(m[1]), g=i ? instGroupById(instGroupOf(i, instGroups(INST))) : null;
+    if(g && g.view==='table' && IX_OPEN[g.id]!==true){ IX_OPEN[g.id]=true; renderInstances(true); }   // 在收起的表里: 先展开才看得见
     const el=document.getElementById('ic-'+m[1]); if(!el) return;
-    if(IX.backup.contains && IX.backup.contains(el)) IX.backup.open=true;   // 在收起的备用表里: 先展开才看得见
     if(el.scrollIntoView) el.scrollIntoView();
   }catch(e){}
 }
 
 function renderInstances(force){
   const d=INST; if(!d) return;
+  // 拖动中一律不重画 (强制的也不): 换掉被拖的节点, dragend 就到不了, 拖动状态会卡住 (静态审查 #1)。拖完由 instDragClear 补画
+  if(DRAG){ INST_DEFERRED=true; return; }
   if(!force && instInteracting() && Date.now()-INST_DRAWN<20000) return;
   INST_DRAWN=Date.now();
-  const list=d.instances||[], core=list.filter(i=>i.group!=='backup'), backup=list.filter(i=>i.group==='backup');
+  const list=d.instances||[], gs=instGroups(d), by={};
+  gs.forEach(g=>{ by[g.id]=[]; });
+  list.forEach(i=>by[instGroupOf(i,gs)].push(i));
   const names={}; list.forEach(i=>{ names[i.id]=i.name; });
-  setHTML('#ix-head', instHead(d,list,core));
+  setHTML('#ix-head', instHead(d,list));
   setHTML('#ix-notes', instNotes(d));
   setHTML('#ix-banners', instBanners(d,list,names));
-  setHTML('#ix-core', core.length ? core.map(i=>instCard(i,names)).join('') : instEmpty(list.length, backup.length));
-  IX.backup.hidden=!backup.length;                  // 备用默认收起 (details 不带 open), 展开状态由你决定, 重画不动它
-  $('#ix-bk-sum').textContent='备用实例 ('+backup.length+')';
-  setHTML('#ix-bk-body', backup.length ? instBackupTable(backup) : '');
+  setHTML('#ix-groups', (list.length?'':instEmpty())+gs.map((g,k)=>instGroupHtml(g,by[g.id],names,k,gs.length)).join(''));
 }
-function instHead(d,list,core){
+function instHead(d,list){
   const run=list.filter(i=>i.state==='running'||i.state==='self').length;
-  const startable=core.filter(i=>i.can_control && ['stopped','failed','crashed'].includes(i.state)).length;
   let h=`<h2 class="sec">★ 我的实例 <span class="count">${list.length} 个 · ${run} 个在跑</span></h2>`;
-  if(INST_CAN) h+=`<button class="ibtn go" data-act="start-core"${startable&&!INST_BUSY._group?'':' disabled'} title="按顺序拉起所有没在运行的核心实例（间隔 5 秒；依赖没就绪的会等着）">▶ 全部拉起核心</button>`+
-    `<button class="ibtn" data-act="new" title="登记一个本机服务：目录 + 命令 + 端口">+ 新增实例</button>`;
+  if(INST_CAN) h+=`<button class="ibtn" data-act="new" title="登记一个本机服务：目录 + 命令 + 端口">+ 新增实例</button>`+
+    `<button class="ibtn" data-act="g-new"${INST_BUSY._groups?' disabled':''} title="新建一个分组；实例的卡片可以拖进去">+ 新建分组</button>`;
   return h+'<span class="grow"></span>'+instAutostartPill(d.autostart, d.boot);
+}
+// 一组一节。能改时: 组头 ⠿ 可拖 (调组顺序), 卡片 / 行可拖 (换组 / 排序), 组头和空白处都接得住放下
+function instGroupHtml(g, rows, names, k, n){
+  const gid=esc(g.id), table=g.view==='table', open=!table || IX_OPEN[g.id]===true, L=INST_CAN;
+  const run=rows.filter(i=>i.state==='running'||i.state==='self').length;
+  const startable=rows.filter(i=>i.can_control && ['stopped','failed','crashed'].includes(i.state)).length;
+  let h=`<section class="igrp${table?' tbl':''}" id="ix-g-${gid}" data-gid="${gid}">`+
+    `<div class="ighd">`+
+    (L?`<span class="grip" draggable="true" data-drag="group" data-gid="${gid}" title="按住拖动，调整分组的上下顺序">⠿</span>`:'')+
+    (table?`<button class="mini tog" data-act="g-toggle" data-gid="${gid}" aria-expanded="${open}" title="${open?'收起':'展开'}">${open?'▾':'▸'} ${esc(g.name)}</button>`
+          :`<span class="ignm">${esc(g.name)}</span>`)+
+    `<span class="count">${rows.length} 个${run?' · '+run+' 个在跑':''}</span>`;
+  if(L) h+=`<button class="ibtn go" data-act="g-start" data-gid="${gid}"${startable&&!INST_BUSY._group?'':' disabled'} `+
+      `title="按页面顺序拉起这一组里所有没在运行的实例（间隔 5 秒；依赖没就绪的会等着）">▶ 全部拉起</button>`+instGroupMenu(g,k,n);
+  h+='</div>';
+  if(open) h+= table ? instTable(rows, g) : `<div class="igrid">${rows.map(i=>instCard(i,names)).join('')||instGroupEmpty()}</div>`;
+  return h+'</section>';
+}
+function instGroupEmpty(){ return `<div class="igempty">这一组还没有实例${INST_CAN?'：把卡片拖到这里，或者在实例的 ⋯ 里选「移到」':''}</div>`; }
+function instGroupMenu(g,k,n){
+  const gid=esc(g.id), dis=INST_BUSY._groups?' disabled':'';
+  const b=(act,label,cls,off)=>`<button${cls?' class="'+cls+'"':''} data-act="${act}" data-gid="${gid}"${off?' disabled':dis}>${label}</button>`;
+  return `<details class="imenu"><summary title="分组操作">⋯</summary><div class="ilist">`+
+    b('g-rename','改名')+
+    b('g-view', g.view==='table'?'显示为卡片':'显示为折叠表格')+
+    b('g-up','上移','',k===0)+b('g-down','下移','',k===n-1)+
+    (g.builtin?'':b('g-delete','删除分组','danger'))+
+    '</div></details>';
 }
 function instAutostartPill(a, boot){   // tokmon 自己的开机自启 (任务计划程序 / 注册表 Run); 不支持的系统不显示
   if(!a || !a.supported) return '';
@@ -518,8 +579,7 @@ function instBanners(d,list,names){
   });
   return out.join('');
 }
-function instEmpty(n, nb){
-  if(n) return `<div class="card muted">核心里还没有实例（备用里有 ${nb} 个，在下面展开）。</div>`;
+function instEmpty(){
   return INST_CAN
     ? '<div class="card muted">还没有登记实例。点「+ 新增实例」，或者在下面的端口表 / 进程表里点 📌，把正在跑的服务记下来。</div>'
     : '<div class="card muted">还没有登记实例（登记请在本机、在管实例的那个 tokmon 页面上操作）。</div>';
@@ -600,18 +660,22 @@ function instButtons(i){
   if(i.log_exists) b.push(btn('log','日志'));
   if(INST_CAN){
     b.push(btn('edit','编辑'));
-    const to=i.group==='backup'?'core':'backup';
-    b.push(`<details class="imenu"><summary title="更多">⋯</summary><div class="ilist">`+
-      `<button data-act="group" data-id="${id}" data-group="${to}"${dis}>${to==='core'?'移到核心':'移到备用'}</button>`+
+    // 不用拖也能换组 / 排序 (键盘、拖不准的时候): 移到别的组 (放到末尾) · 组内上移 / 下移
+    const gs=instGroups(INST), mine=instGroupOf(i,gs), sib=instInGroup(mine), k=sib.findIndex(x=>x.id===i.id), mdis=dis||(INST_BUSY._move?' disabled':'');
+    const mv=gs.filter(g=>g.id!==mine).map(g=>`<button data-act="move-to" data-id="${id}" data-gid="${esc(g.id)}"${mdis}>移到「${esc(g.name)}」</button>`).join('');
+    b.push(`<details class="imenu"><summary title="更多">⋯</summary><div class="ilist">`+mv+
+      `<button data-act="move-up" data-id="${id}"${k<=0?' disabled':mdis}>上移</button>`+
+      `<button data-act="move-down" data-id="${id}"${k<0||k>=sib.length-1?' disabled':mdis}>下移</button>`+
       `<button class="danger" data-act="delete" data-id="${id}"${dis}>删除登记</button></div></details>`);
   }
   return b.join('');
 }
+function instDragAttr(i){ return INST_CAN ? ` draggable="true" data-drag="inst" data-id="${esc(i.id)}"` : ''; }
 function instCard(i,names){
   const st=i.state, amb=st==='port_busy'&&instAmbiguous(i);
   const cls=(st==='degraded'||amb)?' warn':(['failed','crashed','port_busy'].includes(st)?' bad':(st==='running'?' run':''));
   const err=i.last_error&&i.last_error!==i.note ? i.last_error : '';   // 和 note 同一句就只说一次
-  return `<div class="icard${cls}" id="ic-${esc(i.id)}">`+
+  return `<div class="icard${cls}" id="ic-${esc(i.id)}"${instDragAttr(i)}>`+
     `<div class="irow"><span class="inm">${esc(i.name)}</span>${i.project?'<span class="chip proj">'+esc(i.project)+'</span>':''}${i.boot_pending?'<span class="chip warn">等你确认拉起</span>':''}</div>`+
     `${i.description?'<div class="idesc" title="'+esc(i.description)+'">'+esc(i.description)+'</div>':''}`+
     `<div class="irow">${instPill(i)}</div>`+
@@ -623,9 +687,10 @@ function instCard(i,names){
     `<div class="irow">${instBoot(i)}<span class="iact">${instButtons(i)}</span></div>`+
     instMsg(i.id)+'</div>';
 }
-function instBackupTable(rows){
+function instTable(rows){
+  if(!rows.length) return instGroupEmpty();
   return '<div class="ibk"><table><thead><tr><th>名字</th><th>项目</th><th>端口</th><th>状态</th><th class="act"></th></tr></thead><tbody>'+
-    rows.map(i=>`<tr id="ic-${esc(i.id)}"><td title="${esc(i.description||'')}">${esc(i.name)}</td><td>${esc(i.project||'')}</td>`+
+    rows.map(i=>`<tr id="ic-${esc(i.id)}"${instDragAttr(i)}><td title="${esc(i.description||'')}">${esc(i.name)}</td><td>${esc(i.project||'')}</td>`+
       `<td>${(i.ports||[]).map(p=>':'+esc(p)).join(' ')||'—'}</td><td>${instPill(i)}${instMsg(i.id)}</td>`+
       `<td class="act"><span class="iact">${instButtons(i)}</span></td></tr>`).join('')+
     '</tbody></table></div>';
@@ -668,11 +733,20 @@ function instDo(act,id,el){
     case 'restart': return instRestart(id);
     case 'log': return instLogOpen(id);
     case 'edit': return instEdit(id);
-    case 'group': return instPatch(id, {group:el.dataset.group}, el.dataset.group==='core'?'已移到核心':'已移到备用');
+    case 'move-to': return instMoveTo(id, el.dataset.gid, null);
+    case 'move-up': return instMoveBy(id, -1);
+    case 'move-down': return instMoveBy(id, 1);
     case 'delete': return instDelete(id);
     case 'copy': return instCopy(el.dataset.url);
     case 'dismiss': return instDismiss(id);
-    case 'start-core': return instStartGroup('core');
+    case 'g-start': return instStartGroup(el.dataset.gid);
+    case 'g-toggle': return instGroupToggle(el.dataset.gid);
+    case 'g-new': return instGroupNew();
+    case 'g-rename': return instGroupRename(el.dataset.gid);
+    case 'g-view': return instGroupView(el.dataset.gid);
+    case 'g-up': return instGroupShift(el.dataset.gid, -1);
+    case 'g-down': return instGroupShift(el.dataset.gid, 1);
+    case 'g-delete': return instGroupDelete(el.dataset.gid);
     case 'new': return instNew();
     case 'boot-start': return instBootAck('start');
     case 'boot-dismiss': return instBootAck('dismiss');
@@ -751,7 +825,8 @@ async function instDelete(id){
   else instSay(id, '没删掉：'+instReason(r), 'bad');
 }
 async function instStartGroup(group){
-  if(!confirm('按顺序拉起所有没在运行的核心实例？\n每个间隔 5 秒；依赖没就绪的会等着（最多 15 分钟）。')) return;
+  const g=instGroupById(group); if(!g) return;
+  if(!confirm('按页面顺序拉起「'+g.name+'」里所有没在运行的实例？\n每个间隔 5 秒；依赖没就绪的会等着（最多 15 分钟）。')) return;
   const r=await instCall('_group', '/api/instances/start-group', {group});
   if(!r) return;
   if(!r.ok){ instSay('_', '没拉起：'+instReason(r), 'bad'); return; }
@@ -759,6 +834,192 @@ async function instStartGroup(group){
   const q=r.queued||[], sk=r.skipped||[];
   instSay('_', (q.length?'已排队 '+q.length+' 个：'+q.map(nm).join('、')+'（间隔 5 秒依次启动）':'没有要拉起的')+
     (sk.length?'；跳过 '+sk.length+' 个：'+sk.map(s=>nm(s.id)+' '+instReason(s)).join('、'):''), q.length?'ok':'warn');
+}
+
+// -- 分组 / 排序 (0.27): 只改登记, 不碰进程。先按新顺序画出来, 再发请求; 不管成败都重新拉一次真实状态 (instCall) --
+function instLocalMove(id, gid, before){   // 本地先挪一份: 和服务端 move_instance 同一套规则
+  const list=(INST&&INST.instances)||[], k=list.findIndex(x=>x.id===id); if(k<0) return;
+  const gs=instGroups(INST), it=Object.assign({}, list.splice(k,1)[0], {group:gid});
+  let j=before ? list.findIndex(x=>x.id===before) : -1;
+  if(j<0){
+    let last=-1; list.forEach((x,n)=>{ if(instGroupOf(x,gs)===gid) last=n; });
+    if(last>=0) j=last+1;
+    else{ const ord=gs.map(g=>g.id), gi=ord.indexOf(gid); j=list.findIndex(x=>ord.indexOf(instGroupOf(x,gs))>gi); if(j<0) j=list.length; }
+  }
+  list.splice(j,0,it);
+}
+function instNextInGroup(gid, id, skip){   // 组里排在 id 后面的那个 (跳过正被拖的 skip); 没有 = 末尾
+  const sib=instInGroup(gid).filter(x=>x.id!==skip), k=sib.findIndex(x=>x.id===id);
+  return k>=0 && k+1<sib.length ? sib[k+1].id : null;
+}
+async function instMoveTo(id, gid, before){
+  const i=instById(id), g=instGroupById(gid); if(!i || !g) return;
+  const from=instGroupOf(i, instGroups(INST));
+  if(from===gid && (before||null)===instNextInGroup(gid, id, null)) return;   // 原地不动: 不发请求
+  // 上一个挪动还在路上: 先说一声, 不在本地先挪 (否则请求没发、画面却挪了, 这次操作会被悄悄吞掉 —— 静态审查 #2)
+  if(INST_BUSY._move){ instSay(id, '上一个挪动还没做完，稍等再拖', 'warn'); return; }
+  instLocalMove(id, gid, before||null);
+  const r=await instCall('_move', '/api/instances/move', {id, group:gid, before:before||null});
+  if(!r) return;
+  if(r.ok) instSay(id, from===gid?'已调整顺序':'已移到「'+g.name+'」', 'ok');
+  else instSay(id, '没挪成：'+instReason(r), 'bad');
+}
+function instMoveBy(id, d){   // ⋯ 里的上移 / 下移: 换成「排在谁前面」
+  const i=instById(id); if(!i) return;
+  const gid=instGroupOf(i, instGroups(INST)), sib=instInGroup(gid), k=sib.findIndex(x=>x.id===id);
+  if(k<0 || (d<0 && k===0) || (d>0 && k>=sib.length-1)) return;
+  return instMoveTo(id, gid, d<0 ? sib[k-1].id : (k+2<sib.length ? sib[k+2].id : null));
+}
+async function instGroupCall(body, okText){
+  const r=await instCall('_groups', '/api/instances/groups', body);
+  if(!r) return null;
+  if(r.ok) instSay('_', okText(r), 'ok'); else instSay('_', '分组没改成：'+instReason(r), 'bad');
+  return r;
+}
+function instAskName(msg, cur){
+  let v=null; try{ v=prompt(msg, cur||''); }catch(e){ return null; }
+  v=v==null ? '' : String(v).trim();
+  return v||null;
+}
+async function instGroupNew(){
+  const nm=instAskName('新分组的名字（1–20 个字）：', ''); if(!nm) return;
+  return instGroupCall({action:'create', name:nm},
+    r=>'已新建分组「'+((r.group&&r.group.name)||nm)+'」：把卡片拖进去，或者在实例的 ⋯ 里选「移到」');
+}
+async function instGroupRename(gid){
+  const g=instGroupById(gid); if(!g) return;
+  const nm=instAskName('给「'+g.name+'」改个名字（1–20 个字）：', g.name); if(!nm || nm===g.name) return;
+  return instGroupCall({action:'rename', id:gid, name:nm}, ()=>'「'+g.name+'」已改名为「'+nm+'」');
+}
+async function instGroupView(gid){
+  const g=instGroupById(gid); if(!g) return;
+  const v=g.view==='table'?'cards':'table';
+  if(v==='table'){ IX_OPEN[gid]=true; try{ localStorage.setItem('mc.inst.open', JSON.stringify(IX_OPEN)); }catch(e){} }   // 刚换成表格: 先展开着
+  return instGroupCall({action:'view', id:gid, view:v}, ()=>'「'+g.name+'」改为'+(v==='table'?'折叠表格':'卡片'));
+}
+function instGroupShift(gid, d){
+  const ids=instGroups(INST).map(g=>g.id), k=ids.indexOf(gid), j=k+d;
+  if(k<0 || j<0 || j>=ids.length) return;
+  ids.splice(k,1); ids.splice(j,0,gid);
+  return instGroupOrder(ids);
+}
+function instGroupOrder(ids){
+  const cur=instGroups(INST), by={}; cur.forEach(g=>{ by[g.id]=g; });
+  if(ids.join('\n')===cur.map(g=>g.id).join('\n')) return;
+  if(INST_BUSY._groups){ instSay('_', '上一个分组改动还没做完，稍等再试', 'warn'); return; }
+  if(INST && Array.isArray(INST.groups)) INST.groups=ids.map(x=>by[x]).filter(Boolean);   // 先按新顺序画
+  return instGroupCall({action:'reorder', order:ids}, ()=>'已调整分组顺序');
+}
+async function instGroupDelete(gid){
+  const g=instGroupById(gid); if(!g || g.builtin) return;
+  const rows=instInGroup(gid), bk=(instGroupById('backup')||{}).name||'备用';
+  const msg='删除分组「'+g.name+'」？\n\n'+(rows.length
+    ? '组里的 '+rows.length+' 个实例会移到「'+bk+'」末尾：'+rows.map(x=>x.name).join('、')
+    : '这一组是空的。')+'\n\n只改登记：不会停掉任何进程。';
+  if(!confirm(msg)) return;
+  const r=await instGroupCall({action:'delete', id:gid},
+    r=>'已删除分组「'+g.name+'」'+((r.moved||[]).length?'，'+r.moved.length+' 个实例移到了「'+bk+'」':''));
+  if(r && r.ok && gid in IX_OPEN){   // 组号会复用 (删了 g1 再建一个还叫 g1): 别让新组继承旧组的展开状态
+    delete IX_OPEN[gid];
+    try{ localStorage.setItem('mc.inst.open', JSON.stringify(IX_OPEN)); }catch(e){}
+  }
+  return r;
+}
+function instGroupToggle(gid){   // 折叠表格组: 展开 / 收起 (只是这台浏览器的显示, 不发请求; 远程只读也能用)
+  IX_OPEN[gid]=IX_OPEN[gid]!==true;
+  try{ localStorage.setItem('mc.inst.open', JSON.stringify(IX_OPEN)); }catch(e){}
+  renderInstances(true);
+}
+
+// -- 拖拽: 卡片 / 表格行 -> 别的卡片前后 (卡片看左右半边, 行看上下半边) / 组头 / 组里空白处 (= 组末尾);
+//    组头 ⠿ -> 别的组的上半边 / 下半边。放下后走和 ⋯ 菜单同一套动作 --
+function instMouseDown(e){   // 捕获阶段: 记下拖动从哪里起的 (按钮上起的不算拖)
+  DOWN_EL=e.target;
+  // 卡片里的命令行 / 错误 / 描述 / 提示: 按下时先关掉这张卡片的拖动, 照常能选中文字复制; 松开再开回来 (静态审查 #3)
+  const t=e.target, c=t && t.closest ? t.closest('[data-drag="inst"]') : null;
+  if(c && t.closest('.icmd,.ierr,.iwarn,.idesc,.inote')){
+    c.draggable=false;
+    document.addEventListener('mouseup', ()=>{ c.draggable=true; }, {once:true});
+  }
+}
+function instOurDrag(e){   // 这次拖动是不是本页的卡片 / 组头 (外面拖进来的文件、文字都不是)
+  const t=e && e.dataTransfer && e.dataTransfer.types;
+  return !!t && Array.prototype.indexOf.call(t, INST_DND_TYPE)>=0;
+}
+function instDragStart(e){
+  const src=e.target && e.target.closest ? e.target.closest('[data-drag]') : null;
+  const dn=DOWN_EL; DOWN_EL=null;
+  if(!src || !INST_CAN) return;
+  if(src.dataset.drag==='inst' && dn && dn!==src && dn.closest &&
+     dn.closest('button,select,a,input,textarea,summary,details.imenu')){ e.preventDefault(); return; }   // 在按钮 / 链接上起的: 那是要点它
+  const d=src.dataset.drag==='group' ? {type:'group', id:src.dataset.gid} : {type:'inst', id:src.dataset.id};
+  d.el=d.type==='group' ? src.closest('.igrp') : src;
+  DRAG=d;
+  try{
+    e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData(INST_DND_TYPE, d.id);
+    if(d.type==='group' && d.el && e.dataTransfer.setDragImage) e.dataTransfer.setDragImage(d.el, 16, 14);
+  }catch(x){}
+  // dragend 也直接挂在被拖的节点上: 万一它被换掉了 (不该发生, 见 renderInstances), 这一路照样收得到
+  if(src.addEventListener) src.addEventListener('dragend', instDragEnd, {once:true});
+  // 半透明等浏览器拍完拖动影像再加, 不然影像本身也是淡的
+  const fade=()=>{ if(DRAG===d && d.el && d.el.classList) d.el.classList.add('dragging'); };
+  (typeof requestAnimationFrame==='function' ? requestAnimationFrame : setTimeout)(fade);
+}
+function instDropAt(e){   // 指针下的落点 -> {kind:'group'|'inst'|'end', el, gid, id?, after?} | null (不能放)
+  if(!DRAG) return null;
+  const t=e.target && e.target.closest ? e.target : null;
+  const sec=t ? t.closest('.igrp') : null; if(!sec) return null;
+  const gid=sec.dataset.gid;
+  if(DRAG.type==='group'){
+    if(gid===DRAG.id) return null;
+    const r=sec.getBoundingClientRect();
+    return {kind:'group', el:sec, gid, after:e.clientY>r.top+r.height/2};
+  }
+  const it=t.closest('[data-drag="inst"]');
+  if(it){
+    if(it.dataset.id===DRAG.id) return null;
+    const r=it.getBoundingClientRect(), row=it.tagName==='TR';
+    return {kind:'inst', el:it, gid, id:it.dataset.id, after: row ? e.clientY>r.top+r.height/2 : e.clientX>r.left+r.width/2};
+  }
+  return {kind:'end', el:sec, gid};
+}
+function instMark(tg){
+  if(DROP && DROP.el && DROP.el.classList) DROP.el.classList.remove('drop-before','drop-after','drop-into','drop-above','drop-below');
+  DROP=tg||null;
+  if(!tg || !tg.el || !tg.el.classList) return;
+  tg.el.classList.add(tg.kind==='group' ? (tg.after?'drop-below':'drop-above') : tg.kind==='inst' ? (tg.after?'drop-after':'drop-before') : 'drop-into');
+}
+function instDragOver(e){
+  if(!DRAG) return;
+  if(!instOurDrag(e)){ instDragEnd(); return; }      // 记着的拖动早该结束了 (残留), 现在拖的是外面的东西: 清掉, 不认
+  const tg=instDropAt(e); instMark(tg);
+  if(tg){ e.preventDefault(); try{ e.dataTransfer.dropEffect='move'; }catch(x){} }
+}
+function instDragLeave(e){ if(DRAG && !(e.relatedTarget && $('#instances').contains(e.relatedTarget))) instMark(null); }
+function instDragClear(){
+  instMark(null);
+  if(DRAG && DRAG.el && DRAG.el.classList) DRAG.el.classList.remove('dragging');
+  const was=!!DRAG; DRAG=null; INST_DEFERRED=false; return was;
+}
+function instDragEnd(){ if(instDragClear()) renderInstances(true); }   // 拖动期间攒下的状态更新补画上
+function instDropEv(e){
+  if(!DRAG) return;
+  if(!instOurDrag(e)){ instDragEnd(); return; }
+  e.preventDefault();
+  const dr=DRAG, tg=instDropAt(e)||DROP;
+  instDragClear(); renderInstances(true);
+  if(tg) instDropApply(dr, tg);
+}
+function instDropApply(dr, tg){   // 拖放的结果 -> 和菜单同一套动作
+  if(dr.type==='group'){
+    const ids=instGroups(INST).map(g=>g.id).filter(x=>x!==dr.id);
+    let j=ids.indexOf(tg.gid); if(j<0) return;
+    if(tg.after) j+=1;
+    ids.splice(j,0,dr.id);
+    return instGroupOrder(ids);
+  }
+  if(tg.kind==='inst') return instMoveTo(dr.id, tg.gid, tg.after ? instNextInGroup(tg.gid, tg.id, dr.id) : tg.id);
+  return instMoveTo(dr.id, tg.gid, null);
 }
 async function instBootAck(action){
   const r=await instCall('_boot', '/api/instances/boot-ack', {action});
@@ -822,7 +1083,9 @@ function instModalOpen(rec, originalId, warning, title){
   const set=(k,v)=>{ $('#ixf-'+k).value=(v==null?'':String(v)); };
   ['name','project','description','cwd','command','open_path','stop_grace_s','start_timeout_s'].forEach(k=>set(k, rec[k]));
   set('id', originalId ? rec.id : '');               // 新增 / 📌 预填: id 留空, 服务端按名字生成
-  set('group', rec.group==='backup'?'backup':'core');
+  const gs=instGroups(INST);                         // 分组下拉框: 列出现有的所有组 (页面顺序)
+  setHTML('#ixf-group', gs.map(g=>`<option value="${esc(g.id)}">${esc(g.name)}</option>`).join(''));
+  set('group', gs.some(g=>g.id===rec.group) ? rec.group : 'core');
   set('boot', ['auto','ask','manual'].includes(rec.boot)?rec.boot:'manual');
   set('ports', (rec.ports||[]).join(', '));
   set('env', Object.keys(rec.env||{}).map(k=>k+'='+rec.env[k]).join('\n'));
@@ -926,6 +1189,12 @@ function instLogClose(){ LOG.id=null; clearInterval(LOG.timer); LOG.timer=null; 
 
 $('#instances').addEventListener('click', instClick);
 $('#instances').addEventListener('change', instChange);
+$('#instances').addEventListener('mousedown', instMouseDown, true);
+$('#instances').addEventListener('dragstart', instDragStart);
+$('#instances').addEventListener('dragover', instDragOver);
+$('#instances').addEventListener('dragleave', instDragLeave);
+$('#instances').addEventListener('drop', instDropEv);
+$('#instances').addEventListener('dragend', instDragEnd);
 $('#ix-form').addEventListener('submit', instSave);
 $('#ix-m-x').addEventListener('click', instModalClose);
 $('#ix-m-cancel').addEventListener('click', instModalClose);

@@ -9,6 +9,7 @@ Node 冒烟 (没装 node 就跳过): 桩 DOM + fetch 把页面脚本跑一遍 �
 另一个 tokmon 在管实例时整块只读 + 横幅; not-owner / degraded / ambiguous 的中文原因。
 修复轮 2: 没有端口的启动要你确认 (portless-confirm -> 确定才 force 重试); 保存 / 改开机策略的 portless-auto 中文;
 端口被另一个登记过的实例占着 (by) 时说实例名; 开机提醒跳过的也说出来; 原主人已退出 (owner.stale) -> 「正在接管」+ 快轮询。
+分组 (0.27): 组由服务端 groups 定, 每组一节 (#ix-g-<id>); 折叠表格组默认收起; 拖拽 / ⋯ 菜单 -> /api/instances/move、/groups。
 数据全是合成的 (demo-*, C:/Users/u/..., 18xxx 端口)。
 """
 
@@ -55,13 +56,14 @@ def test_served_page_carries_the_section():
 
 def test_containers_and_endpoints_present():
     p = _page()
-    for needle in ('id="inst-modal"', 'id="inst-log"', 'id="inst-backup"', "fetch('/api/instances')",
+    for needle in ('id="inst-modal"', 'id="inst-log"', 'id="ix-groups"', "fetch('/api/instances')",
                    "/api/instances/log?id=", "'/api/instances/start'", "'/api/instances/stop'", "'/api/instances/restart'",
                    "'/api/instances/start-group'", "'/api/instances/save'", "'/api/instances/patch'", "'/api/instances/delete'",
-                   "'/api/instances/get'", "'/api/instances/draft'", "'/api/instances/boot-ack'", "'/api/autostart'"):
+                   "'/api/instances/get'", "'/api/instances/draft'", "'/api/instances/boot-ack'", "'/api/autostart'",
+                   "'/api/instances/move'", "'/api/instances/groups'"):
         assert needle in p, needle
-    tag = re.search(r"<details id=\"inst-backup\"[^>]*>", p).group(0)
-    assert " open" not in tag                                        # 备用默认收起
+    assert 'id="inst-backup"' not in p and 'id="ix-core"' not in p    # 0.27: 组是动态画的, 不再有写死的两个容器
+    assert "IX_OPEN[g.id]===true" in _block()                        # 折叠表格组: 只有你点开过才展开 (默认收起)
 
 
 def test_instance_actions_only_need_the_token_not_control_mode():
@@ -72,11 +74,12 @@ def test_instance_actions_only_need_the_token_not_control_mode():
 
 
 def test_card_ids_cannot_collide_with_fixed_containers():
-    """c19: 实例 id 可以叫 log / modal / backup —— 卡片 / 备用行的 id 不能落进 inst- 命名空间 (#inst-log/#inst-modal 是 position:fixed)。"""
+    """c19: 实例 id 可以叫 log / modal / backup —— 卡片 / 表格行的 id 不能落进 inst- 命名空间 (#inst-log/#inst-modal 是 position:fixed)。"""
     blk, p = _block(), _page()
-    assert 'id="inst-${' not in blk and blk.count('id="ic-${esc(i.id)}"') == 2      # 卡片 + 备用行
+    assert 'id="inst-${' not in blk and blk.count('id="ic-${esc(i.id)}"') == 2      # 卡片 + 表格行
+    assert blk.count('id="ix-g-${gid}"') == 1                                         # 组一节: ix- 前缀 (组 id 只会是 core/backup/g数字)
     css = re.search(r"<style>(.*?)</style>", p, re.S).group(1)
-    assert set(re.findall(r"#(inst-[\w-]+)", css)) <= {"inst-log", "inst-modal", "inst-backup"}
+    assert set(re.findall(r"#(inst-[\w-]+)", css)) <= {"inst-log", "inst-modal"}
     assert "#ic-" not in css                                             # 卡片不靠 id 上样式
     assert "(?:ic|inst)-" in blk                                         # 旧深链 #inst-<id> 映射到 ic-<id>
 
@@ -178,11 +181,16 @@ def _status(local=True):
                          {"kind": "port-busy", "port": 18081, "owner": {"pid": 4321, "name": "python.exe"}, "by": "demo-api"}]),
         _inst("demo-np", "无端口样例", ports=[], state_label="未运行（没有端口，外部启动的认不出）",
               deps=[{"name": "数据库", "port": 18900, "ready": False}], deps_ready=False),
+        # 分组 (0.27): 自建组里的实例
+        _inst("demo-q", "回测样例", group="g1", ports=[18110]),
     ]
+    groups = [{"id": "core", "name": "核心", "view": "cards", "builtin": True},
+              {"id": "g1", "name": "量化工具", "view": "cards", "builtin": False},
+              {"id": "backup", "name": "备用", "view": "table", "builtin": True}]
     return {"ok": True, "available": True, "generated_at": 1700000000.0, "manifest_error": "清单坏了: JSON 解析失败",
             "boot": {"handled": 1699990000.0, "pending": ["demo-web"]},                 # 修复轮: 不再有 boot_time
             "owner": {"is_owner": True, "pid": 1111, "port": 18765},
-            "instances": insts, "local": local,
+            "groups": groups, "instances": insts, "local": local,
             "autostart": {"supported": True, "installed": False, "method": None, "detail": "未登记"}}
 
 
@@ -238,8 +246,19 @@ def _replies():
                                 {"ok": True, "instance": dict(record, ports=[18080])}],
         "/api/instances/draft": [{"ok": True, "draft": draft, "warning": "命令行可能含密钥, 保存前核对一下"},
                                  {"ok": False, "reason": "identity-required"}],
-        "/api/instances/patch": [{"ok": True, "instance": record}, {"ok": True, "instance": record},
+        "/api/instances/patch": [{"ok": True, "instance": record},
                                  {"ok": False, "reason": "invalid", "errors": {"boot": "portless-auto"}}],
+        # 分组 (0.27): ⋯ 移到 / 下移 / 拖到卡片前面 (被拒) / 拖到组末尾 / 拖放事件
+        "/api/instances/move": [{"ok": True, "instance": dict(record, group="g1")}, {"ok": True, "instance": record},
+                                {"ok": False, "reason": "bad-before"}, {"ok": True, "instance": record},
+                                {"ok": True, "instance": record}],
+        # 新建 / 改名 / 换显示 / 下移 / 拖组头 (被拒) / 删除
+        "/api/instances/groups": [{"ok": True, "group": {"id": "g2", "name": "回测研究", "view": "cards", "builtin": False}},
+                                  {"ok": True, "group": {"id": "g1", "name": "量化", "view": "cards", "builtin": False}},
+                                  {"ok": True, "group": {"id": "g1", "name": "量化工具", "view": "table", "builtin": False}},
+                                  {"ok": True},
+                                  {"ok": False, "reason": "bad-order"},
+                                  {"ok": True, "moved": ["demo-q"]}],
         "/api/instances/start-group": [{"ok": True, "queued": ["demo-web"],
                                         "skipped": [{"id": "demo-api", "reason": "already-running"}]}],
         "/api/instances/boot-ack": [{"ok": True, "queued": ["demo-web"], "skipped": [{"id": "demo-np", "reason": "portless"}]}],

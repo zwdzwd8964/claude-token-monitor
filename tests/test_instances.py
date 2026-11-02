@@ -930,7 +930,8 @@ def test_second_tokmon_is_read_only_and_never_advances_state(world, tmp_path, mo
         want = f"另一个 tokmon（pid {holder.pid} · 端口 18765）在管理实例，请在它的页面操作"
         for r in (inst.start(rec["id"]), inst.stop(rec["id"]), inst.restart(rec["id"]),
                   inst.start_group("core"), inst.boot_ack("dismiss"), inst.save_instance({"name": "x"}),
-                  inst.patch_instance(rec["id"], {"boot": "ask"}), inst.delete_instance(rec["id"])):
+                  inst.patch_instance(rec["id"], {"boot": "ask"}), inst.delete_instance(rec["id"]),
+                  inst.move_instance(rec["id"], "backup"), inst.edit_groups("create", name="量化工具")):
             assert r["ok"] is False and r["reason"] == "not-owner" and r["detail"] == want, r
         assert inst.get_instance(rec["id"])["id"] == rec["id"]            # 只读的照常
         assert inst.log_tail(rec["id"])["ok"]
@@ -2164,3 +2165,214 @@ def test_patch_without_boot_does_not_trip_the_portless_rule_on_old_records(world
     inst.MANIFEST.write_text(json.dumps(doc), encoding="utf-8")
     assert inst.patch_instance(w["id"], {"group": "backup"})["ok"]  # 只是挪到备用: 不该因为没动过的开机策略被拒
     assert inst.patch_instance(w["id"], {"boot": "ask"})["errors"] == {"boot": "portless-auto"}
+
+
+# ---------------- 分组 (0.27): 自建组 / 拖动换组 / 组内排序 / 组排序 ----------------
+
+def _ids(group=None):
+    return [r["id"] for r in inst.load_manifest() if group is None or r["group"] == group]
+
+
+def _gids():
+    return [g["id"] for g in inst.load_groups()]
+
+
+def test_old_manifest_without_groups_gets_default_two_and_writes_them_back(home, tmp_path):
+    inst.MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    d = tmp_path / "w"
+    d.mkdir()
+    old = {"version": 1, "instances": [{"id": "a", "name": "A", "cwd": str(d), "command": "x", "ports": [18080]},
+                                       {"id": "b", "name": "B", "cwd": str(d), "command": "x", "ports": [18081],
+                                        "group": "backup"}]}
+    inst.MANIFEST.write_text(json.dumps(old), encoding="utf-8")
+    assert inst.load_groups() == [{"id": "core", "name": "核心", "view": "cards", "builtin": True},
+                                  {"id": "backup", "name": "备用", "view": "table", "builtin": True}]
+    assert inst.status_all()["groups"] == inst.load_groups()
+    assert inst.patch_instance("a", {"description": "改一下"})["ok"]
+    doc = json.loads(inst.MANIFEST.read_text(encoding="utf-8"))
+    assert [g["id"] for g in doc["groups"]] == ["core", "backup"] and "builtin" not in doc["groups"][0]
+    assert [r["id"] for r in doc["instances"]] == ["a", "b"]
+    assert not list(inst.MANIFEST.parent.glob("instances.json.corrupt-*"))
+
+
+def test_create_rename_view_and_validation(home, tmp_path):
+    r = inst.edit_groups("create", name="  量化工具 ")
+    assert r["ok"] and r["group"] == {"id": "g1", "name": "量化工具", "view": "cards", "builtin": False}
+    assert _gids() == ["core", "g1", "backup"]                        # 新组放在备用上面
+    assert inst.edit_groups("create", name="量化工具")["reason"] == "dup-name"
+    assert inst.edit_groups("create", name="核心")["reason"] == "dup-name"   # 内置组的名字也不许重
+    assert inst.edit_groups("create", name="")["reason"] == "bad-name"
+    assert inst.edit_groups("create", name="x" * 21)["reason"] == "bad-name"
+    assert inst.edit_groups("create", name="a\nb")["reason"] == "bad-name"
+    assert inst.edit_groups("create", name=5)["reason"] == "bad-name"
+    assert inst.edit_groups("create", name="表格组", view="grid")["reason"] == "bad-view"
+    t = inst.edit_groups("create", name="表格组", view="table")
+    assert t["group"]["id"] == "g2" and t["group"]["view"] == "table"
+    assert inst.edit_groups("rename", gid="g1", name="量化")["group"]["name"] == "量化"
+    assert inst.edit_groups("rename", gid="g1", name="量化")["ok"]          # 改成自己原来的名字不算重名
+    assert inst.edit_groups("rename", gid="backup", name="冷备")["ok"]      # 内置组能改名
+    assert inst.edit_groups("rename", gid="g9", name="x")["reason"] == "bad-group"
+    assert inst.edit_groups("view", gid="core", view="table")["ok"]
+    assert inst.edit_groups("view", gid="core", view="list")["reason"] == "bad-view"
+    assert inst.edit_groups("explode", gid="core")["reason"] == "bad-action"
+    gs = {g["id"]: g for g in inst.load_groups()}
+    assert gs["backup"]["name"] == "冷备" and gs["core"]["view"] == "table"
+    for k in range(inst._MAX_GROUPS - 4):
+        assert inst.edit_groups("create", name=f"组{k}")["ok"]
+    assert len(inst.load_groups()) == inst._MAX_GROUPS
+    assert inst.edit_groups("create", name="再来一个")["reason"] == "too-many-groups"
+
+
+def test_instances_follow_group_validation(home, tmp_path):
+    with pytest.raises(AssertionError):
+        mk(tmp_path, "q-1", group="g1")                               # 组还不存在
+    inst.edit_groups("create", name="量化工具")
+    a = mk(tmp_path, "q-1", group="g1")
+    assert a["group"] == "g1"
+    b = mk(tmp_path, "c-1", ports=[18081])
+    assert inst.patch_instance(b["id"], {"group": "g1"})["ok"]
+    assert inst.patch_instance(b["id"], {"group": "nope"})["errors"] == {"group": "bad-choice"}
+    assert status_of(a["id"])["group"] == "g1"
+
+
+def test_move_between_groups_and_within_group(home, tmp_path):
+    inst.edit_groups("create", name="量化工具")
+    a = mk(tmp_path, "a", ports=[18080])
+    b = mk(tmp_path, "b", ports=[18081])
+    c = mk(tmp_path, "c", ports=[18082])
+    k = mk(tmp_path, "k", ports=[18083], group="backup")
+    assert _ids() == ["a", "b", "c", "k"]
+    # 拖到空的自建组: 落在核心之后、备用之前 (清单顺序 = 页面顺序)
+    assert inst.move_instance(c["id"], "g1")["instance"]["group"] == "g1"
+    assert _ids() == ["a", "b", "c", "k"] and _ids("g1") == ["c"]
+    # 拖到别的组、排在某个实例前面
+    assert inst.move_instance(a["id"], "g1", before="c")["ok"]
+    assert _ids() == ["b", "a", "c", "k"] and _ids("g1") == ["a", "c"]
+    # 组内往后挪 (放到末尾)
+    assert inst.move_instance(a["id"], "g1")["ok"]
+    assert _ids("g1") == ["c", "a"]
+    # 备用里的拖到核心最前面
+    assert inst.move_instance(k["id"], "core", before="b")["ok"]
+    assert _ids() == ["k", "b", "c", "a"]
+    # 坏参数一律不动清单
+    before = inst.MANIFEST.read_bytes()
+    assert inst.move_instance("nope", "core")["reason"] == "not-found"
+    assert inst.move_instance(b["id"], "nope")["reason"] == "bad-group"
+    assert inst.move_instance(b["id"], "core", before="b")["reason"] == "bad-before"   # 排在自己前面
+    assert inst.move_instance(b["id"], "core", before="c")["reason"] == "bad-before"   # c 不在核心
+    assert inst.move_instance(b["id"], "core", before="zzz")["reason"] == "bad-before"
+    assert inst.move_instance(b["id"], ["core"])["reason"] == "bad-group"
+    assert inst.MANIFEST.read_bytes() == before
+
+
+def test_reorder_groups_resorts_manifest(home, tmp_path):
+    inst.edit_groups("create", name="量化工具")
+    a = mk(tmp_path, "a", ports=[18080])
+    q = mk(tmp_path, "q", ports=[18081], group="g1")
+    k = mk(tmp_path, "k", ports=[18082], group="backup")
+    assert inst.edit_groups("reorder", order=["g1", "backup", "core"])["ok"]
+    assert _gids() == ["g1", "backup", "core"]
+    assert _ids() == [q["id"], k["id"], a["id"]]                      # 开机 / 全部拉起都按这个顺序
+    for bad in (["g1", "core"], ["g1", "backup", "core", "core"], ["g1", "backup", "zzz"], "g1,backup,core", None,
+                ["g1", "backup", 3]):
+        assert inst.edit_groups("reorder", order=bad)["reason"] == "bad-order", bad
+    assert _gids() == ["g1", "backup", "core"]
+
+
+def test_delete_group_moves_instances_to_end_of_backup_and_keeps_processes(world, tmp_path):
+    inst.edit_groups("create", name="量化工具")
+    k = mk(tmp_path, "k", ports=[18082], group="backup")
+    q1 = mk(tmp_path, "q1", ports=[18080], group="g1")
+    q2 = mk(tmp_path, "q2", ports=[18081], group="g1")
+    world.add(900, "python.exe", cwd=q1["cwd"])
+    world.listen = [(18080, 900, "127.0.0.1")]
+    assert status_of(q1["id"])["state"] == "running"
+    assert inst.edit_groups("delete", gid="core")["reason"] == "builtin"
+    assert inst.edit_groups("delete", gid="backup")["reason"] == "builtin"
+    r = inst.edit_groups("delete", gid="g1")
+    assert r["ok"] and r["moved"] == [q1["id"], q2["id"]] and [g["id"] for g in r["groups"]] == ["core", "backup"]
+    assert _ids("backup") == [k["id"], q1["id"], q2["id"]]           # 排到备用末尾
+    assert 900 in world.procs and world.stops == []                  # 只改登记: 进程不受影响
+    assert status_of(q1["id"])["state"] == "running" and status_of(q1["id"])["group"] == "backup"
+    assert inst.edit_groups("delete", gid="g1")["reason"] == "bad-group"
+    assert inst.edit_groups("create", name="又一个")["group"]["id"] == "g1"   # 号可以复用
+
+
+def test_unknown_group_on_disk_falls_back_to_backup_without_dropping(home, tmp_path):
+    inst.edit_groups("create", name="量化工具")
+    q = mk(tmp_path, "q", ports=[18080], group="g1")
+    doc = json.loads(inst.MANIFEST.read_text(encoding="utf-8"))
+    doc["groups"] = [g for g in doc["groups"] if g["id"] != "g1"]     # 组被手删了, 实例还写着 g1
+    doc["groups"].append({"id": "BAD", "name": "坏 id"})
+    doc["groups"].append({"id": "g5", "name": ""})                    # 名字坏了的自建组: 跳过
+    doc["groups"] = [g for g in doc["groups"] if g["id"] != "core"]   # 内置组缺了: 补回最前面
+    inst.MANIFEST.write_text(json.dumps(doc), encoding="utf-8")
+    assert _gids() == ["core", "backup"]
+    assert [(r["id"], r["group"]) for r in inst.load_manifest()] == [(q["id"], "backup")]
+    assert inst.status_all()["manifest_error"] is None
+    assert inst.patch_instance(q["id"], {"description": "x"})["ok"]
+    assert not list(inst.MANIFEST.parent.glob("instances.json.corrupt-*"))   # 不当坏记录、不另存
+    doc = json.loads(inst.MANIFEST.read_text(encoding="utf-8"))
+    assert doc["instances"][0]["group"] == "backup" and [g["id"] for g in doc["groups"]] == ["core", "backup"]
+
+
+def test_builtin_name_clash_on_disk_is_disambiguated(home, tmp_path):
+    inst.MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    inst.MANIFEST.write_text(json.dumps({"version": 1, "groups": [{"id": "g1", "name": "核心", "view": "table"}],
+                                         "instances": []}), encoding="utf-8")
+    gs = inst.load_groups()
+    assert [g["id"] for g in gs] == ["core", "g1", "backup"]
+    assert gs[0]["name"] == "核心（内置）" and gs[1]["name"] == "核心" and gs[1]["view"] == "table"
+
+
+def test_changing_group_in_edit_dialog_or_patch_lands_at_end_of_new_group(home, tmp_path):
+    # 静态审查 #1: 原来留在旧数组位置 -> 挪到后面的组会排到最前、挪到前面的组排到最后, 和拖过去「放到组末尾」不一致
+    inst.edit_groups("create", name="量化工具")
+    a = mk(tmp_path, "a", ports=[18080])
+    mk(tmp_path, "b", ports=[18081])
+    mk(tmp_path, "c", ports=[18082], group="g1")
+    mk(tmp_path, "d", ports=[18083], group="g1")
+    e = mk(tmp_path, "e", ports=[18084], group="backup")
+    rec = inst.get_instance(a["id"])
+    assert inst.save_instance(dict(rec, group="g1"), original_id=a["id"])["ok"]
+    assert _ids("g1") == ["c", "d", "a"]
+    assert inst.patch_instance(e["id"], {"group": "core"})["ok"]
+    assert _ids("core") == ["b", "e"]
+    assert inst.save_instance(dict(inst.get_instance("c"), description="只改描述"), original_id="c")["ok"]
+    assert _ids("g1") == ["c", "d", "a"]                              # 组没变: 位置不动
+
+
+def test_unsorted_old_file_is_read_in_page_order(home, tmp_path):
+    # 静态审查备注: 0.26 / 手改的清单还没按组排过 -> 读出来就按页面顺序 (开机拉起、全部拉起都按它)
+    inst.MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    d = tmp_path / "w"
+    d.mkdir()
+    rec = lambda i, g: {"id": i, "name": i, "cwd": str(d), "command": "x", "ports": [18080 + len(i)], "group": g}
+    inst.MANIFEST.write_text(json.dumps({"version": 1, "instances": [rec("k", "backup"), rec("aa", "core"), rec("bbb", "core")]}),
+                             encoding="utf-8")
+    assert _ids() == ["aa", "bbb", "k"]
+
+
+def test_builtin_fallback_name_never_duplicates_a_custom_group(home, tmp_path):
+    # 静态审查 #2: 内置组名字坏了退回默认名, 而默认名正被自建组占着
+    inst.MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    inst.MANIFEST.write_text(json.dumps({"version": 1, "groups": [{"id": "g1", "name": "核心"}, {"id": "core", "name": ""}],
+                                         "instances": []}), encoding="utf-8")
+    names = [g["name"] for g in inst.load_groups()]
+    assert len(names) == len(set(n.casefold() for n in names)) and "核心（内置）" in names
+
+
+def test_start_group_accepts_custom_group_in_page_order(world, tmp_path, monkeypatch):
+    launched = fake_launcher(world, monkeypatch)
+    monkeypatch.setattr(inst, "_STAGGER_S", 0.0)
+    inst.edit_groups("create", name="量化工具")
+    a = mk(tmp_path, "core-a", ports=[18080])
+    q1 = mk(tmp_path, "q1", ports=[18081], group="g1")
+    q2 = mk(tmp_path, "q2", ports=[18082], group="g1")
+    assert inst.move_instance(q2["id"], "g1", before=q1["id"])["ok"]
+    r = inst.start_group("g1")
+    assert r["ok"] and r["queued"] == [q2["id"], q1["id"]]
+    inst._join_workers(5)
+    assert [x[0] for x in launched] == [q2["id"], q1["id"]] and a["id"] not in [x[0] for x in launched]
+    assert inst.start_group("g9")["reason"] == "bad-group"
+    assert inst.start_group(None)["reason"] == "bad-group"

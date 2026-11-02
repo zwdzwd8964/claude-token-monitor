@@ -74,7 +74,15 @@ _TUNNEL_TTL = 30.0
 _CF_TTL = 10.0
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
-GROUPS = ("core", "backup")
+# 分组 (0.27): 清单里的 groups 列表 = 页面上从上到下的顺序。core / backup 是内置组 (一定在, 能改名 / 换显示方式, 不能删);
+# 自建组 id 由 tokmon 分配 g1、g2… (名字是你起的标签)。没有 groups 键的旧清单 = 下面这两组。
+BUILTIN_GROUPS = ("core", "backup")
+VIEWS = ("cards", "table")
+GROUP_ACTIONS = ("create", "rename", "view", "reorder", "delete")
+_DEFAULT_GROUPS = ({"id": "core", "name": "核心", "view": "cards"}, {"id": "backup", "name": "备用", "view": "table"})
+_MAX_GROUPS = 12
+_GROUP_NAME_MAX = 20
+_GROUP_ID_RE = re.compile(r"g[1-9][0-9]{0,3}")
 KINDS = ("service", "self")
 BOOTS = ("auto", "ask", "manual")
 _PATCHABLE = ("boot", "group", "name", "description", "project")
@@ -493,10 +501,11 @@ def _v_deps(v, errors) -> list:
     return out
 
 
-def validate(data, *, taken=(), check_cwd: bool = True, from_disk: bool = False):
+def validate(data, *, taken=(), check_cwd: bool = True, from_disk: bool = False, groups=None):
     """-> (规范化记录 | None, {字段: 错误码})。未知键丢弃。taken = 已占用 id (只用于派生 id 时避让)。
     check_cwd=False: 读盘 / patch 时不因目录暂时不在就把整条记录判死。
-    from_disk=True: 读盘时不按新规则 (无端口不许 auto) 把旧记录判死 —— 那种残留由开机拉起跳过并审计。"""
+    from_disk=True: 读盘时不按新规则 (无端口不许 auto) 把旧记录判死 —— 那种残留由开机拉起跳过并审计。
+    groups = 现有组 id (缺省 = 两个内置组); 组不在里面 -> bad-choice (读盘时先把这种归到备用, 见 _read_manifest_file)。"""
     if not isinstance(data, dict):
         return None, {"_": "bad-format"}
     errors: dict = {}
@@ -542,7 +551,7 @@ def validate(data, *, taken=(), check_cwd: bool = True, from_disk: bool = False)
     name = text("name", 40, required=True)
     project = text("project", 60)
     description = text("description", 300, multiline=True)
-    group = choice("group", GROUPS, "core")
+    group = choice("group", tuple(groups) if groups is not None else BUILTIN_GROUPS, "core")
     kind = choice("kind", KINDS, "service")
     service = kind == "service"
     cwd = text("cwd", 1000, required=service)
@@ -615,38 +624,92 @@ def _atomic_write_json(path: Path, obj) -> None:
             pass
 
 
+def _group_name(v):
+    """组名 -> (去空白后的名字, 错误码 | None)。1–20 个字, 不能换行。"""
+    if not isinstance(v, str):
+        return "", "bad-name"
+    v = v.strip()
+    if not v or len(v) > _GROUP_NAME_MAX or any(c in v for c in "\r\n\x00"):
+        return v, "bad-name"
+    return v, None
+
+
+def _norm_groups(raw) -> list:
+    """盘上的 groups -> 规范化的组列表 (顺序 = 页面顺序)。坏条目 / 重复 id / 重名的自建组跳过 (它的实例读的时候归到备用);
+    内置组一定在: 缺了就补 (核心在最前、备用在最后), 名字坏了用默认名。没有 groups 键 (0.26 及以前) = 默认两组。"""
+    defaults = {g["id"]: g for g in _DEFAULT_GROUPS}
+    out, ids, names = [], set(), set()
+    for g in (raw if isinstance(raw, list) else []):
+        if not isinstance(g, dict):
+            continue
+        gid = g.get("id")
+        builtin = gid in BUILTIN_GROUPS
+        if not isinstance(gid, str) or gid in ids or not (builtin or _GROUP_ID_RE.fullmatch(gid)):
+            continue
+        if not builtin and sum(x["id"] not in BUILTIN_GROUPS for x in out) >= _MAX_GROUPS - len(BUILTIN_GROUPS):
+            continue
+        name, err = _group_name(g.get("name"))
+        if err or name.casefold() in names:
+            if not builtin:
+                continue
+            name = defaults[gid]["name"]
+            if name.casefold() in names:           # 默认名也被自建组占了: 加个后缀, 不让两组同名
+                name += "（内置）"
+        view = g.get("view") if g.get("view") in VIEWS else (defaults[gid]["view"] if builtin else "cards")
+        out.append({"id": gid, "name": name, "view": view})
+        ids.add(gid)
+        names.add(name.casefold())
+    for gid in BUILTIN_GROUPS:
+        if gid not in ids:
+            g = dict(defaults[gid])
+            if g["name"].casefold() in names:      # 自建组恰好占了「核心」/「备用」这个名字: 内置组加个后缀, 不丢
+                g["name"] = g["name"] + "（内置）"
+            if gid == "core":
+                out.insert(0, g)
+            else:
+                out.append(g)
+    return out
+
+
 def _read_manifest_file():
-    """读盘上清单 -> (records, error|None, pristine)。pristine=False = 盘上文件没被完整读懂
-    (坏 JSON / 形状不对 / 有条目被丢), 下次保存前必须先把原文件另存, 绝不静默覆盖你的数据。"""
+    """读盘上清单 -> (records, groups, error|None, pristine)。pristine=False = 盘上文件没被完整读懂
+    (坏 JSON / 形状不对 / 有条目被丢), 下次保存前必须先把原文件另存, 绝不静默覆盖你的数据。
+    实例的组不在组列表里 (组被手删了 / 写错了): 记录照留, 归到备用 —— 不算坏记录。"""
     try:
         raw = MANIFEST.read_bytes()
     except FileNotFoundError:
-        return [], None, True
+        return [], _norm_groups(None), None, True
     except OSError as e:
-        return [], f"清单文件读不了 ({e.__class__.__name__})", False
+        return [], _norm_groups(None), f"清单文件读不了 ({e.__class__.__name__})", False
     try:
         doc = json.loads(raw.decode("utf-8-sig"))
     except (UnicodeDecodeError, ValueError) as e:
-        return [], (f"清单文件 JSON 损坏 ({e.__class__.__name__}), 暂按空清单处理; "
-                    "下次保存前会把原文件另存为 instances.json.corrupt-*"), False
+        return [], _norm_groups(None), (f"清单文件 JSON 损坏 ({e.__class__.__name__}), 暂按空清单处理; "
+                                        "下次保存前会把原文件另存为 instances.json.corrupt-*"), False
     items = doc.get("instances") if isinstance(doc, dict) else None
     if not isinstance(items, list):
-        return [], "清单文件格式不对 (缺 instances 列表), 暂按空清单处理; 下次保存前会另存原文件", False
+        return [], _norm_groups(None), "清单文件格式不对 (缺 instances 列表), 暂按空清单处理; 下次保存前会另存原文件", False
+    groups = _norm_groups(doc.get("groups"))
+    gids = [g["id"] for g in groups]
     recs, seen, dropped = [], set(), 0
     for it in items:
-        rec, _errs = validate(it, taken=seen, check_cwd=False, from_disk=True)
+        if isinstance(it, dict) and it.get("group") not in (None, "") and it.get("group") not in gids:
+            it = {**it, "group": "backup"}
+        rec, _errs = validate(it, taken=seen, check_cwd=False, from_disk=True, groups=gids)
         if rec is None or rec["id"] in seen:
             dropped += 1
             continue
         seen.add(rec["id"])
         recs.append(rec)
+    recs = _sorted_by_group(recs, groups)          # 0.26 的 / 手改的清单还没按组排过: 读出来就是页面顺序 (开机拉起也按它)
     if dropped:
-        return recs, f"清单里有 {dropped} 条记录无效, 已忽略 (下次保存前原文件会另存为 instances.json.corrupt-*)", False
-    return recs, None, True
+        return (recs, groups, f"清单里有 {dropped} 条记录无效, 已忽略 (下次保存前原文件会另存为 instances.json.corrupt-*)",
+                False)
+    return recs, groups, None, True
 
 
-def _manifest():
-    """-> (records 深拷贝, manifest_error)。按 (路径, mtime, size) 缓存解析结果。"""
+def _manifest_full():
+    """-> (records 深拷贝, groups 深拷贝, manifest_error)。按 (路径, mtime, size) 缓存解析结果。"""
     try:
         st = MANIFEST.stat()
         key = (str(MANIFEST), st.st_mtime_ns, st.st_size)
@@ -654,13 +717,26 @@ def _manifest():
         key = (str(MANIFEST), None, None)
     with _LOCK:
         if _MCACHE.get("key") != key:
-            recs, err, pristine = _read_manifest_file()
+            recs, groups, err, pristine = _read_manifest_file()
             _MCACHE.clear()
-            _MCACHE.update(key=key, recs=recs, err=err, pristine=pristine)
-        return copy.deepcopy(_MCACHE["recs"]), (_MCACHE["err"] or _PRESERVED_NOTE)
+            _MCACHE.update(key=key, recs=recs, groups=groups, err=err, pristine=pristine)
+        return (copy.deepcopy(_MCACHE["recs"]), copy.deepcopy(_MCACHE["groups"]),
+                (_MCACHE["err"] or _PRESERVED_NOTE))
 
 
-def _write_manifest(recs: list, pristine: bool) -> str | None:
+def _manifest():
+    """-> (records 深拷贝, manifest_error)。"""
+    recs, _groups, err = _manifest_full()
+    return recs, err
+
+
+def _sorted_by_group(recs: list, groups: list) -> list:
+    """按组的顺序稳定排序: 清单数组里的顺序 = 页面上从上到下的顺序 (全部拉起 / 开机拉起都按它)。"""
+    order = {g["id"]: k for k, g in enumerate(groups)}
+    return sorted(recs, key=lambda r: order.get(r["group"], len(order)))
+
+
+def _write_manifest(recs: list, pristine: bool, groups: list) -> str | None:
     """持锁调用。盘上文件没被完整读懂 -> 先改名另存再写。-> 错误说明 | None。"""
     global _PRESERVED_NOTE
     if not pristine and MANIFEST.exists():
@@ -675,7 +751,9 @@ def _write_manifest(recs: list, pristine: bool) -> str | None:
             return f"原清单无法另存 ({e.__class__.__name__}), 为免覆盖你的数据, 本次不保存"
         _PRESERVED_NOTE = f"原清单文件没能完整读懂, 已另存为 {bak.name}; 当前清单从能读懂的部分重新开始"
     try:
-        _atomic_write_json(MANIFEST, {"version": 1, "instances": recs})
+        _atomic_write_json(MANIFEST, {"version": 1, "groups": [{"id": g["id"], "name": g["name"], "view": g["view"]}
+                                                               for g in groups],
+                                      "instances": _sorted_by_group(recs, groups)})
     except OSError as e:
         return f"清单写入失败 ({e.__class__.__name__})"
     _MCACHE.clear()
@@ -684,6 +762,20 @@ def _write_manifest(recs: list, pristine: bool) -> str | None:
 
 def load_manifest() -> list[dict]:
     return _manifest()[0]
+
+
+def group_id_ok(gid) -> bool:
+    """组 id 的形状对不对 (core / backup / g数字); 存不存在要看清单。"""
+    return isinstance(gid, str) and (gid in BUILTIN_GROUPS or _GROUP_ID_RE.fullmatch(gid) is not None)
+
+
+def _groups_view(groups: list) -> list:
+    return [{"id": g["id"], "name": g["name"], "view": g["view"], "builtin": g["id"] in BUILTIN_GROUPS} for g in groups]
+
+
+def load_groups() -> list[dict]:
+    """现有的组 (页面顺序): [{id, name, view, builtin}]。"""
+    return _groups_view(_manifest_full()[1])
 
 
 def _get(iid) -> dict | None:
@@ -1445,7 +1537,7 @@ def _instance_view(rec, ev, last, extra) -> dict:
 
 def _build_status(serve_port=None) -> dict:
     _ensure_loaded()
-    recs, merr = _manifest()
+    recs, groups, merr = _manifest_full()
     now = time.time()
     track = _track_snapshot()
     with _LOCK:
@@ -1497,6 +1589,7 @@ def _build_status(serve_port=None) -> dict:
         "manifest_error": merr,
         "boot": {"handled": handled, "pending": live_pending},
         "owner": _owner_block(),
+        "groups": _groups_view(groups),
         "instances": out,
     }
 
@@ -2255,7 +2348,8 @@ def _run_starts(ids, actor, audit_kind, stop_ev) -> None:
 
 
 def start_group(group: str = "core", actor: str = "user") -> dict:
-    if group not in GROUPS:
+    """按页面顺序 (清单顺序) 拉起这一组里没在运行的实例。认任何现有组。"""
+    if not isinstance(group, str) or group not in {g["id"] for g in load_groups()}:
         return {"ok": False, "reason": "bad-group"}
     if not _HAS_PSUTIL:
         return _fail("no-psutil")
@@ -2569,7 +2663,7 @@ def save_instance(data: dict, original_id: str | None = None) -> dict:
         return {"ok": False, "reason": "invalid", "errors": {"_": "bad-format"}}
     _ensure_loaded()
     with _LOCK:
-        recs, _err, pristine = _read_manifest_file()
+        recs, groups, _err, pristine = _read_manifest_file()
         ids = [r["id"] for r in recs]
         if original_id is not None and original_id not in ids:
             return {"ok": False, "reason": "not-found"}
@@ -2577,7 +2671,7 @@ def save_instance(data: dict, original_id: str | None = None) -> dict:
         if original_id is not None and not data.get("id"):
             data["id"] = original_id
         taken = set(ids) - {original_id}
-        rec, errors = validate(data, taken=taken)
+        rec, errors = validate(data, taken=taken, groups=[g["id"] for g in groups])
         if errors:
             return {"ok": False, "reason": "invalid", "errors": errors}
         if rec["id"] in taken:
@@ -2586,10 +2680,15 @@ def save_instance(data: dict, original_id: str | None = None) -> dict:
                 original_id in _RESTARTING or (_TRACK.get(original_id) or {}).get("phase") in _BUSY_PHASES):
             return {"ok": False, "reason": "busy"}  # 启停在途时改 id: 后台线程会找不到自己的条目
         if original_id is None:
-            recs.append(rec)
+            recs.append(rec)                       # 新登记: 写盘时按组排序 -> 落在它那一组的末尾
         else:
-            recs[ids.index(original_id)] = rec
-        e = _write_manifest(recs, pristine)
+            k = ids.index(original_id)
+            if recs[k]["group"] == rec["group"]:
+                recs[k] = rec                      # 组没变: 原地替换, 位置不动
+            else:
+                del recs[k]                        # 在弹窗里换了组: 和拖过去一样放到新组末尾
+                recs.append(rec)
+        e = _write_manifest(recs, pristine, groups)
         if e:
             return {"ok": False, "reason": "manifest-error", "detail": e}
         if original_id is not None and rec["id"] != original_id:
@@ -2608,17 +2707,22 @@ def patch_instance(iid: str, fields: dict) -> dict:
     if bad:
         return {"ok": False, "reason": "invalid", "errors": bad}
     with _LOCK:
-        recs, _err, pristine = _read_manifest_file()
+        recs, groups, _err, pristine = _read_manifest_file()
         idx = next((i for i, r in enumerate(recs) if r["id"] == iid), None)
         if idx is None:
             return {"ok": False, "reason": "not-found"}
         merged = {**recs[idx], **fields, "id": iid}
         rec, errors = validate(merged, taken={r["id"] for r in recs} - {iid}, check_cwd=False,
-                               from_disk="boot" not in fields)   # 没动开机策略 (改分组 / 描述): 旧记录里的无端口 + 提醒不拦 (终轮静态复查)
+                               from_disk="boot" not in fields,   # 没动开机策略 (改分组 / 描述): 旧记录里的无端口 + 提醒不拦 (终轮静态复查)
+                               groups=[g["id"] for g in groups])
         if errors:
             return {"ok": False, "reason": "invalid", "errors": errors}
-        recs[idx] = rec
-        e = _write_manifest(recs, pristine)
+        if recs[idx]["group"] == rec["group"]:
+            recs[idx] = rec
+        else:                                      # 换了组: 放到新组末尾 (与 move_instance 不给 before 一致)
+            del recs[idx]
+            recs.append(rec)
+        e = _write_manifest(recs, pristine, groups)
         if e:
             return {"ok": False, "reason": "manifest-error", "detail": e}
         _invalidate()
@@ -2632,11 +2736,11 @@ def delete_instance(iid: str) -> dict:
         return gate
     _ensure_loaded()
     with _LOCK:
-        recs, _err, pristine = _read_manifest_file()
+        recs, groups, _err, pristine = _read_manifest_file()
         keep = [r for r in recs if r["id"] != iid]
         if len(keep) == len(recs):
             return {"ok": False, "reason": "not-found"}
-        e = _write_manifest(keep, pristine)
+        e = _write_manifest(keep, pristine, groups)
         if e:
             return {"ok": False, "reason": "manifest-error", "detail": e}
         tr = _TRACK.pop(iid, None)
@@ -2650,6 +2754,107 @@ def delete_instance(iid: str) -> dict:
         _save_state()
         _invalidate()
     return {"ok": True}
+
+
+# ---- 分组 (0.27): 只改登记, 不碰任何进程; 移组 / 删组 / 排序都不影响启停和追踪 ----
+
+def move_instance(iid: str, group: str, before: str | None = None) -> dict:
+    """把实例放进 group, 排在 before 那个实例前面; before 为空 = 放到组末尾。-> {ok, instance}。"""
+    gate = _owner_gate()
+    if gate:
+        return gate
+    with _LOCK:
+        recs, groups, _err, pristine = _read_manifest_file()
+        gids = [g["id"] for g in groups]
+        if not isinstance(group, str) or group not in gids:
+            return {"ok": False, "reason": "bad-group"}
+        idx = next((k for k, r in enumerate(recs) if r["id"] == iid), None) if isinstance(iid, str) else None
+        if idx is None:
+            return {"ok": False, "reason": "not-found"}
+        rec = dict(recs.pop(idx), group=group)
+        if before not in (None, ""):
+            j = next((k for k, r in enumerate(recs) if r["id"] == before), None) if isinstance(before, str) else None
+            if j is None or recs[j]["group"] != group:   # 不在目标组 / 就是它自己 (已经拿出来了, 找不到)
+                return {"ok": False, "reason": "bad-before"}
+            recs.insert(j, rec)
+        else:
+            order = {g: k for k, g in enumerate(gids)}
+            last = max((k for k, r in enumerate(recs) if r["group"] == group), default=None)
+            if last is not None:
+                recs.insert(last + 1, rec)
+            else:                                  # 组里还没别人: 放到排在它后面的组之前 (写盘时还会按组排一次)
+                recs.insert(next((k for k, r in enumerate(recs) if order.get(r["group"], len(order)) > order[group]),
+                                 len(recs)), rec)
+        e = _write_manifest(recs, pristine, groups)
+        if e:
+            return {"ok": False, "reason": "manifest-error", "detail": e}
+        _invalidate()
+        return {"ok": True, "instance": copy.deepcopy(rec)}
+
+
+def edit_groups(action: str, *, gid=None, name=None, view=None, order=None) -> dict:
+    """create(name, view?) / rename(gid, name) / view(gid, view) / reorder(order = 全部组 id 的一个排列) / delete(gid)。
+    删自建组: 组里的实例移到备用末尾 (只改登记)。-> {ok, groups, group?, moved?}。"""
+    gate = _owner_gate()
+    if gate:
+        return gate
+    if action not in GROUP_ACTIONS:
+        return {"ok": False, "reason": "bad-action"}
+    with _LOCK:
+        recs, groups, _err, pristine = _read_manifest_file()
+        ids = [g["id"] for g in groups]
+        target, moved = None, []
+        if action not in ("create", "reorder"):
+            target = next((g for g in groups if g["id"] == gid), None) if isinstance(gid, str) else None
+            if target is None:
+                return {"ok": False, "reason": "bad-group"}
+        if action in ("create", "rename"):
+            nm, err = _group_name(name)
+            if err:
+                return {"ok": False, "reason": err}
+            if any(g["name"].casefold() == nm.casefold() and g is not target for g in groups):
+                return {"ok": False, "reason": "dup-name"}
+        if action == "create":
+            if len(groups) >= _MAX_GROUPS:
+                return {"ok": False, "reason": "too-many-groups"}
+            if view not in (None, "") and view not in VIEWS:
+                return {"ok": False, "reason": "bad-view"}
+            n = 1
+            while f"g{n}" in ids:
+                n += 1
+            target = {"id": f"g{n}", "name": nm, "view": view or "cards"}
+            # 新组放在备用上面 (备用通常在最后); 备用不在最后就直接放到最后
+            at = len(groups) - 1 if groups and groups[-1]["id"] == "backup" else len(groups)
+            groups.insert(at, target)
+        elif action == "rename":
+            target["name"] = nm
+        elif action == "view":
+            if view not in VIEWS:
+                return {"ok": False, "reason": "bad-view"}
+            target["view"] = view
+        elif action == "reorder":
+            if (not isinstance(order, list) or not all(isinstance(x, str) for x in order)
+                    or len(order) != len(ids) or set(order) != set(ids)):
+                return {"ok": False, "reason": "bad-order"}
+            byid = {g["id"]: g for g in groups}
+            groups = [byid[x] for x in order]
+        elif action == "delete":
+            if target["id"] in BUILTIN_GROUPS:
+                return {"ok": False, "reason": "builtin"}
+            moved = [r["id"] for r in recs if r["group"] == target["id"]]
+            recs = [r for r in recs if r["group"] != target["id"]] + \
+                   [dict(r, group="backup") for r in recs if r["group"] == target["id"]]   # 排到备用末尾
+            groups = [g for g in groups if g["id"] != target["id"]]
+        e = _write_manifest(recs, pristine, groups)
+        if e:
+            return {"ok": False, "reason": "manifest-error", "detail": e}
+        _invalidate()
+        out = {"ok": True, "groups": _groups_view(groups)}
+        if target is not None and action != "delete":
+            out["group"] = _groups_view([target])[0]
+        if action == "delete":
+            out["moved"] = moved
+        return out
 
 
 def draft_from_pid(pid: int, create_time: float | None) -> dict:

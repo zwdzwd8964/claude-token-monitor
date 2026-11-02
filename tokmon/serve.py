@@ -290,6 +290,7 @@ _INST_POSTS = {
     "/api/instances/save": "instance-save", "/api/instances/patch": "instance-patch",
     "/api/instances/delete": "instance-delete", "/api/instances/get": None,     # get: 只读 (本机+令牌), 不审计
     "/api/instances/draft": "instance-draft", "/api/instances/boot-ack": "instance-boot-ack",
+    "/api/instances/groups": "instance-groups", "/api/instances/move": "instance-move",
     "/api/autostart": "autostart",
 }
 _FORWARD_HEADERS = ("Cf-Connecting-Ip", "Cf-Ray", "X-Forwarded-For", "X-Forwarded-Host", "Forwarded")
@@ -382,6 +383,15 @@ def _inst_name(iid: str) -> str:
     return str((rec or {}).get("name") or iid or "?")
 
 
+def _group_label(gid) -> str:
+    """审计里的组: 你起的组名, 取不到就用 id。"""
+    try:
+        g = next((x for x in instances.load_groups() if x.get("id") == gid), None)
+    except Exception:
+        g = None
+    return str((g or {}).get("name") or gid or "?")[:40]
+
+
 def _inst_audited(kind: str, target: str, fn) -> dict:
     """跑一个实例动作并审计 (无论成败; 抛异常也记一笔 "error" 再抛给 _json 回 500)。"""
     try:
@@ -408,10 +418,32 @@ def _do_instance(path: str, body: dict, serve_port=None, base=None) -> dict:
     if path == "/api/instances/restart":
         return _inst_audited(kind, _inst_name(iid), lambda: instances.restart(iid))
     if path == "/api/instances/start-group":
-        group = str(body.get("group") or "core")
-        if group not in ("core", "backup"):
+        group = body.get("group") or "core"        # 形状先在这里挡; 存不存在由实例层按清单判 (0.27 起组可以自建)
+        if not instances.group_id_ok(group):
             return {"ok": False, "reason": "bad-group"}
         return _inst_audited(kind, f"group {group}", lambda: instances.start_group(group))
+    if path == "/api/instances/groups":
+        action = body.get("action")
+        if action not in instances.GROUP_ACTIONS:
+            return {"ok": False, "reason": "bad-action"}
+        gid, name = body.get("id"), body.get("name")
+        if action not in ("create", "reorder") and not instances.group_id_ok(gid):
+            return {"ok": False, "reason": "bad-group"}
+        if action == "create":
+            target = f"create {str(name or '?')[:40]}"
+        elif action == "reorder":
+            target = "reorder"
+        else:
+            target = f"{action} {_group_label(gid)}"   # 改名 / 删之前取名字
+        return _inst_audited(kind, target, lambda: instances.edit_groups(
+            action, gid=gid, name=name, view=body.get("view"), order=body.get("order")))
+    if path == "/api/instances/move":
+        group, before = body.get("group"), body.get("before")
+        if not instances.group_id_ok(group):
+            return {"ok": False, "reason": "bad-group"}
+        if before is not None and not isinstance(before, str):
+            return {"ok": False, "reason": "bad-before"}
+        return _inst_audited(kind, _inst_name(iid), lambda: instances.move_instance(iid, group, before or None))
     if path == "/api/instances/save":
         data = body.get("instance")
         if not isinstance(data, dict):

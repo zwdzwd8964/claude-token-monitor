@@ -120,6 +120,7 @@ python -m tokmon serve
 | [CHANGE_RISK_PLAN.md](CHANGE_RISK_PLAN.md) | **改动与风险一页规格**（当前优先级：它改了什么 / 有没有乱改 / 在变好吗） | ✅ S1–S3 全部验收（0.13.0 → 0.15.0） |
 | [CONSOLES_PLAN.md](CONSOLES_PLAN.md) | **控制台接入迁移规格**（S0 价目对齐官方 → S1 控制台 agent 的归属 → S2 工单等你 → S3 额度与对账；本机清单在 `~/.tokmon/consoles.json`） | 🟡 S0 ✅ 已验收（0.23.0）· S1 ✅（0.24.0）· S2 ✅（0.25.0）· S3 ✅（0.26.0）—— 待你验收 |
 | [INSTANCES_PLAN.md](INSTANCES_PLAN.md) | **实例管理一页规格**（重启不用重新部署：`/processes` 顶部的实例清单 + 启停 + 开机拉起 + tokmon 自启） | 🟡 0.22.0 已交付 —— 待你验收 |
+| [INSTANCE_GROUPS_PLAN.md](INSTANCE_GROUPS_PLAN.md) | **实例分组一页规格**（自建分组 · 拖卡片换组 / 组内排序 / 拖组头调顺序 · 每组选卡片或折叠表格） | 🟡 0.27.0 已交付 —— 待你验收 |
 | [CONTEXT_COST_PLAN.md](CONTEXT_COST_PLAN.md) | **省钱：上下文体检一页规格**（当前优先级：上下文多大、每轮多少钱、离开多久会重建、是什么把它撑大的） | 🟡 S1 ✅（0.19.0）· S2 ✅（0.20.0）· S3 ✅（0.21.0）—— 待你验收 |
 | [SESSIONS_COCKPIT_PLAN.md](SESSIONS_COCKPIT_PLAN.md) | **会话驾驶舱一页规格**（`/sessions` 一行看全四件事 + 等你时叫你） | ✅ 全部验收（0.17.0 → 0.18.0） |
 | [RUNNER_SDK_PLAN.md](RUNNER_SDK_PLAN.md) | steer 改用 Agent SDK | ✅ 已实施 |
